@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Coaster Outer Ring -->
+    <path
+        android:fillColor="#A6192E"
+        android:pathData="M 54,24 A 30,30 0 1,0 54,84 A 30,30 0 1,0 54,24 Z M 54,28 A 26,26 0 1,1 54,80 A 26,26 0 1,1 54,28 Z" />
+
+    <!-- Coaster Inner Ring -->
+    <path
+        android:fillColor="#A6192E"
+        android:pathData="M 54,32 A 22,22 0 1,0 54,76 A 22,22 0 1,0 54,32 Z M 54,34 A 20,20 0 1,1 54,74 A 20,20 0 1,1 54,34 Z" />
+
+</vector>

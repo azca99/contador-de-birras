@@ -1,0 +1,47 @@
+{
+  "project_info": {
+    "project_number": "289878368752",
+    "project_id": "contador-de-birras",
+    "storage_bucket": "contador-de-birras.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:289878368752:android:4e71709683835e16e6bd35",
+        "android_client_info": {
+          "package_name": "com.daniel.contadordebirras"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "289878368752-136tb2pc45h8t91unbsd11cjkh2f0avh.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.daniel.contadordebirras",
+            "certificate_hash": "b7a4e0ca42822af4d4efcc8f46bf0779588daf06"
+          }
+        },
+        {
+          "client_id": "289878368752-8pcrlfb7u6ek27klog85lfcrqgmhf0un.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyB4hYzoxNYGa5VAR73O-JZprR0oSsaiKXY"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "289878368752-8pcrlfb7u6ek27klog85lfcrqgmhf0un.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
