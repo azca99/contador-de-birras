@@ -1,20 +1,20 @@
 package com.example.contadordebirras.domain
 
+import com.example.contadordebirras.domain.GroupEntity
 import com.google.firebase.auth.FirebaseAuth
-import com.google.firebase.firestore.AggregateSource
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.Query
+import com.google.firebase.functions.FirebaseFunctions
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
-import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.tasks.await
-import java.util.Calendar
 
 class GroupsRepository(private val beerRepository: BeerRepository? = null) {
     private val firestore = FirebaseFirestore.getInstance()
     private val auth = FirebaseAuth.getInstance()
+    private val functions = FirebaseFunctions.getInstance()
 
     fun getGroups(): Flow<List<GroupEntity>> = callbackFlow {
         val currentUser = auth.currentUser
@@ -28,25 +28,23 @@ class GroupsRepository(private val beerRepository: BeerRepository? = null) {
             .whereArrayContains("members", currentUser.uid)
             .addSnapshotListener { snapshot, error ->
                 if (error != null || snapshot == null) {
-                    android.util.Log.e("GroupsDebug", "Error listening to groups", error)
                     trySend(emptyList())
                     return@addSnapshotListener
                 }
 
                 val groups = snapshot.documents.mapNotNull { doc ->
                     try {
-                        val members = doc.get("members") as? List<String> ?: emptyList()
                         GroupEntity(
                             id = doc.id,
-                            name = doc.getString("name") ?: "Grupo sin nombre",
+                            name = doc.getString("name") ?: "",
                             adminUid = doc.getString("adminUid") ?: "",
-                            members = members,
+                            members = doc.get("members") as? List<String> ?: emptyList(),
                             createdAt = doc.getLong("createdAt") ?: 0L
                         )
                     } catch (e: Exception) {
                         null
                     }
-                }.sortedByDescending { it.createdAt }
+                }
                 trySend(groups)
             }
 
@@ -55,6 +53,8 @@ class GroupsRepository(private val beerRepository: BeerRepository? = null) {
 
     suspend fun createGroup(name: String): Boolean {
         val currentUser = auth.currentUser ?: return false
+        if (name.isBlank() || name.length > 50) return false
+
         return try {
             val groupData = hashMapOf(
                 "name" to name.trim(),
@@ -70,50 +70,28 @@ class GroupsRepository(private val beerRepository: BeerRepository? = null) {
     }
 
     suspend fun addMemberByEmailOrUsername(groupId: String, searchQuery: String): String? {
+        val normalizedSearch = searchQuery.lowercase().trim()
+        val currentUser = auth.currentUser ?: return "Error de autenticación"
+
         return try {
-            val normalizedSearch = searchQuery.lowercase().trim()
+            val result = functions.getHttpsCallable("searchUser").call(mapOf("query" to normalizedSearch)).await()
+            val data = result.data as? Map<String, Any> ?: return "Error de servidor"
+            val found = data["found"] as? Boolean ?: false
             
-            var querySnapshot = firestore.collection("publicUsers")
-                .whereEqualTo("emailLowercase", normalizedSearch)
-                .limit(1)
-                .get()
+            if (!found) return "No se encontró ningún usuario con ese email o username."
+            val uid = data["uid"] as String
+
+            firestore.collection("groups").document(groupId)
+                .update("members", FieldValue.arrayUnion(uid))
                 .await()
 
-            if (querySnapshot.isEmpty) {
-                querySnapshot = firestore.collection("publicUsers")
-                    .whereEqualTo("usernameLowercase", normalizedSearch)
-                    .limit(1)
-                    .get()
-                    .await()
-            }
-
-            if (!querySnapshot.isEmpty) {
-                val friendUid = querySnapshot.documents[0].id
-                firestore.collection("groups").document(groupId)
-                    .update("members", FieldValue.arrayUnion(friendUid))
-                    .await()
-                null // Exito
-            } else {
-                "Usuario no encontrado con ese email o username."
-            }
+            null
         } catch (e: Exception) {
-            "Error al aÃ±adir usuario."
-        }
-    }
-
-    suspend fun deleteGroup(groupId: String): Boolean {
-        val currentUser = auth.currentUser ?: return false
-        return try {
-            val groupDoc = firestore.collection("groups").document(groupId).get().await()
-            val adminUid = groupDoc.getString("adminUid")
-            if (adminUid == currentUser.uid) {
-                firestore.collection("groups").document(groupId).delete().await()
-                true
+            if (e.message?.contains("PERMISSION_DENIED") == true) {
+                "No tienes permisos (solo el admin puede añadir)."
             } else {
-                false
+                "Error al añadir al miembro."
             }
-        } catch (e: Exception) {
-            false
         }
     }
 
@@ -128,93 +106,30 @@ class GroupsRepository(private val beerRepository: BeerRepository? = null) {
         }
     }
 
-    suspend fun getGroupRanking(groupId: String): List<GroupMemberRanking> {
-        val currentUser = auth.currentUser ?: return emptyList()
+    suspend fun deleteGroup(groupId: String): Boolean {
         return try {
-            val groupDoc = firestore.collection("groups").document(groupId).get().await()
-            val members = groupDoc.get("members") as? List<String> ?: emptyList()
-                        if (members.isEmpty()) return emptyList()
+            firestore.collection("groups").document(groupId).delete().await()
+            true
+        } catch (e: Exception) {
+            false
+        }
+    }
 
-            val groupCreatedAt = groupDoc.getLong("createdAt") ?: 0L
-
-            val calendar = Calendar.getInstance()
-            calendar.set(Calendar.DAY_OF_MONTH, 1)
-            calendar.set(Calendar.HOUR_OF_DAY, 0)
-            calendar.set(Calendar.MINUTE, 0)
-            calendar.set(Calendar.SECOND, 0)
-            calendar.set(Calendar.MILLISECOND, 0)
-            val startOfMonth = calendar.timeInMillis
-
-            val nextMonthCalendar = Calendar.getInstance()
-            nextMonthCalendar.timeInMillis = startOfMonth
-            nextMonthCalendar.add(Calendar.MONTH, 1)
-            val startOfNextMonth = nextMonthCalendar.timeInMillis
-
-            val weekCalendar = Calendar.getInstance()
-            weekCalendar.set(Calendar.DAY_OF_WEEK, weekCalendar.firstDayOfWeek)
-            weekCalendar.set(Calendar.HOUR_OF_DAY, 0)
-            weekCalendar.set(Calendar.MINUTE, 0)
-            weekCalendar.set(Calendar.SECOND, 0)
-            weekCalendar.set(Calendar.MILLISECOND, 0)
-            val startOfWeek = weekCalendar.timeInMillis
-
-            val nextWeekCalendar = Calendar.getInstance()
-            nextWeekCalendar.timeInMillis = startOfWeek
-            nextWeekCalendar.add(Calendar.WEEK_OF_YEAR, 1)
-            val startOfNextWeek = nextWeekCalendar.timeInMillis
-
-            val rankings = members.map { uid ->
-                val profileDoc = firestore.collection("publicUsers").document(uid).get().await()
-                val alias = profileDoc.getString("displayName") ?: profileDoc.getString("alias") ?: "Usuario AnÃ³nimo"
-
-                val historicalCount: Int
-                val monthlyCount: Int
-                val weeklyCount: Int
-
-                if (beerRepository != null && uid == currentUser.uid) {
-                    val localBeers = beerRepository.allBeers.first()
-                    historicalCount = localBeers.count { it.timestamp >= groupCreatedAt }
-                    monthlyCount = localBeers.count { doc ->
-                        doc.timestamp >= groupCreatedAt && doc.timestamp in startOfMonth until startOfNextMonth
-                    }
-                    weeklyCount = localBeers.count { doc ->
-                        doc.timestamp >= groupCreatedAt && doc.timestamp in startOfWeek until startOfNextWeek
-                    }
-                } else {
-                    val userBeersSnapshot = try {
-                        firestore.collection("beers")
-                            .whereEqualTo("userId", uid)
-                            .get()
-                            .await()
-                    } catch (e: Exception) {
-                        android.util.Log.e("RankingDebug", "Error fetching beers for user $uid", e)
-                        null
-                    }
-
-                    val userBeers = userBeersSnapshot?.documents ?: emptyList()
-                    historicalCount = userBeers.count { (it.getLong("timestamp") ?: 0L) >= groupCreatedAt }
-                    
-                    monthlyCount = userBeers.count { doc ->
-                        val timestamp = doc.getLong("timestamp") ?: 0L
-                        timestamp >= groupCreatedAt && timestamp in startOfMonth until startOfNextMonth
-                    }
-                    weeklyCount = userBeers.count { doc ->
-                        val timestamp = doc.getLong("timestamp") ?: 0L
-                        timestamp >= groupCreatedAt && timestamp in startOfWeek until startOfNextWeek
-                    }
-                }
-
-                GroupMemberRanking(
-                    uid = uid,
-                    alias = alias,
-                    historicalBeers = historicalCount,
-                    monthlyBeers = monthlyCount,
-                    weeklyBeers = weeklyCount
-                )
-            }
+    suspend fun getGroupRanking(groupId: String): List<GroupMemberRanking> {
+        return try {
+            val result = functions.getHttpsCallable("getGroupRanking").call(mapOf("groupId" to groupId)).await()
+            val data = result.data as? Map<String, Any> ?: return emptyList()
+            val rankingsData = data["rankings"] as? List<Map<String, Any>> ?: return emptyList()
             
-            android.util.Log.d("RankingDebug", "resultado final del ranking: $rankings")
-            rankings
+            rankingsData.map { item ->
+                GroupMemberRanking(
+                    uid = item["uid"] as? String ?: "",
+                    alias = item["alias"] as? String ?: "",
+                    historicalBeers = (item["historicalBeers"] as? Number)?.toInt() ?: 0,
+                    monthlyBeers = (item["monthlyBeers"] as? Number)?.toInt() ?: 0,
+                    weeklyBeers = (item["weeklyBeers"] as? Number)?.toInt() ?: 0
+                )
+            }.sortedByDescending { it.historicalBeers }
         } catch (e: Exception) {
             emptyList()
         }
@@ -245,12 +160,11 @@ class GroupsRepository(private val beerRepository: BeerRepository? = null) {
                         .addOnSuccessListener { snapshot ->
                             profiles.addAll(snapshot.documents.mapNotNull { doc ->
                                 try {
-                                    val alias = doc.getString("displayName") ?: doc.getString("alias") ?: "AnÃ³nimo"
+                                    val alias = doc.getString("displayName") ?: doc.getString("alias") ?: "Anónimo"
                                     GroupMemberDetail(
                                         uid = doc.id,
                                         displayName = alias,
                                         username = doc.getString("username"),
-                                        email = doc.getString("email") ?: "",
                                         photoUrl = doc.getString("photoUrl")
                                     )
                                 } catch (e: Exception) {
@@ -288,8 +202,7 @@ class GroupsRepository(private val beerRepository: BeerRepository? = null) {
                         GroupComment(
                             commentId = doc.id,
                             authorUid = doc.getString("authorUid") ?: "",
-                            authorName = doc.getString("authorName") ?: "AnÃ³nimo",
-                            authorEmail = doc.getString("authorEmail") ?: "",
+                            authorName = doc.getString("authorName") ?: "Anónimo",
                             authorUsername = doc.getString("authorUsername"),
                             text = doc.getString("text") ?: "",
                             createdAt = doc.getLong("createdAt") ?: 0L
@@ -311,13 +224,12 @@ class GroupsRepository(private val beerRepository: BeerRepository? = null) {
 
         return try {
             val userProfile = firestore.collection("publicUsers").document(currentUser.uid).get().await()
-            val authorName = userProfile.getString("displayName") ?: userProfile.getString("alias") ?: "AnÃ³nimo"
+            val authorName = userProfile.getString("displayName") ?: userProfile.getString("username") ?: "Anónimo"
             val authorUsername = userProfile.getString("username")
             
             val commentData = hashMapOf(
                 "authorUid" to currentUser.uid,
                 "authorName" to authorName,
-                "authorEmail" to (currentUser.email ?: ""),
                 "authorUsername" to authorUsername,
                 "text" to cleanText,
                 "createdAt" to System.currentTimeMillis()
@@ -330,3 +242,4 @@ class GroupsRepository(private val beerRepository: BeerRepository? = null) {
         }
     }
 }
+

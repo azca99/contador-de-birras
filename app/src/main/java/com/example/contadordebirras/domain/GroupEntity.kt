@@ -20,7 +20,6 @@ data class GroupMemberDetail(
     val uid: String,
     val displayName: String,
     val username: String?,
-    val email: String,
     val photoUrl: String?
 )
 
@@ -28,8 +27,8 @@ data class GroupComment(
     val commentId: String,
     val authorUid: String,
     val authorName: String,
-    val authorEmail: String,
     val authorUsername: String?,
     val text: String,
     val createdAt: Long
 )
+

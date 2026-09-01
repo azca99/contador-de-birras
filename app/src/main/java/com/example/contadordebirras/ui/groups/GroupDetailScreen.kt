@@ -130,9 +130,8 @@ fun GroupDetailScreen(groupId: String, viewModel: GroupDetailViewModel, onBack: 
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(text = member.displayName, style = MaterialTheme.typography.titleMedium)
                                     if (!member.username.isNullOrEmpty()) {
-                                        Text(text = "@${member.username}", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.primary)
+                                        Text(text = "@${member.username}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
                                     }
-                                    Text(text = member.email, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
                             }
                         }

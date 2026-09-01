@@ -56,7 +56,29 @@ fun FriendsScreen(
             } else {
                 LazyColumn(modifier = Modifier.fillMaxSize()) {
                     items(friends) { friend ->
-                        FriendItem(friend, onClick = { onFriendClick(friend.uid, friend.alias.ifEmpty { friend.email }) })
+                        if (friend.status == "PENDING") {
+                            val currentUserUid = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid
+                            if (friend.requester == currentUserUid) {
+                                // I requested
+                                FriendItem(friend, subtitle = "Solicitud enviada...", onClick = {})
+                            } else {
+                                // They requested me
+                                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth().padding(8.dp)) {
+                                    Column(modifier = Modifier.weight(1f)) {
+                                        Text(friend.alias, fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
+                                        Text("Quiere ser tu amigo", style = MaterialTheme.typography.bodySmall)
+                                    }
+                                    IconButton(onClick = { viewModel.acceptFriend(friend.friendshipId) }) {
+                                        Icon(androidx.compose.material.icons.Icons.Rounded.Person, contentDescription = "Aceptar", tint = MaterialTheme.colorScheme.primary)
+                                    }
+                                    IconButton(onClick = { viewModel.rejectFriend(friend.friendshipId) }) {
+                                        Icon(androidx.compose.material.icons.Icons.Filled.Close, contentDescription = "Rechazar", tint = MaterialTheme.colorScheme.error)
+                                    }
+                                }
+                            }
+                        } else {
+                            FriendItem(friend, subtitle = null, onClick = { onFriendClick(friend.uid, friend.alias) })
+                        }
                     }
                 }
             }
@@ -116,7 +138,7 @@ fun FriendsScreen(
 }
 
 @Composable
-fun FriendItem(friend: FriendProfile, onClick: () -> Unit) {
+fun FriendItem(friend: FriendProfile, subtitle: String? = null, onClick: () -> Unit) {
     ElevatedCard(
         modifier = Modifier
             .fillMaxWidth()
@@ -134,14 +156,16 @@ fun FriendItem(friend: FriendProfile, onClick: () -> Unit) {
             Spacer(modifier = Modifier.width(16.dp))
             Column {
                 Text(
-                    text = friend.alias.ifEmpty { "Sin alias" },
+                    text = friend.alias.ifEmpty { "Usuario" },
                     style = MaterialTheme.typography.titleMedium
                 )
-                Text(
-                    text = friend.email,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                if (subtitle != null) {
+                    Text(
+                        text = subtitle,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
         }
     }

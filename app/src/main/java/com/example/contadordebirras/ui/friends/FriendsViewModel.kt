@@ -18,5 +18,13 @@ class FriendsViewModel(private val friendsRepository: FriendsRepository) : ViewM
         }
     }
 
+    fun acceptFriend(friendshipId: String) {
+        viewModelScope.launch { friendsRepository.acceptFriendRequest(friendshipId) }
+    }
+
+    fun rejectFriend(friendshipId: String) {
+        viewModelScope.launch { friendsRepository.rejectFriendRequest(friendshipId) }
+    }
+
     fun getFriendBeers(friendUid: String) = friendsRepository.getFriendBeers(friendUid)
 }

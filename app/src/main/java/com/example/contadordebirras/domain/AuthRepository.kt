@@ -53,17 +53,17 @@ class AuthRepository(private val context: Context) {
                 .set(data, com.google.firebase.firestore.SetOptions.merge())
                 .await()
                 
-            val publicUserRef = firestore.collection("publicUsers").document(user.uid)
+            val userRef = firestore.collection("users").document(user.uid)
             val emailLower = user.email?.lowercase()?.trim()
-            
-            android.util.Log.d("SearchDebug", "Syncing Profile - UID: ${user.uid}")
-            android.util.Log.d("SearchDebug", "Syncing Profile - email: ${user.email}")
-            android.util.Log.d("SearchDebug", "Syncing Profile - emailLowercase: $emailLower")
-            
+            val privateData = hashMapOf<String, Any?>(
+                "email" to user.email,
+                "emailLowercase" to emailLower
+            )
+            userRef.set(privateData, com.google.firebase.firestore.SetOptions.merge()).await()
+
+            val publicUserRef = firestore.collection("publicUsers").document(user.uid)
             val publicData = hashMapOf<String, Any?>(
                 "uid" to user.uid,
-                "email" to user.email,
-                "emailLowercase" to emailLower,
                 "displayName" to alias,
                 "photoUrl" to user.photoUrl?.toString(),
                 "updatedAt" to com.google.firebase.Timestamp.now()
