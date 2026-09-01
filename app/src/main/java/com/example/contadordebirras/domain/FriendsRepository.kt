@@ -66,7 +66,7 @@ class FriendsRepository {
         } catch (e: Exception) { }
     }
 
-    fun getFriends(): Flow<List<FriendProfile>> = callbackFlow {
+        fun getFriends(): Flow<List<FriendProfile>> = callbackFlow {
         val currentUser = auth.currentUser
         if (currentUser == null) {
             trySend(emptyList())
@@ -74,61 +74,81 @@ class FriendsRepository {
             return@callbackFlow
         }
 
-        // Query friendships where current user is user1
-        val listenerReg1 = firestore.collection("friendships")
-            .whereEqualTo("user1", currentUser.uid)
-            .addSnapshotListener { snap1, _ ->
-                val listenerReg2 = firestore.collection("friendships")
-                    .whereEqualTo("user2", currentUser.uid)
-                    .addSnapshotListener { snap2, _ ->
-                        
-                        val allFriendships = mutableMapOf<String, Map<String, Any>>()
-                        
-                        snap1?.documents?.forEach { d ->
-                            if (d.exists()) allFriendships[d.getString("user2") ?: ""] = mapOf("id" to d.id, "status" to (d.getString("status") ?: ""), "requester" to (d.getString("requester") ?: ""))
+        var snap1Docs: List<com.google.firebase.firestore.DocumentSnapshot> = emptyList()
+        var snap2Docs: List<com.google.firebase.firestore.DocumentSnapshot> = emptyList()
+
+        fun updateProfiles() {
+            val allFriendships = mutableMapOf<String, Map<String, Any>>()
+            
+            snap1Docs.forEach { d ->
+                val u2 = d.getString("user2")
+                if (u2 != null) allFriendships[u2] = mapOf("id" to d.id, "status" to (d.getString("status") ?: ""), "requester" to (d.getString("requester") ?: ""))
+            }
+            snap2Docs.forEach { d ->
+                val u1 = d.getString("user1")
+                if (u1 != null) allFriendships[u1] = mapOf("id" to d.id, "status" to (d.getString("status") ?: ""), "requester" to (d.getString("requester") ?: ""))
+            }
+
+            if (allFriendships.isEmpty()) {
+                trySend(emptyList())
+                return
+            }
+
+            val profiles = mutableListOf<FriendProfile>()
+            val uids = allFriendships.keys.toList()
+            val chunks = uids.chunked(10)
+            var completed = 0
+
+            chunks.forEach { chunk ->
+                firestore.collection("publicUsers").whereIn(com.google.firebase.firestore.FieldPath.documentId(), chunk)
+                    .get().addOnSuccessListener { pubSnap ->
+                        pubSnap.documents.forEach { doc ->
+                            val fData = allFriendships[doc.id]
+                            profiles.add(
+                                FriendProfile(
+                                    uid = doc.id,
+                                    alias = doc.getString("displayName") ?: doc.getString("username") ?: "Usuario",
+                                    photoUrl = doc.getString("photoUrl"),
+                                    status = fData?.get("status") as? String ?: "PENDING",
+                                    requester = fData?.get("requester") as? String ?: "",
+                                    friendshipId = fData?.get("id") as? String ?: ""
+                                )
+                            )
                         }
-                        snap2?.documents?.forEach { d ->
-                            if (d.exists()) allFriendships[d.getString("user1") ?: ""] = mapOf("id" to d.id, "status" to (d.getString("status") ?: ""), "requester" to (d.getString("requester") ?: ""))
+                        completed++
+                        if (completed == chunks.size) {
+                            trySend(profiles)
                         }
-
-                        allFriendships.remove("")
-
-                        if (allFriendships.isEmpty()) {
-                            trySend(emptyList())
-                        } else {
-                            val profiles = mutableListOf<FriendProfile>()
-                            val uids = allFriendships.keys.toList()
-                            val chunks = uids.chunked(10)
-                            var completed = 0
-
-                            chunks.forEach { chunk ->
-                                firestore.collection("publicUsers").whereIn(com.google.firebase.firestore.FieldPath.documentId(), chunk)
-                                    .get().addOnSuccessListener { pubSnap ->
-                                        pubSnap.documents.forEach { doc ->
-                                            val fData = allFriendships[doc.id]
-                                            profiles.add(
-                                                FriendProfile(
-                                                    uid = doc.id,
-                                                    alias = doc.getString("displayName") ?: doc.getString("username") ?: "Usuario",
-                                                    photoUrl = doc.getString("photoUrl"),
-                                                    status = fData?.get("status") as? String ?: "PENDING",
-                                                    requester = fData?.get("requester") as? String ?: "",
-                                                    friendshipId = fData?.get("id") as? String ?: ""
-                                                )
-                                            )
-                                        }
-                                        completed++
-                                        if (completed == chunks.size) {
-                                            trySend(profiles)
-                                        }
-                                    }
-                            }
+                    }.addOnFailureListener {
+                        completed++
+                        if (completed == chunks.size) {
+                            trySend(profiles)
                         }
                     }
             }
+        }
+
+        val listenerReg1 = firestore.collection("friendships")
+            .whereEqualTo("user1", currentUser.uid)
+            .addSnapshotListener { snap1, _ ->
+                if (snap1 != null) {
+                    snap1Docs = snap1.documents
+                    updateProfiles()
+                }
+            }
+
+        val listenerReg2 = firestore.collection("friendships")
+            .whereEqualTo("user2", currentUser.uid)
+            .addSnapshotListener { snap2, _ ->
+                if (snap2 != null) {
+                    snap2Docs = snap2.documents
+                    updateProfiles()
+                }
+            }
 
         awaitClose { 
-            // In a real app we should unregister both, but for this quick fix we accept minor leak or use a job
+            listenerReg1.remove()
+            listenerReg2.remove()
         }
     }
 
@@ -167,4 +187,5 @@ class FriendsRepository {
         awaitClose { listenerRegistration.remove() }
     }
 }
+
 

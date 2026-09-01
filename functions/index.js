@@ -109,9 +109,10 @@ exports.getGroupRanking = functions.https.onCall(async (data, context) => {
     return { rankings: rankings };
 });
 
-exports.notifyNewBeer = functions.firestore
-    .document("beers/{beerId}")
-    .onCreate(async (snap, context) => {
+const { onDocumentCreated } = require('firebase-functions/v2/firestore');
+exports.notifyNewBeer = onDocumentCreated('beers/{beerId}', async (event) => {
+const snap = event.data;
+if (!snap) return null;
         const beerData = snap.data();
         const authorUid = beerData.userId;
         if (!authorUid) return null;
@@ -155,4 +156,6 @@ exports.notifyNewBeer = functions.firestore
             return null;
         }
     });
+
+
 

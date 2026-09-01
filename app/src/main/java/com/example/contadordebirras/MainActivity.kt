@@ -19,10 +19,20 @@ import com.example.contadordebirras.theme.ContadorDeBirrasTheme
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import com.google.firebase.FirebaseApp
+import com.google.firebase.appcheck.FirebaseAppCheck
+import com.google.firebase.appcheck.debug.DebugAppCheckProviderFactory
+import com.google.firebase.appcheck.playintegrity.PlayIntegrityAppCheckProviderFactory
 
 class MainActivity : ComponentActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
+
+    FirebaseApp.initializeApp(this)
+    val firebaseAppCheck = FirebaseAppCheck.getInstance()
+    firebaseAppCheck.installAppCheckProviderFactory(
+        if (BuildConfig.DEBUG) DebugAppCheckProviderFactory.getInstance() else PlayIntegrityAppCheckProviderFactory.getInstance()
+    )
     
     Thread.setDefaultUncaughtExceptionHandler { _, e ->
         try {
@@ -58,3 +68,4 @@ class MainActivity : ComponentActivity() {
     }
   }
 }
+

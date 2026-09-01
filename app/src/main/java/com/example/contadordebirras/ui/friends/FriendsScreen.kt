@@ -72,7 +72,7 @@ fun FriendsScreen(
                                         Icon(androidx.compose.material.icons.Icons.Rounded.Person, contentDescription = "Aceptar", tint = MaterialTheme.colorScheme.primary)
                                     }
                                     IconButton(onClick = { viewModel.rejectFriend(friend.friendshipId) }) {
-                                        Icon(androidx.compose.material.icons.Icons.Filled.Close, contentDescription = "Rechazar", tint = MaterialTheme.colorScheme.error)
+                                        Text("X", color = MaterialTheme.colorScheme.error)
                                     }
                                 }
                             }

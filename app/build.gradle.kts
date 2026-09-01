@@ -30,7 +30,7 @@ android {
     buildFeatures {
       compose = true
       aidl = false
-      buildConfig = false
+      buildConfig = true
       shaders = false
     }
 
@@ -104,6 +104,8 @@ dependencies {
   implementation(libs.firebase.firestore)
   implementation(libs.firebase.storage)
   implementation(libs.firebase.functions)
+  implementation(libs.firebase.appcheck.playintegrity)
+  debugImplementation(libs.firebase.appcheck.debug)
   implementation(libs.play.services.auth)
   implementation(libs.work.runtime.ktx)
   implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.7.3")
