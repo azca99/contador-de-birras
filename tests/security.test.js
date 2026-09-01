@@ -85,6 +85,19 @@ describe("BEERS", () => {
 });
 
 describe("FRIENDSHIPS", () => {
+
+  it("A crea PENDING -> B acepta -> status pasa a ACCEPTED", async () => {
+    const dbA = testEnv.authenticatedContext("alice").firestore();
+    await assertSucceeds(dbA.collection("friendships").doc("alice_bob").set({
+      user1: "alice",
+      user2: "bob",
+      requester: "alice",
+      status: "PENDING",
+      friendshipId: "alice_bob"
+    }));
+    const dbB = testEnv.authenticatedContext("bob").firestore();
+    await assertSucceeds(dbB.collection("friendships").doc("alice_bob").update({ status: "ACCEPTED" }));
+  });
   beforeEach(async () => await testEnv.clearFirestore());
 
   it("A puede enviar PENDING a B", async () => {
@@ -476,4 +489,5 @@ describe("COMMENTS", () => {
     await assertFails(db.collection("groups").doc("g1").collection("comments").doc("c1").update({ text: "Hacked" }));
   });
 });
+
 

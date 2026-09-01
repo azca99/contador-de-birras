@@ -42,7 +42,7 @@ class FriendsRepository {
                 "user1" to (if (currentUser.uid < friendUid) currentUser.uid else friendUid),
                 "user2" to (if (currentUser.uid > friendUid) currentUser.uid else friendUid),
                 "status" to "PENDING",
-                "requester" to currentUser.uid
+                "requester" to currentUser.uid, "friendshipId" to friendshipId
             )
 
             firestore.collection("friendships").document(friendshipId).set(friendshipData).await()

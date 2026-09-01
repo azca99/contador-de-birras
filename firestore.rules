@@ -31,13 +31,9 @@ service cloud.firestore {
     match /publicUsers/{userId} {
       allow read: if isSignedIn();
       allow create: if isOwner(userId)
-                    && !('email' in request.resource.data)
-                    && !('emailLowercase' in request.resource.data)
-                    && !('fcmTokens' in request.resource.data);
+                    && request.resource.data.keys().hasOnly(['uid', 'displayName', 'username', 'usernameLowercase', 'photoUrl', 'createdAt', 'updatedAt', 'usernameUpdatedAt']);
       allow update: if isOwner(userId)
-                    && !('email' in request.resource.data.diff(resource.data).affectedKeys())
-                    && !('emailLowercase' in request.resource.data.diff(resource.data).affectedKeys())
-                    && !('fcmTokens' in request.resource.data.diff(resource.data).affectedKeys());
+                    && request.resource.data.keys().hasOnly(['uid', 'displayName', 'username', 'usernameLowercase', 'photoUrl', 'createdAt', 'updatedAt', 'usernameUpdatedAt']);
       allow delete: if isOwner(userId);
     }
 
@@ -155,6 +151,8 @@ service cloud.firestore {
         allow update: if isMemberOfGroup()
                       && resource.data.authorUid == request.auth.uid
                       && request.resource.data.authorUid == resource.data.authorUid
+                      && request.resource.data.authorName == resource.data.authorName
+                      && request.resource.data.authorUsername == resource.data.authorUsername
                       && request.resource.data.createdAt == resource.data.createdAt
                       && request.resource.data.text is string
                       && request.resource.data.text.size() > 0

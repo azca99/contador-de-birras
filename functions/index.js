@@ -1,8 +1,8 @@
-const functions = require("firebase-functions");
+const functions = require("firebase-functions/v1");
 const admin = require("firebase-admin");
 admin.initializeApp();
 
-exports.searchUser = functions.https.onCall(async (data, context) => {
+exports.searchUser = functions.runWith({ enforceAppCheck: true }).https.onCall(async (data, context) => {
     if (!context.auth) {
         throw new functions.https.HttpsError("unauthenticated", "Debe iniciar sesión para buscar.");
     }
@@ -44,7 +44,7 @@ exports.searchUser = functions.https.onCall(async (data, context) => {
     };
 });
 
-exports.getGroupRanking = functions.https.onCall(async (data, context) => {
+exports.getGroupRanking = functions.runWith({ enforceAppCheck: true }).https.onCall(async (data, context) => {
     if (!context.auth) {
         throw new functions.https.HttpsError("unauthenticated", "Debe iniciar sesión.");
     }
