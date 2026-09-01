@@ -14,6 +14,17 @@ import kotlinx.coroutines.launch
 class GroupsViewModel(private val groupsRepository: GroupsRepository) : ViewModel() {
     val groups = groupsRepository.getGroups()
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+        
+    val pendingInvitations = groupsRepository.getPendingInvitations()
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+        
+    fun acceptInvitation(invitation: com.example.contadordebirras.domain.GroupInvitationEntity) {
+        viewModelScope.launch { groupsRepository.acceptInvitation(invitation) }
+    }
+    
+    fun rejectInvitation(invitation: com.example.contadordebirras.domain.GroupInvitationEntity) {
+        viewModelScope.launch { groupsRepository.rejectInvitation(invitation) }
+    }
 
     fun createGroup(name: String, onResult: (Boolean) -> Unit) {
         viewModelScope.launch {
@@ -89,3 +100,4 @@ class GroupDetailViewModel(private val groupsRepository: GroupsRepository) : Vie
         }
     }
 }
+

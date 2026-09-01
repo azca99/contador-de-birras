@@ -71,27 +71,83 @@ class GroupsRepository(private val beerRepository: BeerRepository? = null) {
 
     suspend fun addMemberByEmailOrUsername(groupId: String, searchQuery: String): String? {
         val normalizedSearch = searchQuery.lowercase().trim()
-        val currentUser = auth.currentUser ?: return "Error de autenticación"
-
+        val currentUser = auth.currentUser ?: return "Error de autenticacion"
         return try {
             val result = functions.getHttpsCallable("searchUser").call(mapOf("query" to normalizedSearch)).await()
             val data = result.data as? Map<String, Any> ?: return "Error de servidor"
             val found = data["found"] as? Boolean ?: false
-            
-            if (!found) return "No se encontró ningún usuario con ese email o username."
+            if (!found) return "No se encontro ningun usuario con ese email o username."
             val uid = data["uid"] as String
-
-            firestore.collection("groups").document(groupId)
-                .update("members", FieldValue.arrayUnion(uid))
-                .await()
-
+            
+            val groupDoc = firestore.collection("groups").document(groupId).get().await()
+            val groupName = groupDoc.getString("name") ?: "Grupo"
+            val invitationData = hashMapOf(
+                "groupId" to groupId,
+                "groupName" to groupName,
+                "inviterUid" to currentUser.uid,
+                "inviteeUid" to uid,
+                "status" to "PENDING"
+            )
+            firestore.collection("groupInvitations").document(groupId + "_" + uid).set(invitationData).await()
             null
         } catch (e: Exception) {
-            if (e.message?.contains("PERMISSION_DENIED") == true) {
-                "No tienes permisos (solo el admin puede añadir)."
-            } else {
-                "Error al añadir al miembro."
+            "Error desconocido."
+        }
+    }
+
+    fun getPendingInvitations(): Flow<List<GroupInvitationEntity>> = callbackFlow {
+        val currentUser = auth.currentUser
+        if (currentUser == null) {
+            trySend(emptyList())
+            close()
+            return@callbackFlow
+        }
+        val listenerRegistration = firestore.collection("groupInvitations")
+            .whereEqualTo("inviteeUid", currentUser.uid)
+            .whereEqualTo("status", "PENDING")
+            .addSnapshotListener { snapshot, error ->
+                if (error != null || snapshot == null) {
+                    trySend(emptyList())
+                    return@addSnapshotListener
+                }
+                val invitations = snapshot.documents.mapNotNull { doc ->
+                    try {
+                        GroupInvitationEntity(
+                            invitationId = doc.id,
+                            groupId = doc.getString("groupId") ?: "",
+                            groupName = doc.getString("groupName") ?: "",
+                            inviterUid = doc.getString("inviterUid") ?: "",
+                            inviteeUid = doc.getString("inviteeUid") ?: "",
+                            status = doc.getString("status") ?: ""
+                        )
+                    } catch (e: Exception) { null }
+                }
+                trySend(invitations)
             }
+        awaitClose { listenerRegistration.remove() }
+    }
+
+    suspend fun acceptInvitation(invitation: GroupInvitationEntity) {
+        val currentUser = auth.currentUser ?: return
+        try {
+            firestore.runBatch { batch ->
+                val invRef = firestore.collection("groupInvitations").document(invitation.invitationId)
+                batch.update(invRef, "status", "ACCEPTED")
+                
+                val groupRef = firestore.collection("groups").document(invitation.groupId)
+                batch.update(groupRef, "members", FieldValue.arrayUnion(currentUser.uid))
+            }.await()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    suspend fun rejectInvitation(invitation: GroupInvitationEntity) {
+        try {
+            firestore.collection("groupInvitations").document(invitation.invitationId)
+                .update("status", "REJECTED").await()
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
     }
 
@@ -160,7 +216,7 @@ class GroupsRepository(private val beerRepository: BeerRepository? = null) {
                         .addOnSuccessListener { snapshot ->
                             profiles.addAll(snapshot.documents.mapNotNull { doc ->
                                 try {
-                                    val alias = doc.getString("displayName") ?: doc.getString("alias") ?: "Anónimo"
+                                    val alias = doc.getString("displayName") ?: doc.getString("alias") ?: "Anï¿½nimo"
                                     GroupMemberDetail(
                                         uid = doc.id,
                                         displayName = alias,
@@ -202,7 +258,7 @@ class GroupsRepository(private val beerRepository: BeerRepository? = null) {
                         GroupComment(
                             commentId = doc.id,
                             authorUid = doc.getString("authorUid") ?: "",
-                            authorName = doc.getString("authorName") ?: "Anónimo",
+                            authorName = doc.getString("authorName") ?: "Anï¿½nimo",
                             authorUsername = doc.getString("authorUsername"),
                             text = doc.getString("text") ?: "",
                             createdAt = doc.getLong("createdAt") ?: 0L
@@ -224,7 +280,7 @@ class GroupsRepository(private val beerRepository: BeerRepository? = null) {
 
         return try {
             val userProfile = firestore.collection("publicUsers").document(currentUser.uid).get().await()
-            val authorName = userProfile.getString("displayName") ?: userProfile.getString("username") ?: "Anónimo"
+            val authorName = userProfile.getString("displayName") ?: userProfile.getString("username") ?: "Anï¿½nimo"
             val authorUsername = userProfile.getString("username")
             
             val commentData = hashMapOf(
@@ -242,4 +298,10 @@ class GroupsRepository(private val beerRepository: BeerRepository? = null) {
         }
     }
 }
+
+
+
+data class GroupInvitationEntity(val invitationId: String, val groupId: String, val groupName: String, val inviterUid: String, val inviteeUid: String, val status: String)
+
+
 

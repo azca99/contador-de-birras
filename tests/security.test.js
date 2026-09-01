@@ -249,7 +249,7 @@ describe("USERS", () => {
 describe("PUBLICUSERS", () => {
   beforeEach(async () => await testEnv.clearFirestore());
 
-  it("lectura pública autenticada si procede", async () => {
+  it("lectura pï¿½blica autenticada si procede", async () => {
     await testEnv.withSecurityRulesDisabled(async (context) => {
       await context.firestore().collection("publicUsers").doc("alice").set({ displayName: "Alice" });
     });
@@ -279,7 +279,7 @@ describe("PUBLICUSERS", () => {
 describe("GROUPS", () => {
   beforeEach(async () => await testEnv.clearFirestore());
 
-  it("admin crea grupo válido", async () => {
+  it("admin crea grupo vï¿½lido", async () => {
     const db = testEnv.authenticatedContext("alice").firestore();
     await assertSucceeds(db.collection("groups").doc("g1").set({
       adminUid: "alice",
@@ -289,7 +289,7 @@ describe("GROUPS", () => {
     }));
   });
 
-  it("admin añade", async () => {
+  it("admin aï¿½ade", async () => {
     await testEnv.withSecurityRulesDisabled(async (context) => {
       await context.firestore().collection("groups").doc("g1").set({
         adminUid: "alice", members: ["alice"], name: "Group 1", createdAt: 12345
@@ -332,7 +332,7 @@ describe("GROUPS", () => {
     await assertFails(db.collection("groups").doc("g1").update({ adminUid: "bob" }));
   });
 
-  it("miembro añade tercero falla", async () => {
+  it("miembro aï¿½ade tercero falla", async () => {
     await testEnv.withSecurityRulesDisabled(async (context) => {
       await context.firestore().collection("groups").doc("g1").set({
         adminUid: "alice", members: ["alice", "bob"], name: "Group 1", createdAt: 12345
@@ -372,7 +372,7 @@ describe("GROUPS", () => {
     await assertFails(db.collection("groups").doc("g1").get());
   });
 
-  it("creación con adminUid ajeno falla", async () => {
+  it("creaciï¿½n con adminUid ajeno falla", async () => {
     const db = testEnv.authenticatedContext("bob").firestore();
     await assertFails(db.collection("groups").doc("g1").set({
       adminUid: "alice", members: ["bob"], name: "Group 1", createdAt: 12345
@@ -386,6 +386,7 @@ describe("COMMENTS", () => {
   it("miembro lee", async () => {
     await testEnv.withSecurityRulesDisabled(async (context) => {
       await context.firestore().collection("groups").doc("g1").set({ adminUid: "alice", members: ["alice", "bob"] });
+        await context.firestore().collection("publicUsers").doc("bob").set({ displayName: "Bob", username: "bob", uid: "bob" });
       await context.firestore().collection("groups").doc("g1").collection("comments").doc("c1").set({ text: "Hi", authorUid: "alice" });
     });
     const db = testEnv.authenticatedContext("bob").firestore();
@@ -395,6 +396,7 @@ describe("COMMENTS", () => {
   it("miembro crea propio", async () => {
     await testEnv.withSecurityRulesDisabled(async (context) => {
       await context.firestore().collection("groups").doc("g1").set({ adminUid: "alice", members: ["alice", "bob"] });
+        await context.firestore().collection("publicUsers").doc("bob").set({ displayName: "Bob", username: "bob", uid: "bob" });
     });
     const db = testEnv.authenticatedContext("bob").firestore();
     await assertSucceeds(db.collection("groups").doc("g1").collection("comments").doc("c1").set({
@@ -405,6 +407,7 @@ describe("COMMENTS", () => {
   it("autor edita texto", async () => {
     await testEnv.withSecurityRulesDisabled(async (context) => {
       await context.firestore().collection("groups").doc("g1").set({ adminUid: "alice", members: ["alice", "bob"] });
+        await context.firestore().collection("publicUsers").doc("bob").set({ displayName: "Bob", username: "bob", uid: "bob" });
       await context.firestore().collection("groups").doc("g1").collection("comments").doc("c1").set({
         authorUid: "bob", authorName: "Bob", authorUsername: "bob", text: "Hi", createdAt: 123
       });
@@ -416,6 +419,7 @@ describe("COMMENTS", () => {
   it("autor borra", async () => {
     await testEnv.withSecurityRulesDisabled(async (context) => {
       await context.firestore().collection("groups").doc("g1").set({ adminUid: "alice", members: ["alice", "bob"] });
+        await context.firestore().collection("publicUsers").doc("bob").set({ displayName: "Bob", username: "bob", uid: "bob" });
       await context.firestore().collection("groups").doc("g1").collection("comments").doc("c1").set({
         authorUid: "bob", authorName: "Bob", authorUsername: "bob", text: "Hi", createdAt: 123
       });
@@ -427,6 +431,7 @@ describe("COMMENTS", () => {
   it("admin borra", async () => {
     await testEnv.withSecurityRulesDisabled(async (context) => {
       await context.firestore().collection("groups").doc("g1").set({ adminUid: "alice", members: ["alice", "bob"] });
+        await context.firestore().collection("publicUsers").doc("bob").set({ displayName: "Bob", username: "bob", uid: "bob" });
       await context.firestore().collection("groups").doc("g1").collection("comments").doc("c1").set({
         authorUid: "bob", authorName: "Bob", authorUsername: "bob", text: "Hi", createdAt: 123
       });
@@ -438,6 +443,7 @@ describe("COMMENTS", () => {
   it("externo lee", async () => {
     await testEnv.withSecurityRulesDisabled(async (context) => {
       await context.firestore().collection("groups").doc("g1").set({ adminUid: "alice", members: ["alice", "bob"] });
+        await context.firestore().collection("publicUsers").doc("bob").set({ displayName: "Bob", username: "bob", uid: "bob" });
       await context.firestore().collection("groups").doc("g1").collection("comments").doc("c1").set({
         authorUid: "bob", authorName: "Bob", authorUsername: "bob", text: "Hi", createdAt: 123
       });
@@ -449,6 +455,7 @@ describe("COMMENTS", () => {
   it("spoof authorUid", async () => {
     await testEnv.withSecurityRulesDisabled(async (context) => {
       await context.firestore().collection("groups").doc("g1").set({ adminUid: "alice", members: ["alice", "bob"] });
+        await context.firestore().collection("publicUsers").doc("bob").set({ displayName: "Bob", username: "bob", uid: "bob" });
     });
     const db = testEnv.authenticatedContext("bob").firestore();
     await assertFails(db.collection("groups").doc("g1").collection("comments").doc("c1").set({
@@ -459,6 +466,7 @@ describe("COMMENTS", () => {
   it("cambiar authorUid", async () => {
     await testEnv.withSecurityRulesDisabled(async (context) => {
       await context.firestore().collection("groups").doc("g1").set({ adminUid: "alice", members: ["alice", "bob"] });
+        await context.firestore().collection("publicUsers").doc("bob").set({ displayName: "Bob", username: "bob", uid: "bob" });
       await context.firestore().collection("groups").doc("g1").collection("comments").doc("c1").set({
         authorUid: "bob", authorName: "Bob", authorUsername: "bob", text: "Hi", createdAt: 123
       });
@@ -470,6 +478,7 @@ describe("COMMENTS", () => {
   it("cambiar createdAt", async () => {
     await testEnv.withSecurityRulesDisabled(async (context) => {
       await context.firestore().collection("groups").doc("g1").set({ adminUid: "alice", members: ["alice", "bob"] });
+        await context.firestore().collection("publicUsers").doc("bob").set({ displayName: "Bob", username: "bob", uid: "bob" });
       await context.firestore().collection("groups").doc("g1").collection("comments").doc("c1").set({
         authorUid: "bob", authorName: "Bob", authorUsername: "bob", text: "Hi", createdAt: 123
       });
@@ -481,6 +490,7 @@ describe("COMMENTS", () => {
   it("editar comentario ajeno", async () => {
     await testEnv.withSecurityRulesDisabled(async (context) => {
       await context.firestore().collection("groups").doc("g1").set({ adminUid: "alice", members: ["alice", "bob"] });
+        await context.firestore().collection("publicUsers").doc("bob").set({ displayName: "Bob", username: "bob", uid: "bob" });
       await context.firestore().collection("groups").doc("g1").collection("comments").doc("c1").set({
         authorUid: "alice", authorName: "Alice", authorUsername: "alice", text: "Hi", createdAt: 123
       });
@@ -488,6 +498,115 @@ describe("COMMENTS", () => {
     const db = testEnv.authenticatedContext("bob").firestore();
     await assertFails(db.collection("groups").doc("g1").collection("comments").doc("c1").update({ text: "Hacked" }));
   });
+
+
+  describe("GROUP INVITATIONS", () => {
+    beforeEach(async () => await testEnv.clearFirestore());
+
+    it("admin puede invitar", async () => {
+      await testEnv.withSecurityRulesDisabled(async (context) => {
+        await context.firestore().collection("groups").doc("g1").set({ adminUid: "alice", members: ["alice"], name: "Group 1", createdAt: 123 });
+      });
+      const db = testEnv.authenticatedContext("alice").firestore();
+      await assertSucceeds(db.collection("groupInvitations").doc("g1_bob").set({
+        groupId: "g1", groupName: "Group 1", inviterUid: "alice", inviteeUid: "bob", status: "PENDING"
+      }));
+    });
+
+    it("no admin no puede invitar", async () => {
+      await testEnv.withSecurityRulesDisabled(async (context) => {
+        await context.firestore().collection("groups").doc("g1").set({ adminUid: "alice", members: ["alice"], name: "Group 1", createdAt: 123 });
+      });
+      const db = testEnv.authenticatedContext("bob").firestore();
+      await assertFails(db.collection("groupInvitations").doc("g1_charlie").set({
+        groupId: "g1", groupName: "Group 1", inviterUid: "bob", inviteeUid: "charlie", status: "PENDING"
+      }));
+    });
+
+    it("invitee puede aceptar y actualizar grupo (transaction)", async () => {
+      await testEnv.withSecurityRulesDisabled(async (context) => {
+        await context.firestore().collection("groups").doc("g1").set({ adminUid: "alice", members: ["alice"], name: "Group 1", createdAt: 123 });
+        await context.firestore().collection("groupInvitations").doc("g1_bob").set({
+          groupId: "g1", groupName: "Group 1", inviterUid: "alice", inviteeUid: "bob", status: "PENDING"
+        });
+      });
+      const db = testEnv.authenticatedContext("bob").firestore();
+      
+      const batch = db.batch();
+      batch.update(db.collection("groupInvitations").doc("g1_bob"), { status: "ACCEPTED" });
+      batch.update(db.collection("groups").doc("g1"), { members: ["alice", "bob"] });
+      
+      await assertSucceeds(batch.commit());
+    });
+
+    it("invitee no puede unirse sin PENDING", async () => {
+      await testEnv.withSecurityRulesDisabled(async (context) => {
+        await context.firestore().collection("groups").doc("g1").set({ adminUid: "alice", members: ["alice"], name: "Group 1", createdAt: 123 });
+      });
+      const db = testEnv.authenticatedContext("bob").firestore();
+      
+      const batch = db.batch();
+      // Trying to accept non-existent invitation will fail
+      batch.set(db.collection("groupInvitations").doc("g1_bob"), { status: "ACCEPTED", groupId: "g1", groupName: "Group 1", inviterUid: "alice", inviteeUid: "bob" });
+      batch.update(db.collection("groups").doc("g1"), { members: ["alice", "bob"] });
+      
+      await assertFails(batch.commit());
+    });
+
+    it("charlie no puede autoaceptar invitacion de bob", async () => {
+      await testEnv.withSecurityRulesDisabled(async (context) => {
+        await context.firestore().collection("groups").doc("g1").set({ adminUid: "alice", members: ["alice"], name: "Group 1", createdAt: 123 });
+        await context.firestore().collection("groupInvitations").doc("g1_bob").set({
+          groupId: "g1", groupName: "Group 1", inviterUid: "alice", inviteeUid: "bob", status: "PENDING"
+        });
+      });
+      const db = testEnv.authenticatedContext("charlie").firestore();
+      
+      const batch = db.batch();
+      batch.update(db.collection("groupInvitations").doc("g1_bob"), { status: "ACCEPTED" });
+      
+      await assertFails(batch.commit());
+    });
+  });
+
+  describe("COMMENTS - ANTI SPOOFING", () => {
+    beforeEach(async () => await testEnv.clearFirestore());
+
+    it("Bob puede crear comentario con sus datos legitimos", async () => {
+      await testEnv.withSecurityRulesDisabled(async (context) => {
+        await context.firestore().collection("publicUsers").doc("bob").set({ displayName: "Bob M", username: "bobm", uid: "bob", photoUrl: "", createdAt: 123, updatedAt: 123, usernameUpdatedAt: 123 });
+        await context.firestore().collection("groups").doc("g1").set({ adminUid: "alice", members: ["alice", "bob"], name: "Group 1", createdAt: 123 });
+      });
+      const db = testEnv.authenticatedContext("bob").firestore();
+      await assertSucceeds(db.collection("groups").doc("g1").collection("comments").doc("c1").set({
+        authorUid: "bob", authorName: "Bob M", authorUsername: "bobm", text: "Hello", createdAt: 123
+      }));
+    });
+
+    it("Bob no puede crear comentario con authorName de Alice", async () => {
+      await testEnv.withSecurityRulesDisabled(async (context) => {
+        await context.firestore().collection("publicUsers").doc("bob").set({ displayName: "Bob M", username: "bobm", uid: "bob", photoUrl: "", createdAt: 123, updatedAt: 123, usernameUpdatedAt: 123 });
+        await context.firestore().collection("groups").doc("g1").set({ adminUid: "alice", members: ["alice", "bob"], name: "Group 1", createdAt: 123 });
+      });
+      const db = testEnv.authenticatedContext("bob").firestore();
+      await assertFails(db.collection("groups").doc("g1").collection("comments").doc("c1").set({
+        authorUid: "bob", authorName: "Alice A", authorUsername: "bobm", text: "Hello", createdAt: 123
+      }));
+    });
+
+    it("Bob no puede crear comentario con authorUsername de Alice", async () => {
+      await testEnv.withSecurityRulesDisabled(async (context) => {
+        await context.firestore().collection("publicUsers").doc("bob").set({ displayName: "Bob M", username: "bobm", uid: "bob", photoUrl: "", createdAt: 123, updatedAt: 123, usernameUpdatedAt: 123 });
+        await context.firestore().collection("groups").doc("g1").set({ adminUid: "alice", members: ["alice", "bob"], name: "Group 1", createdAt: 123 });
+      });
+      const db = testEnv.authenticatedContext("bob").firestore();
+      await assertFails(db.collection("groups").doc("g1").collection("comments").doc("c1").set({
+        authorUid: "bob", authorName: "Bob M", authorUsername: "alicea", text: "Hello", createdAt: 123
+      }));
+    });
+  });
 });
+
+
 
 

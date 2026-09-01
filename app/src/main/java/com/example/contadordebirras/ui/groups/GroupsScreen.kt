@@ -20,6 +20,7 @@ import androidx.compose.material.icons.rounded.ArrowBack
 @Composable
 fun GroupsScreen(viewModel: GroupsViewModel, onGroupClick: (String) -> Unit, onFriendsClick: () -> Unit) {
     val groups by viewModel.groups.collectAsState()
+    val pendingInvitations by viewModel.pendingInvitations.collectAsState()
     var showCreateDialog by remember { mutableStateOf(false) }
     var newGroupName by remember { mutableStateOf("") }
     var createErrorMsg by remember { mutableStateOf<String?>(null) }
@@ -43,6 +44,27 @@ fun GroupsScreen(viewModel: GroupsViewModel, onGroupClick: (String) -> Unit, onF
                 Spacer(Modifier.width(8.dp))
                 OutlinedButton(onClick = onFriendsClick, modifier = Modifier.weight(1f), colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.onSurface)) {
                     Text("Amigos")
+                }
+            }
+
+            if (pendingInvitations.isNotEmpty()) {
+                Text("Invitaciones Pendientes", style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(bottom = 8.dp))
+                LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(bottom = 16.dp)) {
+                    items(pendingInvitations) { inv ->
+                        ElevatedCard(modifier = Modifier.fillMaxWidth()) {
+                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(8.dp)) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text("Invitacion a: ${inv.groupName}", fontWeight = androidx.compose.ui.text.font.FontWeight.Bold)
+                                }
+                                IconButton(onClick = { viewModel.acceptInvitation(inv) }) {
+                                    Text("v", color = MaterialTheme.colorScheme.primary)
+                                }
+                                IconButton(onClick = { viewModel.rejectInvitation(inv) }) {
+                                    Text("x", color = MaterialTheme.colorScheme.error)
+                                }
+                            }
+                        }
+                    }
                 }
             }
 
@@ -129,3 +151,4 @@ fun GroupsScreen(viewModel: GroupsViewModel, onGroupClick: (String) -> Unit, onF
         )
     }
 }
+

@@ -31,8 +31,11 @@ service cloud.firestore {
     match /publicUsers/{userId} {
       allow read: if isSignedIn();
       allow create: if isOwner(userId)
+                    && (!('uid' in request.resource.data) || request.resource.data.uid == userId)
                     && request.resource.data.keys().hasOnly(['uid', 'displayName', 'username', 'usernameLowercase', 'photoUrl', 'createdAt', 'updatedAt', 'usernameUpdatedAt']);
       allow update: if isOwner(userId)
+                    && (!('uid' in request.resource.data) || request.resource.data.uid == resource.data.uid)
+                    && (!('createdAt' in request.resource.data) || request.resource.data.createdAt == resource.data.createdAt)
                     && request.resource.data.keys().hasOnly(['uid', 'displayName', 'username', 'usernameLowercase', 'photoUrl', 'createdAt', 'updatedAt', 'usernameUpdatedAt']);
       allow delete: if isOwner(userId);
     }
@@ -84,6 +87,26 @@ service cloud.firestore {
       allow delete: if isBeerOwner();
     }
 
+    // --- GROUP INVITATIONS ---
+    match /groupInvitations/{invitationId} {
+      allow read: if isSignedIn() && (request.auth.uid == resource.data.inviterUid || request.auth.uid == resource.data.inviteeUid);
+      allow create: if isSignedIn()
+                    && request.auth.uid == request.resource.data.inviterUid
+                    && request.resource.data.status == 'PENDING'
+                    && request.resource.data.keys().hasOnly(['groupId', 'groupName', 'inviterUid', 'inviteeUid', 'status'])
+                    && request.auth.uid == get(/databases/$(database)/documents/groups/$(request.resource.data.groupId)).data.adminUid
+                    && invitationId == (request.resource.data.groupId + '_' + request.resource.data.inviteeUid);
+      allow update: if isSignedIn()
+                    && request.auth.uid == resource.data.inviteeUid
+                    && request.resource.data.groupId == resource.data.groupId
+                    && request.resource.data.groupName == resource.data.groupName
+                    && request.resource.data.inviterUid == resource.data.inviterUid
+                    && request.resource.data.inviteeUid == resource.data.inviteeUid
+                    && resource.data.status == 'PENDING'
+                    && (request.resource.data.status == 'ACCEPTED' || request.resource.data.status == 'REJECTED');
+      allow delete: if isSignedIn() && (request.auth.uid == resource.data.inviterUid || request.auth.uid == resource.data.inviteeUid);
+    }
+
     // --- GROUPS ---
     match /groups/{groupId} {
       function isGroupAdmin(data) {
@@ -103,22 +126,36 @@ service cloud.firestore {
                     && request.resource.data.name.size() <= 50
                     && request.resource.data.createdAt is number;
                     
-      allow update: if isGroupMember(resource.data)
-                    && (
+      allow update: if (
+                      // 1. Admin updates group
                       (
                         isGroupAdmin(resource.data) 
                         && request.resource.data.adminUid == resource.data.adminUid
                         && request.resource.data.createdAt == resource.data.createdAt
                       )
                       ||
+                      // 2. Member auto-expels
                       (
-                        !isGroupAdmin(resource.data)
+                        isGroupMember(resource.data)
+                        && !isGroupAdmin(resource.data)
                         && request.resource.data.adminUid == resource.data.adminUid
                         && request.resource.data.createdAt == resource.data.createdAt
                         && request.resource.data.name == resource.data.name
                         && request.resource.data.members.size() == resource.data.members.size() - 1
                         && !(request.auth.uid in request.resource.data.members)
                         && request.resource.data.members.hasAll(resource.data.members.removeAll([request.auth.uid]))
+                      )
+                      ||
+                      // 3. Invitee accepts invitation (joins group)
+                      (
+                        !isGroupMember(resource.data)
+                        && request.resource.data.adminUid == resource.data.adminUid
+                        && request.resource.data.createdAt == resource.data.createdAt
+                        && request.resource.data.name == resource.data.name
+                        && request.resource.data.members.size() == resource.data.members.size() + 1
+                        && (request.auth.uid in request.resource.data.members)
+                        && request.resource.data.members.hasAll(resource.data.members)
+                        && getAfter(/databases/$(database)/documents/groupInvitations/$(groupId + '_' + request.auth.uid)).data.status == 'ACCEPTED'
                       )
                     );
                     
@@ -142,6 +179,8 @@ service cloud.firestore {
         
         allow create: if isMemberOfGroup()
                       && request.resource.data.authorUid == request.auth.uid
+                      && request.resource.data.authorName == get(/databases/$(database)/documents/publicUsers/$(request.auth.uid)).data.displayName
+                      && request.resource.data.authorUsername == get(/databases/$(database)/documents/publicUsers/$(request.auth.uid)).data.username
                       && request.resource.data.text is string
                       && request.resource.data.text.size() > 0
                       && request.resource.data.text.size() <= 300
@@ -164,3 +203,4 @@ service cloud.firestore {
     }
   }
 }
+
