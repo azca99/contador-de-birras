@@ -16,7 +16,7 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AddPhotoAlternate
 import androidx.compose.material.icons.rounded.Close
-import coil.compose.AsyncImage
+import com.example.contadordebirras.ui.components.SecureFirebaseImage
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.draw.clip
@@ -184,7 +184,7 @@ fun MainScreen(viewModel: MainViewModel) {
             Spacer(modifier = Modifier.width(16.dp))
             if (photoUri != null) {
                 Box {
-                    AsyncImage(
+                    SecureFirebaseImage(
                         model = photoUri,
                         contentDescription = "Miniatura",
                         contentScale = ContentScale.Crop,

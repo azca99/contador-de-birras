@@ -7,7 +7,7 @@ service firebase.storage {
         let id2 = userId;
         let friendshipId = id1 < id2 ? (id1 + '_' + id2) : (id2 + '_' + id1);
         let doc = firestore.get(/databases/(default)/documents/friendships/$(friendshipId));
-        return doc != null && doc.status == 'ACCEPTED';
+        return doc != null && doc.data.status == 'ACCEPTED';
       }
       allow read: if request.auth != null && (request.auth.uid == userId || isFriend());
       allow create: if request.auth != null 

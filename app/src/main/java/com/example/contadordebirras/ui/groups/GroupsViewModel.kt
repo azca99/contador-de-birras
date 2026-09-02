@@ -95,6 +95,15 @@ class GroupDetailViewModel(private val groupsRepository: GroupsRepository, priva
     
     val friends = friendsRepository.getFriends().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
+    
+    fun acceptFriendRequest(friendshipId: String) {
+        viewModelScope.launch { friendsRepository.acceptFriendRequest(friendshipId) }
+    }
+    
+    fun rejectFriendRequest(friendshipId: String) {
+        viewModelScope.launch { friendsRepository.rejectFriendRequest(friendshipId) }
+    }
+
     fun addFriendFromGroup(uid: String, onResult: (String?) -> Unit) {
         viewModelScope.launch {
             val res = friendsRepository.addFriendByUid(uid)

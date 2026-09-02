@@ -134,6 +134,31 @@ fun GroupDetailScreen(groupId: String, viewModel: GroupDetailViewModel, onBack: 
                                         Text(text = "@${member.username}", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
                                     }
                                 }
+                                
+                                if (member.uid != currentUserUid) {
+                                    val friendProfile = friends.find { it.uid == member.uid }
+                                    when (friendProfile?.status) {
+                                        "ACCEPTED" -> {
+                                            Text("Amigos", color = MaterialTheme.colorScheme.primary, style = MaterialTheme.typography.labelLarge)
+                                        }
+                                        "PENDING" -> {
+                                            if (friendProfile.requester == currentUserUid) {
+                                                Text("Solicitud enviada", color = MaterialTheme.colorScheme.secondary, style = MaterialTheme.typography.labelMedium)
+                                            } else {
+                                                Row {
+                                                    TextButton(onClick = { viewModel.rejectFriendRequest(friendProfile.friendshipId) }) { Text("Rechazar") }
+                                                    Spacer(modifier = Modifier.width(4.dp))
+                                                    Button(onClick = { viewModel.acceptFriendRequest(friendProfile.friendshipId) }) { Text("Aceptar") }
+                                                }
+                                            }
+                                        }
+                                        else -> {
+                                            OutlinedButton(onClick = { viewModel.addFriendFromGroup(member.uid) {} }) {
+                                                Text("Añadir amigo")
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }

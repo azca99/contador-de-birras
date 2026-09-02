@@ -7,6 +7,7 @@ before(async () => {
   testEnv = await initializeTestEnvironment({
     projectId: "demo-beer-hunter",
     firestore: { host: "127.0.0.1", port: 8888, rules: fs.readFileSync("../firestore.rules", "utf8") },
+    storage: { host: "127.0.0.1", port: 9199, rules: fs.readFileSync("../storage.rules", "utf8") },
   });
 });
 
@@ -299,7 +300,7 @@ describe("GROUPS", () => {
     }));
   });
 
-  it.skip("admin anade", async () => {
+  it("admin NO puede añadir directamente a Bob modificando members", async () => {
     await testEnv.withSecurityRulesDisabled(async (context) => {
       await context.firestore().collection("groups").doc("g1").set({
         adminUid: "alice", members: ["alice"], name: "Group 1", createdAt: 12345
@@ -307,7 +308,7 @@ describe("GROUPS", () => {
     });
     const db = testEnv.authenticatedContext("alice").firestore();
     
-    await assertSucceeds(db.collection("groups").doc("g1").update({
+    await assertFails(db.collection("groups").doc("g1").update({
       members: ["alice", "bob"]
     }));
   });
@@ -700,4 +701,84 @@ describe("SOCIAL BEER PRIVACY AND GROUPS BYPASS", () => {
     }));
   });
 
+});
+
+
+describe("STORAGE RULES", () => {
+  beforeEach(async () => {
+    await testEnv.clearStorage();
+    await testEnv.clearFirestore();
+  });
+
+  it("propietario puede acceder a su foto", async () => {
+    const storage = testEnv.authenticatedContext("alice").storage();
+    const fileRef = storage.ref("users/alice/beers/photo.jpg");
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+        await context.storage().ref("users/alice/beers/photo.jpg").put(new Uint8Array([0x00]), { contentType: "image/jpeg" });
+    });
+    // Check read and write
+    await assertSucceeds(fileRef.getDownloadURL());
+    await assertSucceeds(fileRef.put(new Uint8Array([0x01]), { contentType: "image/jpeg" }));
+  });
+
+  it("amigo ACCEPTED puede acceder a la foto", async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+        await context.storage().ref("users/alice/beers/photo.jpg").put(new Uint8Array([0x00]), { contentType: "image/jpeg" });
+        await context.firestore().collection("friendships").doc("alice_bob").set({
+            user1: "alice", user2: "bob", status: "ACCEPTED", requester: "alice"
+        });
+        await context.firestore().collection("friendships").doc("bob_alice").set({
+            user1: "bob", user2: "alice", status: "ACCEPTED", requester: "alice"
+        });
+    });
+    const storage = testEnv.authenticatedContext("bob").storage();
+    const fileRef = storage.ref("users/alice/beers/photo.jpg");
+    
+    // Can read
+    await new Promise(resolve => setTimeout(resolve, 500)); // wait for cross-service sync
+    await assertSucceeds(fileRef.getDownloadURL());
+    // Cannot write
+    await assertFails(fileRef.put(new Uint8Array([0x01]), { contentType: "image/jpeg" }));
+  });
+
+  it("PENDING no puede acceder a la foto", async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+        await context.storage().ref("users/alice/beers/photo.jpg").put(new Uint8Array([0x00]), { contentType: "image/jpeg" });
+        await context.firestore().collection("friendships").doc("alice_bob").set({
+            user1: "alice", user2: "bob", status: "PENDING", requester: "alice"
+        });
+    });
+    const storage = testEnv.authenticatedContext("bob").storage();
+    const fileRef = storage.ref("users/alice/beers/photo.jpg");
+    await assertFails(fileRef.getDownloadURL());
+  });
+
+  it("usuario unicamente del mismo grupo no puede", async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+        await context.storage().ref("users/alice/beers/photo.jpg").put(new Uint8Array([0x00]), { contentType: "image/jpeg" });
+        await context.firestore().collection("groups").doc("g1").set({ adminUid: "alice", members: ["alice", "bob"] });
+    });
+    const storage = testEnv.authenticatedContext("bob").storage();
+    const fileRef = storage.ref("users/alice/beers/photo.jpg");
+    await assertFails(fileRef.getDownloadURL());
+  });
+
+  it("extrano no puede", async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+        await context.storage().ref("users/alice/beers/photo.jpg").put(new Uint8Array([0x00]), { contentType: "image/jpeg" });
+    });
+    const storage = testEnv.authenticatedContext("charlie").storage();
+    const fileRef = storage.ref("users/alice/beers/photo.jpg");
+    await assertFails(fileRef.getDownloadURL());
+  });
+
+  it("tras eliminar amistad se pierde el acceso", async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+        await context.storage().ref("users/alice/beers/photo.jpg").put(new Uint8Array([0x00]), { contentType: "image/jpeg" });
+        // NO friendship document
+    });
+    const storage = testEnv.authenticatedContext("bob").storage();
+    const fileRef = storage.ref("users/alice/beers/photo.jpg");
+    await assertFails(fileRef.getDownloadURL());
+  });
 });

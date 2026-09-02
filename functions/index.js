@@ -4,17 +4,17 @@ admin.initializeApp();
 
 exports.searchUser = functions.runWith({ enforceAppCheck: true }).https.onCall(async (data, context) => {
     if (!context.auth) {
-        throw new functions.https.HttpsError("unauthenticated", "Debe iniciar sesi髇 para buscar.");
+        throw new functions.https.HttpsError("unauthenticated", "Debe iniciar sesi贸n para buscar.");
     }
     const query = data.query;
     if (!query || typeof query !== "string" || query.length > 50) {
-        throw new functions.https.HttpsError("invalid-argument", "B鷖queda inv醠ida.");
+        throw new functions.https.HttpsError("invalid-argument", "B煤squeda inv谩lida.");
     }
 
     const normalizedSearch = query.toLowerCase().trim();
     const db = admin.firestore();
 
-    // 1. Buscar por email en la colecci髇 PRIVADA (users)
+    // 1. Buscar por email en la colecci贸n PRIVADA (users)
     let usersSnap = await db.collection("users").where("emailLowercase", "==", normalizedSearch).limit(1).get();
     
     let targetUid = null;
@@ -32,7 +32,7 @@ exports.searchUser = functions.runWith({ enforceAppCheck: true }).https.onCall(a
         return { found: false };
     }
 
-    // Retornar solo los datos p鷅licos
+    // Retornar solo los datos p煤blicos
     const publicProfile = await db.collection("publicUsers").doc(targetUid).get();
     if (!publicProfile.exists) return { found: false };
 
@@ -46,7 +46,7 @@ exports.searchUser = functions.runWith({ enforceAppCheck: true }).https.onCall(a
 
 exports.getGroupRanking = functions.runWith({ enforceAppCheck: true }).https.onCall(async (data, context) => {
     if (!context.auth) {
-        throw new functions.https.HttpsError("unauthenticated", "Debe iniciar sesi髇.");
+        throw new functions.https.HttpsError("unauthenticated", "Debe iniciar sesi贸n.");
     }
     const groupId = data.groupId;
     if (!groupId) throw new functions.https.HttpsError("invalid-argument", "Falta groupId.");
@@ -76,7 +76,7 @@ exports.getGroupRanking = functions.runWith({ enforceAppCheck: true }).https.onC
 
     for (const uid of members) {
         const profileSnap = await db.collection("publicUsers").doc(uid).get();
-        const alias = profileSnap.exists ? (profileSnap.data().displayName || profileSnap.data().username || "Usuario") : "Usuario An髇imo";
+        const alias = profileSnap.exists ? (profileSnap.data().displayName || profileSnap.data().username || "Usuario") : "Usuario An贸nimo";
         const photoUrl = profileSnap.exists ? profileSnap.data().photoUrl : null;
 
         // Recuperar cervezas del miembro desde createdAt
@@ -144,7 +144,7 @@ if (!snap) return null;
 
             const payload = {
                 notification: {
-                    title: "ueva Cerveza! ??",
+                    title: "隆Nueva Cerveza! ??",
                     body: `${authorName} acaba de registrar una nueva cerveza.`,
                 }
             };
@@ -165,8 +165,21 @@ exports.syncSharedBeer = onDocumentWritten('beers/{beerId}', async (event) => {
     const beerId = event.params.beerId;
     if (!event.data.after.exists) {
         await db.collection('sharedBeers').doc(beerId).delete();
+        
+        // Also delete the photo if it exists to avoid orphaned files
+        try {
+            const dataBefore = event.data.before.data();
+            if (dataBefore && dataBefore.userId) {
+                const bucket = admin.storage().bucket();
+                const file = bucket.file(`users/${dataBefore.userId}/beers/${beerId}.jpg`);
+                await file.delete();
+            }
+        } catch (e) {
+            // Ignore if file doesn't exist
+        }
         return null;
     }
+    
     const data = event.data.after.data();
     const sharedData = {
         userId: data.userId,
@@ -174,8 +187,11 @@ exports.syncSharedBeer = onDocumentWritten('beers/{beerId}', async (event) => {
         timestamp: data.timestamp
     };
     if (data.comment !== undefined) sharedData.comment = data.comment;
-    if (data.remotePhotoUrl !== undefined) sharedData.remotePhotoUrl = data.remotePhotoUrl;
+    if (data.remotePhotoUrl !== undefined) {
+        sharedData.remotePhotoUrl = data.remotePhotoUrl;
+    }
     if (data.updatedAt !== undefined) sharedData.updatedAt = data.updatedAt;
+    
     await db.collection('sharedBeers').doc(beerId).set(sharedData);
     return null;
 });
