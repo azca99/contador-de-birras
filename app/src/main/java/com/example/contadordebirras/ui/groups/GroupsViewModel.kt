@@ -34,7 +34,7 @@ class GroupsViewModel(private val groupsRepository: GroupsRepository) : ViewMode
     }
 }
 
-class GroupDetailViewModel(private val groupsRepository: GroupsRepository) : ViewModel() {
+class GroupDetailViewModel(private val groupsRepository: GroupsRepository, private val friendsRepository: com.example.contadordebirras.domain.FriendsRepository) : ViewModel() {
     private val _rankings = MutableStateFlow<List<GroupMemberRanking>>(emptyList())
     val rankings: StateFlow<List<GroupMemberRanking>> = _rankings.asStateFlow()
 
@@ -93,6 +93,15 @@ class GroupDetailViewModel(private val groupsRepository: GroupsRepository) : Vie
         }
     }
     
+    val friends = friendsRepository.getFriends().stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    fun addFriendFromGroup(uid: String, onResult: (String?) -> Unit) {
+        viewModelScope.launch {
+            val res = friendsRepository.addFriendByUid(uid)
+            onResult(res)
+        }
+    }
+
     fun sendComment(groupId: String, text: String, onResult: (Boolean) -> Unit) {
         viewModelScope.launch {
             val success = groupsRepository.addComment(groupId, text)
@@ -100,4 +109,3 @@ class GroupDetailViewModel(private val groupsRepository: GroupsRepository) : Vie
         }
     }
 }
-

@@ -30,6 +30,7 @@ fun GroupDetailScreen(groupId: String, viewModel: GroupDetailViewModel, onBack: 
 
     val members by viewModel.members.collectAsState()
     val comments by viewModel.comments.collectAsState()
+    val friends by viewModel.friends.collectAsState()
     
     var selectedMainTab by remember { mutableStateOf(0) } // 0 = Ranking, 1 = Participantes, 2 = Comentarios
     var commentInput by remember { mutableStateOf("") }

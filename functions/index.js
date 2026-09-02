@@ -159,3 +159,23 @@ if (!snap) return null;
 
 
 
+const { onDocumentWritten } = require('firebase-functions/v2/firestore');
+exports.syncSharedBeer = onDocumentWritten('beers/{beerId}', async (event) => {
+    const db = admin.firestore();
+    const beerId = event.params.beerId;
+    if (!event.data.after.exists) {
+        await db.collection('sharedBeers').doc(beerId).delete();
+        return null;
+    }
+    const data = event.data.after.data();
+    const sharedData = {
+        userId: data.userId,
+        type: data.type,
+        timestamp: data.timestamp
+    };
+    if (data.comment !== undefined) sharedData.comment = data.comment;
+    if (data.remotePhotoUrl !== undefined) sharedData.remotePhotoUrl = data.remotePhotoUrl;
+    if (data.updatedAt !== undefined) sharedData.updatedAt = data.updatedAt;
+    await db.collection('sharedBeers').doc(beerId).set(sharedData);
+    return null;
+});

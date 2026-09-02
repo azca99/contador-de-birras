@@ -153,7 +153,7 @@ class FriendsRepository {
     }
 
     fun getFriendBeers(friendUid: String): Flow<List<BeerEntity>> = callbackFlow {
-        val listenerRegistration = firestore.collection("beers")
+        val listenerRegistration = firestore.collection("sharedBeers")
             .whereEqualTo("userId", friendUid)
             .addSnapshotListener { snapshot, error ->
                 if (error != null || snapshot == null) {
@@ -186,6 +186,20 @@ class FriendsRepository {
 
         awaitClose { listenerRegistration.remove() }
     }
+
+    suspend fun addFriendByUid(friendUid: String): String? {
+        val currentUser = auth.currentUser ?: return "Error de autenticacion"
+        if (friendUid == currentUser.uid) { return "No puedes aadirte a ti mismo." }
+        try {
+            val friendshipId = if (currentUser.uid < friendUid) "${currentUser.uid}_${friendUid}" else "${friendUid}_${currentUser.uid}"
+            val friendshipData = hashMapOf(
+                "user1" to (if (currentUser.uid < friendUid) currentUser.uid else friendUid),
+                "user2" to (if (currentUser.uid > friendUid) currentUser.uid else friendUid),
+                "status" to "PENDING",
+                "requester" to currentUser.uid, "friendshipId" to friendshipId
+            )
+            firestore.collection("friendships").document(friendshipId).set(friendshipData).await()
+            return null
+        } catch (e: Exception) { return "Ocurrio error" }
+    }
 }
-
-
