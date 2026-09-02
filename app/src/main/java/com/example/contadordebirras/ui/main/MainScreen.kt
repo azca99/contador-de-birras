@@ -43,6 +43,8 @@ import androidx.core.content.ContextCompat
 import com.google.android.gms.location.LocationServices
 import com.google.android.gms.location.Priority
 import com.google.android.gms.tasks.CancellationTokenSource
+import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -55,8 +57,11 @@ fun MainScreen(viewModel: MainViewModel) {
     val userAlias by viewModel.userAlias.collectAsState()
     val isSavingBeer by viewModel.isSavingBeer.collectAsState()
     var comment by remember { mutableStateOf("") }
+    var photoSource by remember { mutableStateOf<String?>(null) }
+    var pendingSave by remember { mutableStateOf(false) }
     var photoUri by remember { mutableStateOf<String?>(null) }
     var photoSource by remember { mutableStateOf<String?>(null) }
+    var pendingSave by remember { mutableStateOf(false) }
     var showImageDialog by remember { mutableStateOf(false) }
     var tempCameraUri by remember { mutableStateOf<Uri?>(null) }
     val context = LocalContext.current
@@ -82,30 +87,34 @@ fun MainScreen(viewModel: MainViewModel) {
     val requestPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestMultiplePermissions()
     ) { permissions ->
-        if (permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true ||
-            permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true
-        ) {
-            @SuppressLint("MissingPermission")
-            fusedLocationClient.getCurrentLocation(Priority.PRIORITY_BALANCED_POWER_ACCURACY, CancellationTokenSource().token)
-                .addOnCompleteListener { task ->
-                    val location = task.result
-                    if (location != null) {
-                        viewModel.addBeer(selectedType, location.latitude, location.longitude, photoUri, comment)
-                        photoUri = null
-                        comment = ""
+        if (pendingSave) {
+            val granted = permissions[Manifest.permission.ACCESS_FINE_LOCATION] == true || permissions[Manifest.permission.ACCESS_COARSE_LOCATION] == true
+            if (granted) {
+                val locationFetcher: suspend () -> Pair<Double?, Double?> = {
+                    val tokenSource = com.google.android.gms.tasks.CancellationTokenSource()
+                    val loc = kotlinx.coroutines.tasks.await(
+                        fusedLocationClient.getCurrentLocation(
+                            com.google.android.gms.location.Priority.PRIORITY_BALANCED_POWER_ACCURACY, 
+                            tokenSource.token
+                        )
+                    )
+                    if (loc != null) {
+                        Pair(loc.latitude, loc.longitude)
                     } else {
-                        fusedLocationClient.lastLocation.addOnCompleteListener { lastTask ->
-                            val lastLoc = lastTask.result
-                            viewModel.addBeer(selectedType, lastLoc?.latitude, lastLoc?.longitude, photoUri, comment)
-                            photoUri = null
-                            comment = ""
-                        }
+                        val lastLoc = kotlinx.coroutines.tasks.await(fusedLocationClient.lastLocation)
+                        if (lastLoc != null) Pair(lastLoc.latitude, lastLoc.longitude) else Pair(null, null)
                     }
                 }
-        } else {
-            viewModel.addBeer(selectedType, null, null, photoUri, comment)
-            photoUri = null
-            comment = ""
+                viewModel.executeSave(selectedType, photoUri, comment, photoSource, locationFetcher) {
+                    photoUri = null; comment = ""; photoSource = null
+                    pendingSave = false
+                }
+            } else {
+                viewModel.executeSave(selectedType, photoUri, comment, photoSource, null) {
+                    photoUri = null; comment = ""; photoSource = null
+                    pendingSave = false
+                }
+            }
         }
     }
 
@@ -242,29 +251,31 @@ fun MainScreen(viewModel: MainViewModel) {
 
         ElevatedButton(
             onClick = {
-                if (isSavingBeer) return@ElevatedButton
+                if (isSavingBeer || pendingSave) return@ElevatedButton
+                pendingSave = true
                 if (locationEnabled) {
                     val hasFine = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
                     val hasCoarse = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
 
                     if (hasFine || hasCoarse) {
-                        @SuppressLint("MissingPermission")
-                        fusedLocationClient.getCurrentLocation(com.google.android.gms.location.Priority.PRIORITY_HIGH_ACCURACY, null).addOnCompleteListener { task ->
-                            val location = task.result
-                            if (location != null) {
-                                viewModel.addBeer(selectedType, location.latitude, location.longitude, photoUri, comment, photoSource)
-                                photoUri = null
-                                comment = ""
-                                photoSource = null
+                        val locationFetcher: suspend () -> Pair<Double?, Double?> = {
+                            val tokenSource = com.google.android.gms.tasks.CancellationTokenSource()
+                            val loc = kotlinx.coroutines.tasks.await(
+                                fusedLocationClient.getCurrentLocation(
+                                    com.google.android.gms.location.Priority.PRIORITY_BALANCED_POWER_ACCURACY, 
+                                    tokenSource.token
+                                )
+                            )
+                            if (loc != null) {
+                                Pair(loc.latitude, loc.longitude)
                             } else {
-                                fusedLocationClient.lastLocation.addOnCompleteListener { task2 ->
-                                    val lastLoc = task2.result
-                                    viewModel.addBeer(selectedType, lastLoc?.latitude, lastLoc?.longitude, photoUri, comment, photoSource)
-                                    photoUri = null
-                                    comment = ""
-                                    photoSource = null
-                                }
+                                val lastLoc = kotlinx.coroutines.tasks.await(fusedLocationClient.lastLocation)
+                                if (lastLoc != null) Pair(lastLoc.latitude, lastLoc.longitude) else Pair(null, null)
                             }
+                        }
+                        viewModel.executeSave(selectedType, photoUri, comment, photoSource, locationFetcher) {
+                            photoUri = null; comment = ""; photoSource = null
+                            pendingSave = false
                         }
                     } else {
                         requestPermissionLauncher.launch(arrayOf(
@@ -273,10 +284,10 @@ fun MainScreen(viewModel: MainViewModel) {
                         ))
                     }
                 } else {
-                    viewModel.addBeer(selectedType, null, null, photoUri, comment, photoSource)
-                    photoUri = null
-                    comment = ""
-                    photoSource = null
+                    viewModel.executeSave(selectedType, photoUri, comment, photoSource, null) {
+                        photoUri = null; comment = ""; photoSource = null
+                        pendingSave = false
+                    }
                 }
             },
             interactionSource = interactionSource,
