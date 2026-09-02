@@ -7,6 +7,7 @@ before(async () => {
   testEnv = await initializeTestEnvironment({
     projectId: "demo-beer-hunter",
     firestore: { host: "127.0.0.1", port: 8888, rules: fs.readFileSync("../firestore.rules", "utf8") },
+    storage: { host: "127.0.0.1", port: 9199, rules: fs.readFileSync("../storage.rules", "utf8") },
   });
 });
 
@@ -25,9 +26,11 @@ describe("BEERS", () => {
   it("owner read", async () => {
     await testEnv.withSecurityRulesDisabled(async (context) => {
       await context.firestore().collection("beers").doc("b1").set({ userId: "alice" });
+      await context.firestore().collection("sharedBeers").doc("b1").set({ userId: "alice" });
     });
     const db = testEnv.authenticatedContext("alice").firestore();
-    await assertSucceeds(db.collection("beers").doc("b1").get());
+    // It was checking if it could read beers directly, now it should read sharedBeers
+    await assertSucceeds(db.collection("sharedBeers").doc("b1").get());
   });
 
   it("owner update", async () => {
@@ -41,6 +44,7 @@ describe("BEERS", () => {
   it("owner delete", async () => {
     await testEnv.withSecurityRulesDisabled(async (context) => {
       await context.firestore().collection("beers").doc("b1").set({ userId: "alice" });
+      await context.firestore().collection("sharedBeers").doc("b1").set({ userId: "alice" });
     });
     const db = testEnv.authenticatedContext("alice").firestore();
     await assertSucceeds(db.collection("beers").doc("b1").delete());
@@ -49,6 +53,7 @@ describe("BEERS", () => {
   it("stranger read", async () => {
     await testEnv.withSecurityRulesDisabled(async (context) => {
       await context.firestore().collection("beers").doc("b1").set({ userId: "alice" });
+      await context.firestore().collection("sharedBeers").doc("b1").set({ userId: "alice" });
     });
     const db = testEnv.authenticatedContext("charlie").firestore();
     await assertFails(db.collection("beers").doc("b1").get());
@@ -65,6 +70,7 @@ describe("BEERS", () => {
   it("stranger delete", async () => {
     await testEnv.withSecurityRulesDisabled(async (context) => {
       await context.firestore().collection("beers").doc("b1").set({ userId: "alice" });
+      await context.firestore().collection("sharedBeers").doc("b1").set({ userId: "alice" });
     });
     const db = testEnv.authenticatedContext("charlie").firestore();
     await assertFails(db.collection("beers").doc("b1").delete());
@@ -78,6 +84,7 @@ describe("BEERS", () => {
   it("change userId after creation", async () => {
     await testEnv.withSecurityRulesDisabled(async (context) => {
       await context.firestore().collection("beers").doc("b1").set({ userId: "alice" });
+      await context.firestore().collection("sharedBeers").doc("b1").set({ userId: "alice" });
     });
     const db = testEnv.authenticatedContext("alice").firestore();
     await assertFails(db.collection("beers").doc("b1").update({ userId: "bob" }));
@@ -195,17 +202,20 @@ describe("FRIEND BEERS", () => {
   it("amistad ACCEPTED puede leer", async () => {
     await testEnv.withSecurityRulesDisabled(async (context) => {
       await context.firestore().collection("beers").doc("b1").set({ userId: "alice" });
+      await context.firestore().collection("sharedBeers").doc("b1").set({ userId: "alice" });
       await context.firestore().collection("friendships").doc("alice_bob").set({
         user1: "alice", user2: "bob", requester: "alice", status: "ACCEPTED", friendshipId: "alice_bob"
       });
     });
     const db = testEnv.authenticatedContext("bob").firestore();
-    await assertSucceeds(db.collection("beers").doc("b1").get());
+    // It was checking if it could read beers directly, now it should read sharedBeers
+    await assertSucceeds(db.collection("sharedBeers").doc("b1").get());
   });
 
   it("PENDING no puede leer", async () => {
     await testEnv.withSecurityRulesDisabled(async (context) => {
       await context.firestore().collection("beers").doc("b1").set({ userId: "alice" });
+      await context.firestore().collection("sharedBeers").doc("b1").set({ userId: "alice" });
       await context.firestore().collection("friendships").doc("alice_bob").set({
         user1: "alice", user2: "bob", requester: "alice", status: "PENDING", friendshipId: "alice_bob"
       });
@@ -217,6 +227,7 @@ describe("FRIEND BEERS", () => {
   it("desconocido no puede leer", async () => {
     await testEnv.withSecurityRulesDisabled(async (context) => {
       await context.firestore().collection("beers").doc("b1").set({ userId: "alice" });
+      await context.firestore().collection("sharedBeers").doc("b1").set({ userId: "alice" });
     });
     const db = testEnv.authenticatedContext("charlie").firestore();
     await assertFails(db.collection("beers").doc("b1").get());
@@ -289,7 +300,7 @@ describe("GROUPS", () => {
     }));
   });
 
-  it("admin aï¿½ade", async () => {
+  it("admin NO puede añadir directamente a Bob modificando members", async () => {
     await testEnv.withSecurityRulesDisabled(async (context) => {
       await context.firestore().collection("groups").doc("g1").set({
         adminUid: "alice", members: ["alice"], name: "Group 1", createdAt: 12345
@@ -297,7 +308,7 @@ describe("GROUPS", () => {
     });
     const db = testEnv.authenticatedContext("alice").firestore();
     
-    await assertSucceeds(db.collection("groups").doc("g1").update({
+    await assertFails(db.collection("groups").doc("g1").update({
       members: ["alice", "bob"]
     }));
   });
@@ -608,5 +619,166 @@ describe("COMMENTS", () => {
 });
 
 
+describe("SOCIAL BEER PRIVACY AND GROUPS BYPASS", () => {
+  let alice, bob, charlie, unknown, admin;
+  beforeEach(async () => {
+    await testEnv.clearFirestore();
+    alice = testEnv.authenticatedContext("alice").firestore();
+    bob = testEnv.authenticatedContext("bob").firestore();
+    charlie = testEnv.authenticatedContext("charlie").firestore();
+    unknown = testEnv.unauthenticatedContext().firestore();
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      admin = context.firestore();
+      await admin.collection("users").doc("alice").set({ uid: "alice" });
+      await admin.collection("users").doc("bob").set({ uid: "bob" });
+      await admin.collection("users").doc("charlie").set({ uid: "charlie" });
+      await admin.collection("publicUsers").doc("alice").set({ displayName: "Alice" });
+      await admin.collection("publicUsers").doc("bob").set({ displayName: "Bob" });
+      await admin.collection("publicUsers").doc("charlie").set({ displayName: "Charlie" });
+    });
+  });
+
+  it("Alice crea una cerveza privada con ubicacion y Bob (ACCEPTED) NO puede leerla en /beers", async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await context.firestore().collection("beers").doc("beer_alice_1").set({
+        userId: "alice", type: "RUBIA", latitude: 40.0, longitude: -3.0, locationName: "Madrid"
+      });
+      await context.firestore().collection("friendships").doc("alice_bob").set({
+        user1: "alice", user2: "bob", status: "ACCEPTED", requester: "alice", friendshipId: "alice_bob"
+      });
+    });
+    await assertFails(bob.collection("beers").doc("beer_alice_1").get());
+  });
+
+  it("Bob puede leer la version social en /sharedBeers, y NO contiene ubicacion", async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await context.firestore().collection("sharedBeers").doc("beer_alice_1").set({
+        userId: "alice", type: "RUBIA"
+      });
+      await context.firestore().collection("friendships").doc("alice_bob").set({
+        user1: "alice", user2: "bob", status: "ACCEPTED", requester: "alice", friendshipId: "alice_bob"
+      });
+    });
+
+    const doc = await assertSucceeds(bob.collection("sharedBeers").doc("beer_alice_1").get());
+    const data = doc.data() || {};
+    if (data.latitude !== undefined) throw new Error("Has latitude");
+  });
+
+  it("Charlie, que solo comparte grupo con Alice, NO puede consultar cerveza privada ni social", async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await context.firestore().collection("beers").doc("beer_alice_1").set({ userId: "alice", type: "RUBIA" });
+      await context.firestore().collection("sharedBeers").doc("beer_alice_1").set({ userId: "alice", type: "RUBIA" });
+      await context.firestore().collection("groups").doc("g1").set({ adminUid: "alice", members: ["alice", "charlie"] });
+    });
+    await assertFails(charlie.collection("beers").doc("beer_alice_1").get());
+    await assertFails(charlie.collection("sharedBeers").doc("beer_alice_1").get());
+  });
+
+  it("Amistad PENDING no concede acceso a sharedBeers", async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await context.firestore().collection("sharedBeers").doc("beer_alice_1").set({ userId: "alice", type: "RUBIA" });
+      await context.firestore().collection("friendships").doc("alice_bob").set({
+        user1: "alice", user2: "bob", status: "PENDING", requester: "alice", friendshipId: "alice_bob"
+      });
+    });
+    await assertFails(bob.collection("sharedBeers").doc("beer_alice_1").get());
+  });
+
+  it("Usuario desconocido no tiene acceso a sharedBeers", async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await context.firestore().collection("sharedBeers").doc("beer_alice_1").set({ userId: "alice", type: "RUBIA" });
+    });
+    await assertFails(unknown.collection("sharedBeers").doc("beer_alice_1").get());
+  });
+
+  it("Bypass de grupos: admin no puede anadir directamente a un miembro", async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await context.firestore().collection("groups").doc("g1").set({ adminUid: "alice", members: ["alice"], createdAt: 1000 });
+    });
+    await assertFails(alice.collection("groups").doc("g1").update({
+      members: ["alice", "bob"]
+    }));
+  });
+
+});
 
 
+describe("STORAGE RULES", () => {
+  beforeEach(async () => {
+    await testEnv.clearStorage();
+    await testEnv.clearFirestore();
+  });
+
+  it("propietario puede acceder a su foto", async () => {
+    const storage = testEnv.authenticatedContext("alice").storage();
+    const fileRef = storage.ref("users/alice/beers/photo.jpg");
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+        await context.storage().ref("users/alice/beers/photo.jpg").put(new Uint8Array([0x00]), { contentType: "image/jpeg" });
+    });
+    // Check read and write
+    await assertSucceeds(fileRef.getDownloadURL());
+    await assertSucceeds(fileRef.put(new Uint8Array([0x01]), { contentType: "image/jpeg" }));
+  });
+
+  it("amigo ACCEPTED puede acceder a la foto", async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+        await context.storage().ref("users/alice/beers/photo.jpg").put(new Uint8Array([0x00]), { contentType: "image/jpeg" });
+        await context.firestore().collection("friendships").doc("alice_bob").set({
+            user1: "alice", user2: "bob", status: "ACCEPTED", requester: "alice"
+        });
+        await context.firestore().collection("friendships").doc("bob_alice").set({
+            user1: "bob", user2: "alice", status: "ACCEPTED", requester: "alice"
+        });
+    });
+    const storage = testEnv.authenticatedContext("bob").storage();
+    const fileRef = storage.ref("users/alice/beers/photo.jpg");
+    
+    // Can read
+    await new Promise(resolve => setTimeout(resolve, 500)); // wait for cross-service sync
+    await assertSucceeds(fileRef.getDownloadURL());
+    // Cannot write
+    await assertFails(fileRef.put(new Uint8Array([0x01]), { contentType: "image/jpeg" }));
+  });
+
+  it("PENDING no puede acceder a la foto", async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+        await context.storage().ref("users/alice/beers/photo.jpg").put(new Uint8Array([0x00]), { contentType: "image/jpeg" });
+        await context.firestore().collection("friendships").doc("alice_bob").set({
+            user1: "alice", user2: "bob", status: "PENDING", requester: "alice"
+        });
+    });
+    const storage = testEnv.authenticatedContext("bob").storage();
+    const fileRef = storage.ref("users/alice/beers/photo.jpg");
+    await assertFails(fileRef.getDownloadURL());
+  });
+
+  it("usuario unicamente del mismo grupo no puede", async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+        await context.storage().ref("users/alice/beers/photo.jpg").put(new Uint8Array([0x00]), { contentType: "image/jpeg" });
+        await context.firestore().collection("groups").doc("g1").set({ adminUid: "alice", members: ["alice", "bob"] });
+    });
+    const storage = testEnv.authenticatedContext("bob").storage();
+    const fileRef = storage.ref("users/alice/beers/photo.jpg");
+    await assertFails(fileRef.getDownloadURL());
+  });
+
+  it("extrano no puede", async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+        await context.storage().ref("users/alice/beers/photo.jpg").put(new Uint8Array([0x00]), { contentType: "image/jpeg" });
+    });
+    const storage = testEnv.authenticatedContext("charlie").storage();
+    const fileRef = storage.ref("users/alice/beers/photo.jpg");
+    await assertFails(fileRef.getDownloadURL());
+  });
+
+  it("tras eliminar amistad se pierde el acceso", async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+        await context.storage().ref("users/alice/beers/photo.jpg").put(new Uint8Array([0x00]), { contentType: "image/jpeg" });
+        // NO friendship document
+    });
+    const storage = testEnv.authenticatedContext("bob").storage();
+    const fileRef = storage.ref("users/alice/beers/photo.jpg");
+    await assertFails(fileRef.getDownloadURL());
+  });
+});

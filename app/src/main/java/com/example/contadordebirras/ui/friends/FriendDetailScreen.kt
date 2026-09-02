@@ -14,8 +14,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import coil.compose.AsyncImage
-import com.example.contadordebirras.data.BeerEntity
+import com.example.contadordebirras.ui.components.SecureFirebaseImage
+import com.example.contadordebirras.data.SharedBeerEntity
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -69,7 +69,7 @@ fun FriendDetailScreen(
             } else {
                 LazyColumn(modifier = Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     items(beers) { beer ->
-                        FriendBeerCard(beer, dateFormat)
+                    FriendBeerCard(beer, dateFormat)
                     }
                 }
             }
@@ -78,26 +78,22 @@ fun FriendDetailScreen(
 }
 
 @Composable
-fun FriendBeerCard(beer: BeerEntity, dateFormat: SimpleDateFormat) {
+fun FriendBeerCard(beer: SharedBeerEntity, dateFormat: SimpleDateFormat) {
     Card(modifier = Modifier.fillMaxWidth()) {
         Column(modifier = Modifier.padding(16.dp)) {
             Text(text = "Tipo: ${beer.type.displayName}", style = MaterialTheme.typography.titleMedium)
             Text(text = "Fecha: ${dateFormat.format(Date(beer.timestamp))}", style = MaterialTheme.typography.bodySmall)
             
-            if (beer.locationName != null) {
-                Text(text = "📍 ${beer.locationName}", style = MaterialTheme.typography.bodySmall)
-            } else if (beer.latitude != null && beer.longitude != null) {
-                Text(text = "📍 Ubicación registrada", style = MaterialTheme.typography.bodySmall)
-            }
+
             if (!beer.comment.isNullOrBlank()) {
                 Spacer(modifier = Modifier.height(4.dp))
                 Text(text = "💬 ${beer.comment}", style = MaterialTheme.typography.bodyMedium)
             }
 
-            val imageUrl = beer.remotePhotoUrl ?: beer.photoUri
+            val imageUrl = beer.photoStoragePath
             if (imageUrl != null) {
                 Spacer(modifier = Modifier.height(8.dp))
-                AsyncImage(
+                SecureFirebaseImage(
                     model = imageUrl,
                     contentDescription = "Foto de cerveza",
                     modifier = Modifier

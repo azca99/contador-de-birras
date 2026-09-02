@@ -14,7 +14,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
-import coil.compose.AsyncImage
+import com.example.contadordebirras.ui.components.SecureFirebaseImage
 import com.example.contadordebirras.data.BeerEntity
 import com.example.contadordebirras.domain.BeerType
 import com.example.contadordebirras.ui.stats.StatsViewModel
@@ -92,7 +92,7 @@ fun HistoryScreen(viewModel: StatsViewModel, onStatsClick: () -> Unit) {
 
                         if (beer.photoUri != null) {
                             Spacer(modifier = Modifier.height(8.dp))
-                            AsyncImage(
+                            SecureFirebaseImage(
                                 model = beer.photoUri,
                                 contentDescription = "Foto de cerveza",
                                 modifier = Modifier

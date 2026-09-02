@@ -1,6 +1,6 @@
 package com.example.contadordebirras.domain
 
-import com.example.contadordebirras.data.BeerEntity
+import com.example.contadordebirras.data.SharedBeerEntity
 import com.example.contadordebirras.domain.BeerType
 import com.example.contadordebirras.data.FriendProfile
 import com.example.contadordebirras.data.SyncStatus
@@ -18,7 +18,7 @@ class FriendsRepository {
     private val functions = FirebaseFunctions.getInstance()
 
     suspend fun addFriendByEmailOrUsername(searchQuery: String): String? {
-        val currentUser = auth.currentUser ?: return "Error de autenticación"
+        val currentUser = auth.currentUser ?: return "Error de autenticaciÃ³n"
         val normalizedSearch = searchQuery.lowercase().trim()
 
         try {
@@ -27,12 +27,12 @@ class FriendsRepository {
             val found = data["found"] as? Boolean ?: false
 
             if (!found) {
-                return "No se encontró ningún usuario con ese email o username."
+                return "No se encontrÃ³ ningÃºn usuario con ese email o username."
             }
 
             val friendUid = data["uid"] as String
             if (friendUid == currentUser.uid) {
-                return "No puedes añadirte a ti mismo."
+                return "No puedes aÃ±adirte a ti mismo."
             }
 
             // Create friendship request
@@ -49,7 +49,7 @@ class FriendsRepository {
             return null
         } catch (e: Exception) {
             android.util.Log.e("SearchDebug", "Error al buscar amigo", e)
-            return "Ocurrió un error al intentar añadir al amigo. Revisa tu conexión."
+            return "OcurriÃ³ un error al intentar aÃ±adir al amigo. Revisa tu conexiÃ³n."
         }
     }
 
@@ -152,8 +152,8 @@ class FriendsRepository {
         }
     }
 
-    fun getFriendBeers(friendUid: String): Flow<List<BeerEntity>> = callbackFlow {
-        val listenerRegistration = firestore.collection("beers")
+    fun getFriendBeers(friendUid: String): Flow<List<SharedBeerEntity>> = callbackFlow {
+        val listenerRegistration = firestore.collection("sharedBeers")
             .whereEqualTo("userId", friendUid)
             .addSnapshotListener { snapshot, error ->
                 if (error != null || snapshot == null) {
@@ -163,18 +163,13 @@ class FriendsRepository {
 
                 val beers = snapshot.documents.mapNotNull { doc ->
                     try {
-                        BeerEntity(
-                            id = 0,
+                        SharedBeerEntity(
+                            syncId = doc.id,
+                            userId = friendUid,
                             type = BeerType.valueOf(doc.getString("type") ?: "RUBIA"),
                             timestamp = doc.getLong("timestamp") ?: 0L,
-                            latitude = doc.getDouble("latitude"),
-                            longitude = doc.getDouble("longitude"),
-                            photoUri = null,
                             comment = doc.getString("comment"),
-                            locationName = doc.getString("locationName"),
-                            syncId = doc.id,
-                            syncStatus = SyncStatus.SYNCED,
-                            remotePhotoUrl = doc.getString("remotePhotoUrl"),
+                            photoStoragePath = doc.getString("photoStoragePath"),
                             updatedAt = doc.getLong("updatedAt") ?: 0L
                         )
                     } catch (e: Exception) {
@@ -186,6 +181,20 @@ class FriendsRepository {
 
         awaitClose { listenerRegistration.remove() }
     }
+
+    suspend fun addFriendByUid(friendUid: String): String? {
+        val currentUser = auth.currentUser ?: return "Error de autenticaci\u00f3n"
+        if (friendUid == currentUser.uid) { return "No puedes a\u00f1adirte a ti mismo." }
+        try {
+            val friendshipId = if (currentUser.uid < friendUid) "${currentUser.uid}_${friendUid}" else "${friendUid}_${currentUser.uid}"
+            val friendshipData = hashMapOf(
+                "user1" to (if (currentUser.uid < friendUid) currentUser.uid else friendUid),
+                "user2" to (if (currentUser.uid > friendUid) currentUser.uid else friendUid),
+                "status" to "PENDING",
+                "requester" to currentUser.uid, "friendshipId" to friendshipId
+            )
+            firestore.collection("friendships").document(friendshipId).set(friendshipData).await()
+            return null
+        } catch (e: Exception) { return "Ocurri\u00f3 un error" }
+    }
 }
-
-

@@ -47,7 +47,7 @@ class AppViewModelFactory(
         }
         if (modelClass.isAssignableFrom(GroupDetailViewModel::class.java)) {
             @Suppress("UNCHECKED_CAST")
-            return GroupDetailViewModel(groupsRepository) as T
+            return GroupDetailViewModel(groupsRepository, friendsRepository) as T
         }
         if (modelClass.isAssignableFrom(AchievementsViewModel::class.java)) {
             @Suppress("UNCHECKED_CAST")

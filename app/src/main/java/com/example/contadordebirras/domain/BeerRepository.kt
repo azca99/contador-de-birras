@@ -84,7 +84,7 @@ class BeerRepository(private val beerDao: BeerDao, private val context: Context)
                             val storageRef = storage.reference.child("users/${user.uid}/beers/${beer.syncId}.jpg")
                             val uri = android.net.Uri.parse(beer.photoUri)
                             storageRef.putFile(uri).await()
-                            remoteUrl = storageRef.downloadUrl.await().toString()
+                            remoteUrl = "users/${user.uid}/beers/${beer.syncId}.jpg"
                         } catch (e: Exception) {
                             android.util.Log.e("SyncDebug", "Error uploading photo, continuing sync without it", e)
                             photoUploadFailed = true

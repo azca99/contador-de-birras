@@ -77,7 +77,7 @@ service cloud.firestore {
         return isSignedIn() && request.auth.uid == resource.data.userId;
       }
       
-      allow read: if isBeerOwner() || (isSignedIn() && isFriend(request.auth.uid, resource.data.userId));
+      allow read: if isBeerOwner();
       
       allow create: if isSignedIn() && request.auth.uid == request.resource.data.userId;
       
@@ -85,6 +85,17 @@ service cloud.firestore {
                     && request.resource.data.userId == resource.data.userId;
                     
       allow delete: if isBeerOwner();
+    }
+
+    // --- SHARED BEERS ---
+    match /sharedBeers/{beerId} {
+      function isBeerOwner() {
+        return isSignedIn() && request.auth.uid == resource.data.userId;
+      }
+      
+      allow read: if isBeerOwner() || (isSignedIn() && isFriend(request.auth.uid, resource.data.userId));
+      
+      allow write: if false;
     }
 
     // --- GROUP INVITATIONS ---
@@ -95,6 +106,8 @@ service cloud.firestore {
                     && request.resource.data.status == 'PENDING'
                     && request.resource.data.keys().hasOnly(['groupId', 'groupName', 'inviterUid', 'inviteeUid', 'status'])
                     && request.auth.uid == get(/databases/$(database)/documents/groups/$(request.resource.data.groupId)).data.adminUid
+                    && request.resource.data.inviterUid != request.resource.data.inviteeUid
+                    && !(request.resource.data.inviteeUid in get(/databases/$(database)/documents/groups/$(request.resource.data.groupId)).data.members)
                     && invitationId == (request.resource.data.groupId + '_' + request.resource.data.inviteeUid);
       allow update: if isSignedIn()
                     && request.auth.uid == resource.data.inviteeUid
@@ -132,6 +145,7 @@ service cloud.firestore {
                         isGroupAdmin(resource.data) 
                         && request.resource.data.adminUid == resource.data.adminUid
                         && request.resource.data.createdAt == resource.data.createdAt
+                        && resource.data.members.hasAll(request.resource.data.members)
                       )
                       ||
                       // 2. Member auto-expels
@@ -180,7 +194,7 @@ service cloud.firestore {
         allow create: if isMemberOfGroup()
                       && request.resource.data.authorUid == request.auth.uid
                       && request.resource.data.authorName == get(/databases/$(database)/documents/publicUsers/$(request.auth.uid)).data.displayName
-                      && request.resource.data.authorUsername == get(/databases/$(database)/documents/publicUsers/$(request.auth.uid)).data.username
+                      && request.resource.data.authorUsername == get(/databases/$(database)/documents/publicUsers/$(request.auth.uid)).data.get('username', null)
                       && request.resource.data.text is string
                       && request.resource.data.text.size() > 0
                       && request.resource.data.text.size() <= 300
