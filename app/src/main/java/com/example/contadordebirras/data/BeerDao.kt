@@ -37,4 +37,11 @@ interface BeerDao {
 
     @Query("SELECT * FROM beers WHERE syncStatus = 'PENDING' OR syncStatus = 'DELETED'")
     fun getPendingSyncBeers(): List<BeerEntity>
+    @Query("SELECT * FROM beers WHERE syncId = :syncId LIMIT 1")
+    fun getBeerBySyncId(syncId: String): BeerEntity?
+
+    @Query("DELETE FROM beers WHERE syncId = :syncId")
+    fun hardDeleteBySyncId(syncId: String): Int
+    @Query("SELECT syncId FROM beers WHERE syncStatus = 'SYNCED'")
+    fun getAllSyncedIds(): List<String>
 }

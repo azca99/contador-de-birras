@@ -90,10 +90,11 @@ fun HistoryScreen(viewModel: StatsViewModel, onStatsClick: () -> Unit) {
                             }
                         }
 
-                        if (beer.photoUri != null) {
+                        val photoToLoad = beer.photoUri ?: beer.remotePhotoUrl
+                        if (photoToLoad != null) {
                             Spacer(modifier = Modifier.height(8.dp))
                             SecureFirebaseImage(
-                                model = beer.photoUri,
+                                model = photoToLoad,
                                 contentDescription = "Foto de cerveza",
                                 modifier = Modifier
                                     .fillMaxWidth()

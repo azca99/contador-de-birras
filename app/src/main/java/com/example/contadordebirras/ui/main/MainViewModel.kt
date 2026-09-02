@@ -10,6 +10,8 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import com.example.contadordebirras.data.UserRepository
 
+import kotlinx.coroutines.flow.asStateFlow
+
 class MainViewModel(
     private val repository: BeerRepository,
     private val userRepository: UserRepository
@@ -28,9 +30,24 @@ class MainViewModel(
         viewModelScope, SharingStarted.WhileSubscribed(5000), null
     )
 
-    fun addBeer(type: BeerType, lat: Double? = null, lng: Double? = null, photoUri: String? = null, comment: String? = null) {
+    init {
         viewModelScope.launch {
-            repository.addBeer(type = type, timestamp = System.currentTimeMillis(), latitude = lat, longitude = lng, photoUri = photoUri, comment = comment)
+            repository.syncWithCloud()
+        }
+    }
+
+    private val _isSavingBeer = kotlinx.coroutines.flow.MutableStateFlow(false)
+    val isSavingBeer = _isSavingBeer.asStateFlow()
+
+    fun addBeer(type: BeerType, lat: Double? = null, lng: Double? = null, photoUri: String? = null, comment: String? = null, photoSource: String? = null) {
+        if (_isSavingBeer.value) return
+        viewModelScope.launch {
+            _isSavingBeer.value = true
+            try {
+                repository.addBeer(type = type, timestamp = System.currentTimeMillis(), latitude = lat, longitude = lng, photoUri = photoUri, comment = comment, photoSource = photoSource)
+            } finally {
+                _isSavingBeer.value = false
+            }
         }
     }
 

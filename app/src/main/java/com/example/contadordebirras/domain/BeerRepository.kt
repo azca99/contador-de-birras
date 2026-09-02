@@ -23,7 +23,7 @@ class BeerRepository(private val beerDao: BeerDao, private val context: Context)
     
     private val syncMutex = Mutex()
 
-    suspend fun addBeer(type: BeerType, timestamp: Long, latitude: Double? = null, longitude: Double? = null, photoUri: String? = null, comment: String? = null) {
+    suspend fun addBeer(type: BeerType, timestamp: Long, latitude: Double? = null, longitude: Double? = null, photoUri: String? = null, comment: String? = null, photoSource: String? = null) {
         withContext(Dispatchers.IO) {
             var locationName: String? = null
             if (latitude != null && longitude != null) {
@@ -39,7 +39,7 @@ class BeerRepository(private val beerDao: BeerDao, private val context: Context)
             }
             val beer = BeerEntity(
                 type = type, timestamp = timestamp, latitude = latitude, longitude = longitude, 
-                photoUri = photoUri, comment = comment, locationName = locationName,
+                photoUri = photoUri, comment = comment, locationName = locationName, photoSource = photoSource,
                 syncStatus = SyncStatus.PENDING, updatedAt = System.currentTimeMillis()
             )
             beerDao.insertBeer(beer)
@@ -47,12 +47,6 @@ class BeerRepository(private val beerDao: BeerDao, private val context: Context)
         }
     }
 
-    suspend fun deleteLastBeer() {
-        withContext(Dispatchers.IO) {
-            beerDao.deleteLastBeer()
-            syncWithCloud()
-        }
-    }
 
     suspend fun deleteBeer(beer: BeerEntity) {
         withContext(Dispatchers.IO) {
@@ -75,6 +69,7 @@ class BeerRepository(private val beerDao: BeerDao, private val context: Context)
 
         syncMutex.withLock {
             withContext(Dispatchers.IO) {
+                // 1. PUSH local PENDING/DELETED
                 val pendingBeers = beerDao.getPendingSyncBeers()
                 for (beer in pendingBeers) {
                     var remoteUrl = beer.remotePhotoUrl
@@ -86,7 +81,7 @@ class BeerRepository(private val beerDao: BeerDao, private val context: Context)
                             storageRef.putFile(uri).await()
                             remoteUrl = "users/${user.uid}/beers/${beer.syncId}.jpg"
                         } catch (e: Exception) {
-                            android.util.Log.e("SyncDebug", "Error uploading photo, continuing sync without it", e)
+                            android.util.Log.e("SyncDebug", "Error uploading photo", e)
                             photoUploadFailed = true
                         }
                     }
@@ -94,7 +89,7 @@ class BeerRepository(private val beerDao: BeerDao, private val context: Context)
                     if (beer.syncStatus == SyncStatus.DELETED) {
                         try {
                             firestore.collection("beers").document(beer.syncId).delete().await()
-                            beerDao.deleteBeer(beer) // Borrado fsico local
+                            beerDao.hardDeleteBySyncId(beer.syncId) // Borrado fsico local real
                         } catch (e: Exception) {
                             android.util.Log.e("SyncDebug", "Error al borrar en Firestore", e)
                         }
@@ -119,6 +114,60 @@ class BeerRepository(private val beerDao: BeerDao, private val context: Context)
                             android.util.Log.e("SyncDebug", "Error al actualizar en Firestore", e)
                         }
                     }
+                }
+
+                // 2. PULL / RECONCILE from Cloud
+                try {
+                    val snapshot = firestore.collection("beers").whereEqualTo("userId", user.uid).get().await()
+                    val remoteIds = mutableSetOf<String>()
+
+                    for (doc in snapshot.documents) {
+                        val syncId = doc.id
+                        remoteIds.add(syncId)
+
+                        val typeStr = doc.getString("type") ?: "RUBIA"
+                        val type = try { BeerType.valueOf(typeStr) } catch(e: Exception) { BeerType.LATA }
+                        val timestamp = doc.getLong("timestamp") ?: 0L
+                        val lat = doc.getDouble("latitude")
+                        val lng = doc.getDouble("longitude")
+                        val comment = doc.getString("comment")
+                        val locName = doc.getString("locationName")
+                        val remotePhotoUrl = doc.getString("remotePhotoUrl")
+                        val updatedAt = doc.getLong("updatedAt") ?: 0L
+
+                        val localBeer = beerDao.getBeerBySyncId(syncId)
+
+                        if (localBeer == null) {
+                            // Cerveza nueva desde la nube (restauracion)
+                            val newBeer = BeerEntity(
+                                type = type, timestamp = timestamp, latitude = lat, longitude = lng,
+                                comment = comment, locationName = locName, remotePhotoUrl = remotePhotoUrl,
+                                syncId = syncId, syncStatus = SyncStatus.SYNCED, updatedAt = updatedAt
+                            )
+                            beerDao.insertBeer(newBeer)
+                        } else {
+                            // Regla de conflicto: PENDING/DELETED locales ganan o se resuelven en el push.
+                            // Si esta SYNCED y la nube es mas reciente, actualizamos local.
+                            if (localBeer.syncStatus == SyncStatus.SYNCED && updatedAt > localBeer.updatedAt) {
+                                val updatedBeer = localBeer.copy(
+                                    type = type, timestamp = timestamp, latitude = lat, longitude = lng,
+                                    comment = comment, locationName = locName, remotePhotoUrl = remotePhotoUrl,
+                                    updatedAt = updatedAt
+                                )
+                                beerDao.updateBeer(updatedBeer)
+                            }
+                        }
+                    }
+
+                    // 3. RECONCILIACION DE BORRADOS
+                    val localSyncedIds = beerDao.getAllSyncedIds()
+                    val toDelete = localSyncedIds.filter { it !in remoteIds }
+                    for (id in toDelete) {
+                        beerDao.hardDeleteBySyncId(id)
+                    }
+
+                } catch (e: Exception) {
+                    android.util.Log.e("SyncDebug", "Error pulling from Firestore. Skip reconciliation.", e)
                 }
             }
         }

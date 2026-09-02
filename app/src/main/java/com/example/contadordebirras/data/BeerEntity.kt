@@ -6,7 +6,7 @@ import com.example.contadordebirras.domain.BeerType
 
 import java.util.UUID
 
-@Entity(tableName = "beers")
+@Entity(tableName = "beers", indices = [androidx.room.Index(value = ["syncId"], unique = true)])
 data class BeerEntity(
     @PrimaryKey(autoGenerate = true) val id: Int = 0,
     val type: BeerType,

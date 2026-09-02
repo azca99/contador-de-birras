@@ -53,8 +53,10 @@ fun MainScreen(viewModel: MainViewModel) {
     var expanded by remember { mutableStateOf(false) }
     val locationEnabled by viewModel.locationEnabled.collectAsState()
     val userAlias by viewModel.userAlias.collectAsState()
+    val isSavingBeer by viewModel.isSavingBeer.collectAsState()
     var comment by remember { mutableStateOf("") }
     var photoUri by remember { mutableStateOf<String?>(null) }
+    var photoSource by remember { mutableStateOf<String?>(null) }
     var showImageDialog by remember { mutableStateOf(false) }
     var tempCameraUri by remember { mutableStateOf<Uri?>(null) }
     val context = LocalContext.current
@@ -63,6 +65,7 @@ fun MainScreen(viewModel: MainViewModel) {
         if (uri != null) {
             val compressedUri = ImageUtils.compressAndSaveImage(context, uri)
             photoUri = compressedUri?.toString()
+            photoSource = "GALLERY"
         }
     }
 
@@ -70,6 +73,7 @@ fun MainScreen(viewModel: MainViewModel) {
         if (success && tempCameraUri != null) {
             val compressedUri = ImageUtils.compressAndSaveImage(context, tempCameraUri!!)
             photoUri = compressedUri?.toString()
+            photoSource = "CAMERA"
         } else {
             Toast.makeText(context, "No se pudo hacer la foto", Toast.LENGTH_SHORT).show()
         }
@@ -209,7 +213,7 @@ fun MainScreen(viewModel: MainViewModel) {
             AlertDialog(
                 onDismissRequest = { showImageDialog = false },
                 title = { Text("Añadir foto") },
-                text = { Text("Elige una opción para añadir una foto a tu birra. Nota: la sincronización de imágenes con Firebase se hará en una fase posterior.") },
+                text = { Text("Elige una opción para añadir una foto a tu birra. ") },
                 confirmButton = {
                     TextButton(onClick = {
                         showImageDialog = false
@@ -238,17 +242,29 @@ fun MainScreen(viewModel: MainViewModel) {
 
         ElevatedButton(
             onClick = {
+                if (isSavingBeer) return@ElevatedButton
                 if (locationEnabled) {
                     val hasFine = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
                     val hasCoarse = ContextCompat.checkSelfPermission(context, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
 
                     if (hasFine || hasCoarse) {
                         @SuppressLint("MissingPermission")
-                        fusedLocationClient.lastLocation.addOnCompleteListener { task ->
+                        fusedLocationClient.getCurrentLocation(com.google.android.gms.location.Priority.PRIORITY_HIGH_ACCURACY, null).addOnCompleteListener { task ->
                             val location = task.result
-                            viewModel.addBeer(selectedType, location?.latitude, location?.longitude, photoUri, comment)
-                            photoUri = null
-                            comment = ""
+                            if (location != null) {
+                                viewModel.addBeer(selectedType, location.latitude, location.longitude, photoUri, comment, photoSource)
+                                photoUri = null
+                                comment = ""
+                                photoSource = null
+                            } else {
+                                fusedLocationClient.lastLocation.addOnCompleteListener { task2 ->
+                                    val lastLoc = task2.result
+                                    viewModel.addBeer(selectedType, lastLoc?.latitude, lastLoc?.longitude, photoUri, comment, photoSource)
+                                    photoUri = null
+                                    comment = ""
+                                    photoSource = null
+                                }
+                            }
                         }
                     } else {
                         requestPermissionLauncher.launch(arrayOf(
@@ -257,9 +273,10 @@ fun MainScreen(viewModel: MainViewModel) {
                         ))
                     }
                 } else {
-                    viewModel.addBeer(selectedType, null, null, photoUri, comment)
+                    viewModel.addBeer(selectedType, null, null, photoUri, comment, photoSource)
                     photoUri = null
                     comment = ""
+                    photoSource = null
                 }
             },
             interactionSource = interactionSource,

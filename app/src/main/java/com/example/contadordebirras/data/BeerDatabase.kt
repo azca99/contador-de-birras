@@ -7,7 +7,7 @@ import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
-@Database(entities = [BeerEntity::class, com.example.contadordebirras.data.achievements.AchievementEntity::class], version = 5, exportSchema = false)
+@Database(entities = [BeerEntity::class, com.example.contadordebirras.data.achievements.AchievementEntity::class], version = 6, exportSchema = false)
 abstract class BeerDatabase : RoomDatabase() {
     abstract fun beerDao(): BeerDao
     abstract fun achievementDao(): com.example.contadordebirras.data.achievements.AchievementDao
@@ -46,6 +46,12 @@ abstract class BeerDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_beers_syncId` ON `beers` (`syncId`)")
+            }
+        }
+
         fun getDatabase(context: Context): BeerDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -53,7 +59,7 @@ abstract class BeerDatabase : RoomDatabase() {
                     BeerDatabase::class.java,
                     "beer_database"
                 )
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
                 .build()
                 INSTANCE = instance
                 instance
