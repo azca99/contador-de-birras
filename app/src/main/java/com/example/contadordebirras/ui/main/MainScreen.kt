@@ -60,8 +60,6 @@ fun MainScreen(viewModel: MainViewModel) {
     var photoSource by remember { mutableStateOf<String?>(null) }
     var pendingSave by remember { mutableStateOf(false) }
     var photoUri by remember { mutableStateOf<String?>(null) }
-    var photoSource by remember { mutableStateOf<String?>(null) }
-    var pendingSave by remember { mutableStateOf(false) }
     var showImageDialog by remember { mutableStateOf(false) }
     var tempCameraUri by remember { mutableStateOf<Uri?>(null) }
     val context = LocalContext.current
@@ -92,16 +90,14 @@ fun MainScreen(viewModel: MainViewModel) {
             if (granted) {
                 val locationFetcher: suspend () -> Pair<Double?, Double?> = {
                     val tokenSource = com.google.android.gms.tasks.CancellationTokenSource()
-                    val loc = kotlinx.coroutines.tasks.await(
-                        fusedLocationClient.getCurrentLocation(
+                    val loc = fusedLocationClient.getCurrentLocation(
                             com.google.android.gms.location.Priority.PRIORITY_BALANCED_POWER_ACCURACY, 
                             tokenSource.token
-                        )
-                    )
+                        ).await()
                     if (loc != null) {
                         Pair(loc.latitude, loc.longitude)
                     } else {
-                        val lastLoc = kotlinx.coroutines.tasks.await(fusedLocationClient.lastLocation)
+                        val lastLoc = fusedLocationClient.lastLocation.await()
                         if (lastLoc != null) Pair(lastLoc.latitude, lastLoc.longitude) else Pair(null, null)
                     }
                 }
@@ -260,16 +256,14 @@ fun MainScreen(viewModel: MainViewModel) {
                     if (hasFine || hasCoarse) {
                         val locationFetcher: suspend () -> Pair<Double?, Double?> = {
                             val tokenSource = com.google.android.gms.tasks.CancellationTokenSource()
-                            val loc = kotlinx.coroutines.tasks.await(
-                                fusedLocationClient.getCurrentLocation(
+                            val loc = fusedLocationClient.getCurrentLocation(
                                     com.google.android.gms.location.Priority.PRIORITY_BALANCED_POWER_ACCURACY, 
                                     tokenSource.token
-                                )
-                            )
+                                ).await()
                             if (loc != null) {
                                 Pair(loc.latitude, loc.longitude)
                             } else {
-                                val lastLoc = kotlinx.coroutines.tasks.await(fusedLocationClient.lastLocation)
+                                val lastLoc = fusedLocationClient.lastLocation.await()
                                 if (lastLoc != null) Pair(lastLoc.latitude, lastLoc.longitude) else Pair(null, null)
                             }
                         }
