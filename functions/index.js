@@ -144,7 +144,7 @@ if (!snap) return null;
 
             const payload = {
                 notification: {
-                    title: "¡Nueva Cerveza! ??",
+                    title: "¡Nueva Cerveza! 🍺",
                     body: `${authorName} acaba de registrar una nueva cerveza.`,
                 }
             };
@@ -160,6 +160,7 @@ if (!snap) return null;
 
 
 const { onDocumentWritten } = require('firebase-functions/v2/firestore');
+const { sanitizeBeerForSocial } = require('./sanitizer');
 exports.syncSharedBeer = onDocumentWritten('beers/{beerId}', async (event) => {
     const db = admin.firestore();
     const beerId = event.params.beerId;
@@ -181,16 +182,7 @@ exports.syncSharedBeer = onDocumentWritten('beers/{beerId}', async (event) => {
     }
     
     const data = event.data.after.data();
-    const sharedData = {
-        userId: data.userId,
-        type: data.type,
-        timestamp: data.timestamp
-    };
-    if (data.comment !== undefined) sharedData.comment = data.comment;
-    if (data.remotePhotoUrl !== undefined) {
-        sharedData.remotePhotoUrl = data.remotePhotoUrl;
-    }
-    if (data.updatedAt !== undefined) sharedData.updatedAt = data.updatedAt;
+    const sharedData = sanitizeBeerForSocial(data, beerId);
     
     await db.collection('sharedBeers').doc(beerId).set(sharedData);
     return null;

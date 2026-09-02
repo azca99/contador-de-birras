@@ -90,7 +90,7 @@ fun FriendBeerCard(beer: SharedBeerEntity, dateFormat: SimpleDateFormat) {
                 Text(text = "💬 ${beer.comment}", style = MaterialTheme.typography.bodyMedium)
             }
 
-            val imageUrl = beer.remotePhotoUrl
+            val imageUrl = beer.photoStoragePath
             if (imageUrl != null) {
                 Spacer(modifier = Modifier.height(8.dp))
                 SecureFirebaseImage(

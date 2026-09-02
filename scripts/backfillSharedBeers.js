@@ -27,21 +27,8 @@ async function migrate() {
         const data = doc.data();
         
         // Exact same sanitization logic as syncSharedBeer
-        const sharedData = {
-            userId: data.userId,
-            type: data.type,
-            timestamp: data.timestamp
-        };
-        if (data.comment !== undefined) sharedData.comment = data.comment;
-        if (data.remotePhotoUrl !== undefined) {
-            // Check if it's a legacy token URL and replace with the path if possible
-            if (data.remotePhotoUrl.startsWith("http")) {
-                sharedData.remotePhotoUrl = `users/${data.userId}/beers/${doc.id}.jpg`;
-            } else {
-                sharedData.remotePhotoUrl = data.remotePhotoUrl;
-            }
-        }
-        if (data.updatedAt !== undefined) sharedData.updatedAt = data.updatedAt;
+        const { sanitizeBeerForSocial } = require('../functions/sanitizer');
+        const sharedData = sanitizeBeerForSocial(data, doc.id);
         
         const sharedRef = db.collection("sharedBeers").doc(doc.id);
         currentBatch.set(sharedRef, sharedData);

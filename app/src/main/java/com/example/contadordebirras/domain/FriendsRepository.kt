@@ -169,7 +169,7 @@ class FriendsRepository {
                             type = BeerType.valueOf(doc.getString("type") ?: "RUBIA"),
                             timestamp = doc.getLong("timestamp") ?: 0L,
                             comment = doc.getString("comment"),
-                            remotePhotoUrl = doc.getString("remotePhotoUrl"),
+                            photoStoragePath = doc.getString("photoStoragePath"),
                             updatedAt = doc.getLong("updatedAt") ?: 0L
                         )
                     } catch (e: Exception) {

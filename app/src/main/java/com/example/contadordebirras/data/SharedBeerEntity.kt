@@ -8,6 +8,6 @@ data class SharedBeerEntity(
     val type: BeerType,
     val timestamp: Long,
     val comment: String?,
-    val remotePhotoUrl: String?,
+    val photoStoragePath: String?,
     val updatedAt: Long
 )
