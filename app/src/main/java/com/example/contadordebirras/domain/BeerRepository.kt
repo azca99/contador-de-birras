@@ -103,6 +103,7 @@ class BeerRepository(private val beerDao: BeerDao, private val context: Context)
                             "comment" to beer.comment,
                             "locationName" to beer.locationName,
                             "remotePhotoUrl" to remoteUrl,
+                            "photoSource" to beer.photoSource,
                             "updatedAt" to beer.updatedAt
                         )
                         try {
@@ -133,35 +134,32 @@ class BeerRepository(private val beerDao: BeerDao, private val context: Context)
                         val comment = doc.getString("comment")
                         val locName = doc.getString("locationName")
                         val remotePhotoUrl = doc.getString("remotePhotoUrl")
+                        val photoSource = doc.getString("photoSource")
                         val updatedAt = doc.getLong("updatedAt") ?: 0L
 
                         val localBeer = beerDao.getBeerBySyncId(syncId)
+                        val decision = SyncResolver.resolvePullConflict(localBeer, updatedAt)
 
-                        if (localBeer == null) {
-                            // Cerveza nueva desde la nube (restauracion)
+                        if (decision == SyncResolver.SyncDecision.INSERT_LOCAL) {
                             val newBeer = BeerEntity(
                                 type = type, timestamp = timestamp, latitude = lat, longitude = lng,
                                 comment = comment, locationName = locName, remotePhotoUrl = remotePhotoUrl,
-                                syncId = syncId, syncStatus = SyncStatus.SYNCED, updatedAt = updatedAt
+                                photoSource = photoSource, syncId = syncId, syncStatus = SyncStatus.SYNCED, updatedAt = updatedAt
                             )
                             beerDao.insertBeer(newBeer)
-                        } else {
-                            // Regla de conflicto: PENDING/DELETED locales ganan o se resuelven en el push.
-                            // Si esta SYNCED y la nube es mas reciente, actualizamos local.
-                            if (localBeer.syncStatus == SyncStatus.SYNCED && updatedAt > localBeer.updatedAt) {
-                                val updatedBeer = localBeer.copy(
-                                    type = type, timestamp = timestamp, latitude = lat, longitude = lng,
-                                    comment = comment, locationName = locName, remotePhotoUrl = remotePhotoUrl,
-                                    updatedAt = updatedAt
-                                )
-                                beerDao.updateBeer(updatedBeer)
-                            }
+                        } else if (decision == SyncResolver.SyncDecision.UPDATE_LOCAL) {
+                            val updatedBeer = localBeer!!.copy(
+                                type = type, timestamp = timestamp, latitude = lat, longitude = lng,
+                                comment = comment, locationName = locName, remotePhotoUrl = remotePhotoUrl,
+                                photoSource = photoSource, updatedAt = updatedAt
+                            )
+                            beerDao.updateBeer(updatedBeer)
                         }
                     }
 
                     // 3. RECONCILIACION DE BORRADOS
                     val localSyncedIds = beerDao.getAllSyncedIds()
-                    val toDelete = localSyncedIds.filter { it !in remoteIds }
+                    val toDelete = SyncResolver.resolveDeletions(localSyncedIds, remoteIds)
                     for (id in toDelete) {
                         beerDao.hardDeleteBySyncId(id)
                     }

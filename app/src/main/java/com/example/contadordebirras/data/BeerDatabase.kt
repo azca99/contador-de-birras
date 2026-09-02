@@ -48,6 +48,7 @@ abstract class BeerDatabase : RoomDatabase() {
 
         val MIGRATION_5_6 = object : Migration(5, 6) {
             override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("DELETE FROM beers WHERE id NOT IN (SELECT MIN(id) FROM beers GROUP BY syncId)")
                 db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_beers_syncId` ON `beers` (`syncId`)")
             }
         }

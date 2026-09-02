@@ -12,10 +12,14 @@ import com.example.contadordebirras.data.UserRepository
 
 import kotlinx.coroutines.flow.asStateFlow
 
+import com.example.contadordebirras.domain.SaveCoordinator
+
 class MainViewModel(
     private val repository: BeerRepository,
     private val userRepository: UserRepository
 ) : ViewModel() {
+    private val saveCoordinator = SaveCoordinator()
+    val isSavingBeer = saveCoordinator.isSaving
     val locationEnabled = userRepository.isLocationEnabled
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), false)
 
@@ -36,18 +40,36 @@ class MainViewModel(
         }
     }
 
-    private val _isSavingBeer = kotlinx.coroutines.flow.MutableStateFlow(false)
-    val isSavingBeer = _isSavingBeer.asStateFlow()
 
-    fun addBeer(type: BeerType, lat: Double? = null, lng: Double? = null, photoUri: String? = null, comment: String? = null, photoSource: String? = null) {
-        if (_isSavingBeer.value) return
+
+    fun executeSave(
+        type: BeerType, 
+        photoUri: String?, 
+        comment: String?, 
+        photoSource: String?, 
+        locationFetcher: (suspend () -> Pair<Double?, Double?>)?,
+        onComplete: () -> Unit
+    ) {
         viewModelScope.launch {
-            _isSavingBeer.value = true
-            try {
-                repository.addBeer(type = type, timestamp = System.currentTimeMillis(), latitude = lat, longitude = lng, photoUri = photoUri, comment = comment, photoSource = photoSource)
-            } finally {
-                _isSavingBeer.value = false
-            }
+            saveCoordinator.executeSave(
+                saveAction = {
+                    var lat: Double? = null
+                    var lng: Double? = null
+                    
+                    if (locationFetcher != null) {
+                        try {
+                            val loc = locationFetcher()
+                            lat = loc.first
+                            lng = loc.second
+                        } catch (e: Exception) {
+                            // ignore
+                        }
+                    }
+                    
+                    repository.addBeer(type = type, timestamp = System.currentTimeMillis(), latitude = lat, longitude = lng, photoUri = photoUri, comment = comment, photoSource = photoSource)
+                },
+                onComplete = onComplete
+            )
         }
     }
 
