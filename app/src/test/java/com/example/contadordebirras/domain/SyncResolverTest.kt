@@ -8,7 +8,7 @@ import java.util.UUID
 
 class SyncResolverTest {
 
-    private fun mockEntity(status: SyncStatus, updated: Long): BeerEntity {
+    private fun mockEntity(status: String, updated: Long): BeerEntity {
         return BeerEntity(
             id = 1,
             type = BeerType.LATA,
