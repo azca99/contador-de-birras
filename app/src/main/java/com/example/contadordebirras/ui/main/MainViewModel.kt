@@ -48,10 +48,10 @@ class MainViewModel(
         comment: String?, 
         photoSource: String?, 
         locationFetcher: (suspend () -> Pair<Double?, Double?>)?,
-        onComplete: () -> Unit
+        onFinished: (Boolean) -> Unit
     ) {
         viewModelScope.launch {
-            saveCoordinator.executeSave(
+            val success = saveCoordinator.executeSave(
                 saveAction = {
                     var lat: Double? = null
                     var lng: Double? = null
@@ -67,9 +67,9 @@ class MainViewModel(
                     }
                     
                     repository.addBeer(type = type, timestamp = System.currentTimeMillis(), latitude = lat, longitude = lng, photoUri = photoUri, comment = comment, photoSource = photoSource)
-                },
-                onComplete = onComplete
+                }
             )
+            onFinished(success)
         }
     }
 

@@ -8,14 +8,15 @@ class SaveCoordinator {
     val isSaving = _isSaving.asStateFlow()
 
     suspend fun executeSave(
-        saveAction: suspend () -> Unit,
-        onComplete: () -> Unit
-    ) {
-        if (_isSaving.value) return
+        saveAction: suspend () -> Unit
+    ): Boolean {
+        if (_isSaving.value) return false
         _isSaving.value = true
-        try {
+        return try {
             saveAction()
-            onComplete()
+            true
+        } catch (e: Exception) {
+            false
         } finally {
             _isSaving.value = false
         }

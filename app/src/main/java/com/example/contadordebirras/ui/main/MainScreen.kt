@@ -101,13 +101,17 @@ fun MainScreen(viewModel: MainViewModel) {
                         if (lastLoc != null) Pair(lastLoc.latitude, lastLoc.longitude) else Pair(null, null)
                     }
                 }
-                viewModel.executeSave(selectedType, photoUri, comment, photoSource, locationFetcher) {
-                    photoUri = null; comment = ""; photoSource = null
+                viewModel.executeSave(selectedType, photoUri, comment, photoSource, locationFetcher) { success ->
+                    if (success) {
+                        photoUri = null; comment = ""; photoSource = null
+                    }
                     pendingSave = false
                 }
             } else {
-                viewModel.executeSave(selectedType, photoUri, comment, photoSource, null) {
-                    photoUri = null; comment = ""; photoSource = null
+                viewModel.executeSave(selectedType, photoUri, comment, photoSource, null) { success ->
+                    if (success) {
+                        photoUri = null; comment = ""; photoSource = null
+                    }
                     pendingSave = false
                 }
             }
@@ -267,8 +271,10 @@ fun MainScreen(viewModel: MainViewModel) {
                                 if (lastLoc != null) Pair(lastLoc.latitude, lastLoc.longitude) else Pair(null, null)
                             }
                         }
-                        viewModel.executeSave(selectedType, photoUri, comment, photoSource, locationFetcher) {
-                            photoUri = null; comment = ""; photoSource = null
+                        viewModel.executeSave(selectedType, photoUri, comment, photoSource, locationFetcher) { success ->
+                            if (success) {
+                                photoUri = null; comment = ""; photoSource = null
+                            }
                             pendingSave = false
                         }
                     } else {
@@ -278,8 +284,10 @@ fun MainScreen(viewModel: MainViewModel) {
                         ))
                     }
                 } else {
-                    viewModel.executeSave(selectedType, photoUri, comment, photoSource, null) {
-                        photoUri = null; comment = ""; photoSource = null
+                    viewModel.executeSave(selectedType, photoUri, comment, photoSource, null) { success ->
+                        if (success) {
+                            photoUri = null; comment = ""; photoSource = null
+                        }
                         pendingSave = false
                     }
                 }

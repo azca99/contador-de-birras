@@ -20,19 +20,21 @@ class SaveCoordinatorTest {
         var executionCount = 0
         
         val job1 = launch {
-            coordinator.executeSave(saveAction = {
+            val success = coordinator.executeSave(saveAction = {
                 delay(1000)
                 executionCount++
-            }, onComplete = {})
+            })
+            assertTrue(success)
         }
         
         advanceTimeBy(100)
         assertTrue(coordinator.isSaving.value)
         
         val job2 = launch {
-            coordinator.executeSave(saveAction = {
+            val success2 = coordinator.executeSave(saveAction = {
                 executionCount++
-            }, onComplete = {})
+            })
+            assertFalse(success2) // Was blocked
         }
         
         advanceUntilIdle()
@@ -46,21 +48,28 @@ class SaveCoordinatorTest {
         val coordinator = SaveCoordinator()
         var executionCount = 0
         
-        coordinator.executeSave(saveAction = { executionCount++ }, onComplete = {})
+        val r1 = coordinator.executeSave(saveAction = { executionCount++ })
+        assertTrue(r1)
         assertFalse(coordinator.isSaving.value)
         
-        coordinator.executeSave(saveAction = { executionCount++ }, onComplete = {})
+        val r2 = coordinator.executeSave(saveAction = { executionCount++ })
+        assertTrue(r2)
         assertEquals(2, executionCount)
     }
 
     @Test
-    fun `Releases lock on exception`() = runTest {
+    fun `Releases lock on exception and reports failure`() = runTest {
         val coordinator = SaveCoordinator()
         
-        try {
-            coordinator.executeSave(saveAction = { throw RuntimeException("Error") }, onComplete = {})
-        } catch (e: Exception) {}
+        val result = coordinator.executeSave(saveAction = { throw RuntimeException("Error") })
         
+        assertFalse(result)
         assertFalse(coordinator.isSaving.value)
+        
+        // Permite reintentar
+        var executionCount = 0
+        val r2 = coordinator.executeSave(saveAction = { executionCount++ })
+        assertTrue(r2)
+        assertEquals(1, executionCount)
     }
 }
