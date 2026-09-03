@@ -2,6 +2,7 @@ package com.example.contadordebirras.domain
 
 import com.example.contadordebirras.data.BeerEntity
 import com.example.contadordebirras.data.SyncStatus
+import com.example.contadordebirras.domain.BeerType
 import org.junit.Assert.assertEquals
 import org.junit.Test
 import java.util.UUID
@@ -66,5 +67,14 @@ class SyncResolverTest {
         val remoteIds = setOf("id1", "id3")
         val toDelete = SyncResolver.resolveDeletions(localSyncedIds, remoteIds)
         assertEquals(listOf("id2"), toDelete)
+    }
+
+    @Test
+    fun `parseRemoteBeerType retorna null para tipo invalido o faltante`() {
+        assertEquals(BeerType.LATA, SyncResolver.parseRemoteBeerType("LATA"))
+        assertEquals(BeerType.JARRA, SyncResolver.parseRemoteBeerType("JARRA"))
+        assertEquals(null, SyncResolver.parseRemoteBeerType("TIPO_INVENTADO_123"))
+        assertEquals(null, SyncResolver.parseRemoteBeerType(null))
+        assertEquals(null, SyncResolver.parseRemoteBeerType(""))
     }
 }

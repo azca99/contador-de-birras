@@ -126,8 +126,12 @@ class BeerRepository(private val beerDao: BeerDao, private val context: Context)
                         val syncId = doc.id
                         remoteIds.add(syncId)
 
-                        val typeStr = doc.getString("type") ?: "RUBIA"
-                        val type = try { BeerType.valueOf(typeStr) } catch(e: Exception) { BeerType.LATA }
+                        val typeStr = doc.getString("type")
+                        val type = SyncResolver.parseRemoteBeerType(typeStr)
+                        if (type == null) {
+                            android.util.Log.w("BeerRepository", "Skipping remote beer document due to invalid or missing type.")
+                            continue
+                        }
                         val timestamp = doc.getLong("timestamp") ?: 0L
                         val lat = doc.getDouble("latitude")
                         val lng = doc.getDouble("longitude")

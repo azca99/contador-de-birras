@@ -26,4 +26,13 @@ object SyncResolver {
     fun resolveDeletions(localSyncedIds: List<String>, remoteIds: Set<String>): List<String> {
         return localSyncedIds.filter { it !in remoteIds }
     }
+
+    fun parseRemoteBeerType(typeStr: String?): BeerType? {
+        if (typeStr == null) return null
+        return try {
+            BeerType.valueOf(typeStr)
+        } catch (e: Exception) {
+            null
+        }
+    }
 }
