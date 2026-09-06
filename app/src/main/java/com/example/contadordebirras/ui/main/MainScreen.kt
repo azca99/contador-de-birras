@@ -206,7 +206,10 @@ fun MainScreen(viewModel: MainViewModel) {
                             .clip(RoundedCornerShape(8.dp))
                     )
                     IconButton(
-                        onClick = { photoUri = null },
+                        onClick = { 
+                            photoUri = null
+                            photoSource = null
+                        },
                         modifier = Modifier
                             .align(Alignment.TopEnd)
                             .size(24.dp)

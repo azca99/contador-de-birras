@@ -8,6 +8,7 @@ import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.CancellationException
 import com.example.contadordebirras.data.UserRepository
 
 import kotlinx.coroutines.flow.asStateFlow
@@ -61,6 +62,8 @@ class MainViewModel(
                             val loc = locationFetcher()
                             lat = loc.first
                             lng = loc.second
+                        } catch (e: CancellationException) {
+                            throw e
                         } catch (e: Exception) {
                             // ignore
                         }

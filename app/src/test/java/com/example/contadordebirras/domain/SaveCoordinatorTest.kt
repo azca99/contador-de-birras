@@ -6,6 +6,7 @@ import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.CancellationException
 import org.junit.Test
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -71,5 +72,15 @@ class SaveCoordinatorTest {
         val r2 = coordinator.executeSave(saveAction = { executionCount++ })
         assertTrue(r2)
         assertEquals(1, executionCount)
+    }
+
+    @Test(expected = CancellationException::class)
+    fun `CancellationException is propagated and lock is released`() = runTest {
+        val coordinator = SaveCoordinator()
+        try {
+            coordinator.executeSave(saveAction = { throw CancellationException("Cancelled") })
+        } finally {
+            assertFalse(coordinator.isSaving.value)
+        }
     }
 }

@@ -23,8 +23,15 @@ object SyncResolver {
         return SyncDecision.IGNORE
     }
     
-    fun resolveDeletions(localSyncedIds: List<String>, remoteIds: Set<String>): List<String> {
-        return localSyncedIds.filter { it !in remoteIds }
+    fun resolveDeletions(localSyncedIds: List<String>, remoteSnapshotResult: Result<Set<String>>): List<String> {
+        return remoteSnapshotResult.fold(
+            onSuccess = { remoteIds ->
+                localSyncedIds.filter { it !in remoteIds }
+            },
+            onFailure = {
+                emptyList() // Si falla el snapshot, no borramos nada localmente
+            }
+        )
     }
 
     fun parseRemoteBeerType(typeStr: String?): BeerType? {

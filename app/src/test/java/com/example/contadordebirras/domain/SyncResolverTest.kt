@@ -4,6 +4,7 @@ import com.example.contadordebirras.data.BeerEntity
 import com.example.contadordebirras.data.SyncStatus
 import com.example.contadordebirras.domain.BeerType
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.UUID
 
@@ -61,12 +62,27 @@ class SyncResolverTest {
         assertEquals(SyncResolver.SyncDecision.IGNORE, decision)
     }
 
+
     @Test
-    fun `Borrado remoto - Local SYNCED ausente en remoto se elimina`() {
+    fun `Borrado remoto - Local SYNCED ausente en remoto se elimina si snapshot exitoso`() {
         val localSyncedIds = listOf("id1", "id2", "id3")
         val remoteIds = setOf("id1", "id3")
-        val toDelete = SyncResolver.resolveDeletions(localSyncedIds, remoteIds)
+        val toDelete = SyncResolver.resolveDeletions(localSyncedIds, Result.success(remoteIds))
         assertEquals(listOf("id2"), toDelete)
+    }
+    
+    @Test
+    fun `Borrado remoto - Snapshot vacio confirmado borra todo lo SYNCED local`() {
+        val localSyncedIds = listOf("id1", "id2")
+        val toDelete = SyncResolver.resolveDeletions(localSyncedIds, Result.success(emptySet()))
+        assertEquals(listOf("id1", "id2"), toDelete)
+    }
+
+    @Test
+    fun `Borrado remoto - Fallo de red (Result failure) no ejecuta ningun borrado local`() {
+        val localSyncedIds = listOf("id1", "id2")
+        val toDelete = SyncResolver.resolveDeletions(localSyncedIds, Result.failure(Exception("Network Error")))
+        assertTrue(toDelete.isEmpty())
     }
 
     @Test
