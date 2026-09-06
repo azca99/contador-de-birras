@@ -13,10 +13,8 @@
 .externalNativeBuild
 .cxx
 local.properties
-
 node_modules/
 tests/node_modules/
-
 firebase-debug.log
 firebase-debug.*.log
 firestore-debug.log
@@ -24,3 +22,5 @@ firestore-debug.log
 scripts/serviceAccountKey.json
 **/serviceAccountKey.json
 **/serviceAccountKey*.json
+
+.kotlin/
