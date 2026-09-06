@@ -1,9 +1,11 @@
-﻿# Contador de Birras
+# Contador de Birras
 
-**Versin actual: v1.0.0 (Stable Baseline)**
+**Versión actual: v1.0.1 (Stable Baseline)**
 
-Esta aplicacin permite registrar el consumo de cervezas, mantener un historial, guardar ubicaciones y fotos, y compartir actividad con amigos y grupos mediante una sincronizacin bidireccional segura con Firebase.
+La aplicación permite registrar cervezas, mantener historial, guardar ubicaciones y fotos, y compartir actividad con amigos y grupos mediante sincronización segura con Firebase.
 
-El desarrollo activo del proyecto queda temporalmente en pausa. Se ha dejado una base funcional estable y robusta (v1.0.0).
+El desarrollo activo queda temporalmente en pausa.
 
-El trabajo futuro, deudas tcnicas y planificacin se encuentran documentados en [docs/ROADMAP.md](docs/ROADMAP.md).
+El trabajo futuro y las deudas técnicas están documentados en:
+
+`docs/ROADMAP.md`
