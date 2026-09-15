@@ -78,43 +78,24 @@ class GroupsRepository(private val beerRepository: BeerRepository? = null) {
         val normalizedSearch = searchQuery.lowercase().trim()
         val currentUser = auth.currentUser ?: return "Error de autenticacion"
         
-        if (BuildConfig.DEBUG) {
-            try {
-                val diagUser = auth.currentUser
-                if (diagUser == null) {
-                    Log.e("GroupFirebaseDiag", "AUTH_USER_NULL function=searchUser")
-                } else {
-                    val tokenResult = diagUser.getIdToken(false).await()
-                    if (!tokenResult.token.isNullOrEmpty()) {
-                        Log.d("GroupFirebaseDiag", "AUTH_TOKEN_OK function=searchUser")
-                    } else {
-                        Log.e("GroupFirebaseDiag", "AUTH_TOKEN_FAILURE function=searchUser exception=Unknown message=Token string is null or empty")
-                    }
-                }
-            } catch (e: Exception) {
-                Log.e("GroupFirebaseDiag", "AUTH_TOKEN_FAILURE function=searchUser exception=${e.javaClass.simpleName} message=${e.message}")
-            }
-        }
-
-        if (BuildConfig.DEBUG) {
-            try {
-                FirebaseAppCheck.getInstance().getAppCheckToken(false).addOnSuccessListener { token ->
-                    Log.d("GroupFirebaseDiag", "APP_CHECK_OK function=searchUser")
-                }.addOnFailureListener { e ->
-                    Log.e("GroupFirebaseDiag", "APP_CHECK_FAILURE function=searchUser exception=${e.javaClass.simpleName} message=${e.message}")
-                }
-            } catch (e: Exception) {
-                Log.e("GroupFirebaseDiag", "APP_CHECK_FAILURE function=searchUser exception=${e.javaClass.simpleName} message=${e.message}")
-            }
-        }
-        
-        return try {
+        val uid: String
+        try {
             val result = functions.getHttpsCallable("searchUser").call(mapOf("query" to normalizedSearch)).await()
-            val data = result.data as? Map<String, Any> ?: return "Error de servidor"
+            val data = result.data as? Map<String, Any> ?: return "Error de servidor al buscar usuario"
             val found = data["found"] as? Boolean ?: false
             if (!found) return "No se encontro ningun usuario con ese email o username."
-            val uid = data["uid"] as String
-            
+            uid = data["uid"] as String
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: FirebaseFunctionsException) {
+            Log.e("GroupFirebaseDiag", "FUNCTION_FAILURE function=searchUser code=${e.code} message=${e.message}", e)
+            return if (BuildConfig.DEBUG) "Error al buscar usuario (Firebase: ${e.code}). Revisa Logcat." else "Error al buscar usuario."
+        } catch (e: Exception) {
+            Log.e("GroupFirebaseDiag", "FUNCTION_FAILURE function=searchUser type=${e.javaClass.simpleName} message=${e.message}", e)
+            return if (BuildConfig.DEBUG) "Error al buscar usuario (${e.javaClass.simpleName}). Revisa Logcat." else "Error al buscar usuario."
+        }
+
+        return try {
             val groupDoc = firestore.collection("groups").document(groupId).get().await()
             val groupName = groupDoc.getString("name") ?: "Grupo"
             val invitationData = hashMapOf(
@@ -128,12 +109,12 @@ class GroupsRepository(private val beerRepository: BeerRepository? = null) {
             null
         } catch (e: CancellationException) {
             throw e
-        } catch (e: FirebaseFunctionsException) {
-            Log.e("GroupFirebaseDiag", "FUNCTION_FAILURE function=searchUser code=${e.code} message=${e.message}", e)
-            if (BuildConfig.DEBUG) "Error al buscar usuario (Firebase: ${e.code}). Revisa Logcat." else "Error desconocido."
+        } catch (e: com.google.firebase.firestore.FirebaseFirestoreException) {
+            Log.e("GroupFirebaseDiag", "FIRESTORE_FAILURE operation=createInvitation code=${e.code} message=${e.message}", e)
+            if (BuildConfig.DEBUG) "Error al crear invitacion (Firestore: ${e.code}). Revisa Logcat." else "Error al enviar la invitacion."
         } catch (e: Exception) {
-            Log.e("GroupFirebaseDiag", "FUNCTION_FAILURE function=searchUser type=${e.javaClass.simpleName} message=${e.message}", e)
-            if (BuildConfig.DEBUG) "Error al buscar usuario (${e.javaClass.simpleName}). Revisa Logcat." else "Error desconocido."
+            Log.e("GroupFirebaseDiag", "FIRESTORE_FAILURE operation=createInvitation type=${e.javaClass.simpleName} message=${e.message}", e)
+            if (BuildConfig.DEBUG) "Error al crear invitacion (${e.javaClass.simpleName}). Revisa Logcat." else "Error al enviar la invitacion."
         }
     }
 
@@ -214,35 +195,6 @@ class GroupsRepository(private val beerRepository: BeerRepository? = null) {
     }
 
     suspend fun getGroupRanking(groupId: String): Result<List<GroupMemberRanking>> {
-        if (BuildConfig.DEBUG) {
-            try {
-                val diagUser = auth.currentUser
-                if (diagUser == null) {
-                    Log.e("GroupFirebaseDiag", "AUTH_USER_NULL function=getGroupRanking")
-                } else {
-                    val tokenResult = diagUser.getIdToken(false).await()
-                    if (!tokenResult.token.isNullOrEmpty()) {
-                        Log.d("GroupFirebaseDiag", "AUTH_TOKEN_OK function=getGroupRanking")
-                    } else {
-                        Log.e("GroupFirebaseDiag", "AUTH_TOKEN_FAILURE function=getGroupRanking exception=Unknown message=Token string is null or empty")
-                    }
-                }
-            } catch (e: Exception) {
-                Log.e("GroupFirebaseDiag", "AUTH_TOKEN_FAILURE function=getGroupRanking exception=${e.javaClass.simpleName} message=${e.message}")
-            }
-        }
-
-        if (BuildConfig.DEBUG) {
-            try {
-                FirebaseAppCheck.getInstance().getAppCheckToken(false).addOnSuccessListener { token ->
-                    Log.d("GroupFirebaseDiag", "APP_CHECK_OK function=getGroupRanking")
-                }.addOnFailureListener { e ->
-                    Log.e("GroupFirebaseDiag", "APP_CHECK_FAILURE function=getGroupRanking exception=${e.javaClass.simpleName} message=${e.message}")
-                }
-            } catch (e: Exception) {
-                Log.e("GroupFirebaseDiag", "APP_CHECK_FAILURE function=getGroupRanking exception=${e.javaClass.simpleName} message=${e.message}")
-            }
-        }
         
         return try {
             val result = functions.getHttpsCallable("getGroupRanking").call(mapOf("groupId" to groupId)).await()
