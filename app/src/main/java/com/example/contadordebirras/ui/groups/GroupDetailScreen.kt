@@ -18,6 +18,7 @@ import com.example.contadordebirras.domain.GroupMemberRanking
 @Composable
 fun GroupDetailScreen(groupId: String, viewModel: GroupDetailViewModel, onBack: () -> Unit) {
     val rankings by viewModel.rankings.collectAsState()
+    val rankingError by viewModel.rankingError.collectAsState()
     val isLoading by viewModel.isLoading.collectAsState()
     
     var selectedTabIndex by remember { mutableStateOf(0) } // 0 = Historical, 1 = Monthly
@@ -72,6 +73,16 @@ fun GroupDetailScreen(groupId: String, viewModel: GroupDetailViewModel, onBack: 
                 if (isLoading) {
                     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         CircularProgressIndicator()
+                    }
+                } else if (rankingError != null) {
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                            Text(text = rankingError ?: "No se pudo cargar el ranking.", color = MaterialTheme.colorScheme.error)
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Button(onClick = { viewModel.loadRankings(groupId) }) {
+                                Text("Reintentar")
+                            }
+                        }
                     }
                 } else {
                     val sortedRankings = when (selectedTabIndex) {

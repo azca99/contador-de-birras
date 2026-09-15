@@ -10,6 +10,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import com.example.contadordebirras.BuildConfig
+import com.google.firebase.functions.FirebaseFunctionsException
 
 class GroupsViewModel(private val groupsRepository: GroupsRepository) : ViewModel() {
     val groups = groupsRepository.getGroups()
@@ -37,6 +39,9 @@ class GroupsViewModel(private val groupsRepository: GroupsRepository) : ViewMode
 class GroupDetailViewModel(private val groupsRepository: GroupsRepository, private val friendsRepository: com.example.contadordebirras.domain.FriendsRepository) : ViewModel() {
     private val _rankings = MutableStateFlow<List<GroupMemberRanking>>(emptyList())
     val rankings: StateFlow<List<GroupMemberRanking>> = _rankings.asStateFlow()
+    
+    private val _rankingError = MutableStateFlow<String?>(null)
+    val rankingError: StateFlow<String?> = _rankingError.asStateFlow()
 
     private val _members = MutableStateFlow<List<com.example.contadordebirras.domain.GroupMemberDetail>>(emptyList())
     val members: StateFlow<List<com.example.contadordebirras.domain.GroupMemberDetail>> = _members.asStateFlow()
@@ -53,9 +58,26 @@ class GroupDetailViewModel(private val groupsRepository: GroupsRepository, priva
     fun loadRankings(groupId: String) {
         viewModelScope.launch {
             _isLoading.value = true
-            val fetchedRankings = groupsRepository.getGroupRanking(groupId)
-            _rankings.value = fetchedRankings
-            _isLoading.value = false
+            _rankingError.value = null
+            try {
+                val result = groupsRepository.getGroupRanking(groupId)
+                result.onSuccess { list ->
+                    _rankings.value = list
+                }.onFailure { e ->
+                    _rankings.value = emptyList()
+                    if (BuildConfig.DEBUG) {
+                        if (e is FirebaseFunctionsException) {
+                            _rankingError.value = "No se pudo cargar el ranking (${e.code})."
+                        } else {
+                            _rankingError.value = "No se pudo cargar el ranking (${e.javaClass.simpleName})."
+                        }
+                    } else {
+                        _rankingError.value = "No se pudo cargar el ranking."
+                    }
+                }
+            } finally {
+                _isLoading.value = false
+            }
         }
         
         membersJob?.cancel()

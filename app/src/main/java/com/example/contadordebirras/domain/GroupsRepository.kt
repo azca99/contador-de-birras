@@ -5,6 +5,11 @@ import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FieldValue
 import com.google.firebase.firestore.FirebaseFirestore
 import com.google.firebase.firestore.Query
+import android.util.Log
+import com.example.contadordebirras.BuildConfig
+import kotlinx.coroutines.CancellationException
+import com.google.firebase.appcheck.FirebaseAppCheck
+import com.google.firebase.functions.FirebaseFunctionsException
 import com.google.firebase.functions.FirebaseFunctions
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
@@ -72,6 +77,19 @@ class GroupsRepository(private val beerRepository: BeerRepository? = null) {
     suspend fun addMemberByEmailOrUsername(groupId: String, searchQuery: String): String? {
         val normalizedSearch = searchQuery.lowercase().trim()
         val currentUser = auth.currentUser ?: return "Error de autenticacion"
+        
+        if (BuildConfig.DEBUG) {
+            try {
+                FirebaseAppCheck.getInstance().getAppCheckToken(false).addOnSuccessListener { token ->
+                    Log.d("GroupFirebaseDiag", "APP_CHECK_OK function=searchUser")
+                }.addOnFailureListener { e ->
+                    Log.e("GroupFirebaseDiag", "APP_CHECK_FAILURE function=searchUser exception=${e.javaClass.simpleName} message=${e.message}")
+                }
+            } catch (e: Exception) {
+                Log.e("GroupFirebaseDiag", "APP_CHECK_FAILURE function=searchUser exception=${e.javaClass.simpleName} message=${e.message}")
+            }
+        }
+        
         return try {
             val result = functions.getHttpsCallable("searchUser").call(mapOf("query" to normalizedSearch)).await()
             val data = result.data as? Map<String, Any> ?: return "Error de servidor"
@@ -90,8 +108,14 @@ class GroupsRepository(private val beerRepository: BeerRepository? = null) {
             )
             firestore.collection("groupInvitations").document(groupId + "_" + uid).set(invitationData).await()
             null
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: FirebaseFunctionsException) {
+            Log.e("GroupFirebaseDiag", "FUNCTION_FAILURE function=searchUser code=${e.code} message=${e.message}", e)
+            if (BuildConfig.DEBUG) "Error al buscar usuario (Firebase: ${e.code}). Revisa Logcat." else "Error desconocido."
         } catch (e: Exception) {
-            "Error desconocido."
+            Log.e("GroupFirebaseDiag", "FUNCTION_FAILURE function=searchUser type=${e.javaClass.simpleName} message=${e.message}", e)
+            if (BuildConfig.DEBUG) "Error al buscar usuario (${e.javaClass.simpleName}). Revisa Logcat." else "Error desconocido."
         }
     }
 
@@ -171,13 +195,25 @@ class GroupsRepository(private val beerRepository: BeerRepository? = null) {
         }
     }
 
-    suspend fun getGroupRanking(groupId: String): List<GroupMemberRanking> {
+    suspend fun getGroupRanking(groupId: String): Result<List<GroupMemberRanking>> {
+        if (BuildConfig.DEBUG) {
+            try {
+                FirebaseAppCheck.getInstance().getAppCheckToken(false).addOnSuccessListener { token ->
+                    Log.d("GroupFirebaseDiag", "APP_CHECK_OK function=getGroupRanking")
+                }.addOnFailureListener { e ->
+                    Log.e("GroupFirebaseDiag", "APP_CHECK_FAILURE function=getGroupRanking exception=${e.javaClass.simpleName} message=${e.message}")
+                }
+            } catch (e: Exception) {
+                Log.e("GroupFirebaseDiag", "APP_CHECK_FAILURE function=getGroupRanking exception=${e.javaClass.simpleName} message=${e.message}")
+            }
+        }
+        
         return try {
             val result = functions.getHttpsCallable("getGroupRanking").call(mapOf("groupId" to groupId)).await()
-            val data = result.data as? Map<String, Any> ?: return emptyList()
-            val rankingsData = data["rankings"] as? List<Map<String, Any>> ?: return emptyList()
+            val data = result.data as? Map<String, Any> ?: return Result.success(emptyList())
+            val rankingsData = data["rankings"] as? List<Map<String, Any>> ?: return Result.success(emptyList())
             
-            rankingsData.map { item ->
+            val rankings = rankingsData.map { item ->
                 GroupMemberRanking(
                     uid = item["uid"] as? String ?: "",
                     alias = item["alias"] as? String ?: "",
@@ -186,8 +222,15 @@ class GroupsRepository(private val beerRepository: BeerRepository? = null) {
                     weeklyBeers = (item["weeklyBeers"] as? Number)?.toInt() ?: 0
                 )
             }.sortedByDescending { it.historicalBeers }
+            Result.success(rankings)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: FirebaseFunctionsException) {
+            Log.e("GroupFirebaseDiag", "FUNCTION_FAILURE function=getGroupRanking code=${e.code} message=${e.message}", e)
+            Result.failure(e)
         } catch (e: Exception) {
-            emptyList()
+            Log.e("GroupFirebaseDiag", "FUNCTION_FAILURE function=getGroupRanking type=${e.javaClass.simpleName} message=${e.message}", e)
+            Result.failure(e)
         }
     }
 
