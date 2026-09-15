@@ -80,6 +80,24 @@ class GroupsRepository(private val beerRepository: BeerRepository? = null) {
         
         if (BuildConfig.DEBUG) {
             try {
+                val diagUser = auth.currentUser
+                if (diagUser == null) {
+                    Log.e("GroupFirebaseDiag", "AUTH_USER_NULL function=searchUser")
+                } else {
+                    val tokenResult = diagUser.getIdToken(false).await()
+                    if (!tokenResult.token.isNullOrEmpty()) {
+                        Log.d("GroupFirebaseDiag", "AUTH_TOKEN_OK function=searchUser")
+                    } else {
+                        Log.e("GroupFirebaseDiag", "AUTH_TOKEN_FAILURE function=searchUser exception=Unknown message=Token string is null or empty")
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("GroupFirebaseDiag", "AUTH_TOKEN_FAILURE function=searchUser exception=${e.javaClass.simpleName} message=${e.message}")
+            }
+        }
+
+        if (BuildConfig.DEBUG) {
+            try {
                 FirebaseAppCheck.getInstance().getAppCheckToken(false).addOnSuccessListener { token ->
                     Log.d("GroupFirebaseDiag", "APP_CHECK_OK function=searchUser")
                 }.addOnFailureListener { e ->
@@ -196,6 +214,24 @@ class GroupsRepository(private val beerRepository: BeerRepository? = null) {
     }
 
     suspend fun getGroupRanking(groupId: String): Result<List<GroupMemberRanking>> {
+        if (BuildConfig.DEBUG) {
+            try {
+                val diagUser = auth.currentUser
+                if (diagUser == null) {
+                    Log.e("GroupFirebaseDiag", "AUTH_USER_NULL function=getGroupRanking")
+                } else {
+                    val tokenResult = diagUser.getIdToken(false).await()
+                    if (!tokenResult.token.isNullOrEmpty()) {
+                        Log.d("GroupFirebaseDiag", "AUTH_TOKEN_OK function=getGroupRanking")
+                    } else {
+                        Log.e("GroupFirebaseDiag", "AUTH_TOKEN_FAILURE function=getGroupRanking exception=Unknown message=Token string is null or empty")
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e("GroupFirebaseDiag", "AUTH_TOKEN_FAILURE function=getGroupRanking exception=${e.javaClass.simpleName} message=${e.message}")
+            }
+        }
+
         if (BuildConfig.DEBUG) {
             try {
                 FirebaseAppCheck.getInstance().getAppCheckToken(false).addOnSuccessListener { token ->
