@@ -36,9 +36,7 @@ class MainViewModel(
     )
 
     init {
-        viewModelScope.launch {
-            repository.syncWithCloud()
-        }
+        repository.requestSync()
     }
 
 
@@ -52,27 +50,30 @@ class MainViewModel(
         onFinished: (Boolean) -> Unit
     ) {
         viewModelScope.launch {
+            var beerId = -1L
+            val timestamp = System.currentTimeMillis()
             val success = saveCoordinator.executeSave(
                 saveAction = {
-                    var lat: Double? = null
-                    var lng: Double? = null
-                    
-                    if (locationFetcher != null) {
-                        try {
-                            val loc = locationFetcher()
-                            lat = loc.first
-                            lng = loc.second
-                        } catch (e: CancellationException) {
-                            throw e
-                        } catch (e: Exception) {
-                            // ignore
-                        }
-                    }
-                    
-                    repository.addBeer(type = type, timestamp = System.currentTimeMillis(), latitude = lat, longitude = lng, photoUri = photoUri, comment = comment, photoSource = photoSource)
+                    beerId = repository.addBeer(type = type, timestamp = timestamp, latitude = null, longitude = null, photoUri = photoUri, comment = comment, photoSource = photoSource)
                 }
             )
             onFinished(success)
+            
+            if (success && beerId != -1L) {
+                viewModelScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                    if (locationFetcher != null) {
+                        try {
+                            val loc = locationFetcher()
+                            val lat = loc.first
+                            val lng = loc.second
+                            if (lat != null && lng != null) {
+                                repository.updateBeerLocation(beerId, lat, lng)
+                            }
+                        } catch (e: Exception) {}
+                    }
+                    repository.requestSync()
+                }
+            }
         }
     }
 

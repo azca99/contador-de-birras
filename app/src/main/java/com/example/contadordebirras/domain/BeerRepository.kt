@@ -16,6 +16,11 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.launch
 import java.util.Locale
 
 class BeerRepository(private val beerDao: BeerDao, private val context: Context) {
@@ -24,44 +29,65 @@ class BeerRepository(private val beerDao: BeerDao, private val context: Context)
     val lastBeer: Flow<BeerEntity?> = beerDao.getLastBeer()
     
     private val syncMutex = Mutex()
+    private val syncTrigger = MutableSharedFlow<Unit>(extraBufferCapacity = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
+    private val repoScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    suspend fun addBeer(type: BeerType, timestamp: Long, latitude: Double? = null, longitude: Double? = null, photoUri: String? = null, comment: String? = null, photoSource: String? = null) {
-        withContext(Dispatchers.IO) {
-            var locationName: String? = null
-            if (latitude != null && longitude != null) {
-                locationName = "Ubicación desconocida"
-                try {
-                    val geocoder = Geocoder(context, Locale.getDefault())
-                    val addresses = geocoder.getFromLocation(latitude, longitude, 1)
-                    if (!addresses.isNullOrEmpty()) {
-                        val address = addresses[0]
-                        locationName = address.locality ?: address.subAdminArea ?: address.adminArea ?: address.countryName ?: "Ubicación desconocida"
-                    }
-                } catch (e: CancellationException) { throw e }
-                    catch (e: Exception) {}
+    init {
+        repoScope.launch {
+            syncTrigger.collect {
+                syncWithCloud()
             }
-            val beer = BeerEntity(
-                type = type, timestamp = timestamp, latitude = latitude, longitude = longitude, 
-                photoUri = photoUri, comment = comment, locationName = locationName, photoSource = photoSource,
-                syncStatus = SyncStatus.PENDING, updatedAt = System.currentTimeMillis()
-            )
-            beerDao.insertBeer(beer)
-            syncWithCloud()
         }
     }
 
+    fun requestSync() {
+        syncTrigger.tryEmit(Unit)
+    }
+
+    suspend fun addBeer(type: BeerType, timestamp: Long, latitude: Double? = null, longitude: Double? = null, photoUri: String? = null, comment: String? = null, photoSource: String? = null): Long {
+        return withContext(Dispatchers.IO) {
+            val beer = BeerEntity(
+                type = type, timestamp = timestamp, latitude = latitude, longitude = longitude, 
+                photoUri = photoUri, comment = comment, locationName = null, photoSource = photoSource,
+                syncStatus = SyncStatus.PENDING, updatedAt = System.currentTimeMillis()
+            )
+            beerDao.insertBeer(beer)
+        }
+    }
+
+    suspend fun updateBeerLocation(beerId: Long, latitude: Double, longitude: Double) {
+        withContext(Dispatchers.IO) {
+            var locationName: String? = "Ubicación desconocida"
+            try {
+                val geocoder = Geocoder(context, Locale.getDefault())
+                val addresses = geocoder.getFromLocation(latitude, longitude, 1)
+                if (!addresses.isNullOrEmpty()) {
+                    val address = addresses[0]
+                    locationName = address.locality ?: address.subAdminArea ?: address.adminArea ?: address.countryName ?: "Ubicación desconocida"
+                }
+            } catch (e: Exception) {}
+            
+            val beer = beerDao.getBeerById(beerId.toInt())
+            if (beer != null) {
+                beerDao.updateBeer(beer.copy(
+                    latitude = latitude, longitude = longitude, locationName = locationName,
+                    updatedAt = System.currentTimeMillis()
+                ))
+            }
+        }
+    }
 
     suspend fun deleteBeer(beer: BeerEntity) {
         withContext(Dispatchers.IO) {
             beerDao.softDeleteBeer(beer.id)
-            syncWithCloud()
+            requestSync()
         }
     }
 
     suspend fun updateBeer(beer: BeerEntity) {
         withContext(Dispatchers.IO) {
             beerDao.updateBeer(beer.copy(syncStatus = SyncStatus.PENDING, updatedAt = System.currentTimeMillis()))
-            syncWithCloud()
+            requestSync()
         }
     }
 
