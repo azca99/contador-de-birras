@@ -8,7 +8,6 @@ import com.google.firebase.firestore.Query
 import android.util.Log
 import com.example.contadordebirras.BuildConfig
 import kotlinx.coroutines.CancellationException
-import com.google.firebase.appcheck.FirebaseAppCheck
 import com.google.firebase.functions.FirebaseFunctionsException
 import com.google.firebase.functions.FirebaseFunctions
 import kotlinx.coroutines.channels.awaitClose
@@ -88,10 +87,10 @@ class GroupsRepository(private val beerRepository: BeerRepository? = null) {
         } catch (e: CancellationException) {
             throw e
         } catch (e: FirebaseFunctionsException) {
-            Log.e("GroupFirebaseDiag", "FUNCTION_FAILURE function=searchUser code=${e.code} message=${e.message}", e)
+            if (BuildConfig.DEBUG) Log.e("GroupFirebaseDiag", "FUNCTION_FAILURE function=searchUser code=${e.code} message=${e.message}", e)
             return if (BuildConfig.DEBUG) "Error al buscar usuario (Firebase: ${e.code}). Revisa Logcat." else "Error al buscar usuario."
         } catch (e: Exception) {
-            Log.e("GroupFirebaseDiag", "FUNCTION_FAILURE function=searchUser type=${e.javaClass.simpleName} message=${e.message}", e)
+            if (BuildConfig.DEBUG) Log.e("GroupFirebaseDiag", "FUNCTION_FAILURE function=searchUser type=${e.javaClass.simpleName} message=${e.message}", e)
             return if (BuildConfig.DEBUG) "Error al buscar usuario (${e.javaClass.simpleName}). Revisa Logcat." else "Error al buscar usuario."
         }
 
@@ -110,10 +109,10 @@ class GroupsRepository(private val beerRepository: BeerRepository? = null) {
         } catch (e: CancellationException) {
             throw e
         } catch (e: com.google.firebase.firestore.FirebaseFirestoreException) {
-            Log.e("GroupFirebaseDiag", "FIRESTORE_FAILURE operation=createInvitation code=${e.code} message=${e.message}", e)
+            if (BuildConfig.DEBUG) Log.e("GroupFirebaseDiag", "FIRESTORE_FAILURE operation=createInvitation code=${e.code} message=${e.message}", e)
             if (BuildConfig.DEBUG) "Error al crear invitacion (Firestore: ${e.code}). Revisa Logcat." else "Error al enviar la invitacion."
         } catch (e: Exception) {
-            Log.e("GroupFirebaseDiag", "FIRESTORE_FAILURE operation=createInvitation type=${e.javaClass.simpleName} message=${e.message}", e)
+            if (BuildConfig.DEBUG) Log.e("GroupFirebaseDiag", "FIRESTORE_FAILURE operation=createInvitation type=${e.javaClass.simpleName} message=${e.message}", e)
             if (BuildConfig.DEBUG) "Error al crear invitacion (${e.javaClass.simpleName}). Revisa Logcat." else "Error al enviar la invitacion."
         }
     }
@@ -214,10 +213,10 @@ class GroupsRepository(private val beerRepository: BeerRepository? = null) {
         } catch (e: CancellationException) {
             throw e
         } catch (e: FirebaseFunctionsException) {
-            Log.e("GroupFirebaseDiag", "FUNCTION_FAILURE function=getGroupRanking code=${e.code} message=${e.message}", e)
+            if (BuildConfig.DEBUG) Log.e("GroupFirebaseDiag", "FUNCTION_FAILURE function=getGroupRanking code=${e.code} message=${e.message}", e)
             Result.failure(e)
         } catch (e: Exception) {
-            Log.e("GroupFirebaseDiag", "FUNCTION_FAILURE function=getGroupRanking type=${e.javaClass.simpleName} message=${e.message}", e)
+            if (BuildConfig.DEBUG) Log.e("GroupFirebaseDiag", "FUNCTION_FAILURE function=getGroupRanking type=${e.javaClass.simpleName} message=${e.message}", e)
             Result.failure(e)
         }
     }
