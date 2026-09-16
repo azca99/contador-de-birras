@@ -1,6 +1,5 @@
 package com.example.contadordebirras.ui.stats
 
-import android.annotation.SuppressLint
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.contadordebirras.domain.BeerRepository
@@ -10,7 +9,6 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
-@SuppressLint("NewApi")
 class StatsViewModel(private val repository: BeerRepository) : ViewModel() {
     
     val allBeers = repository.allBeers.stateIn(
