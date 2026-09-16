@@ -3,7 +3,9 @@ package com.example.contadordebirras.ui.profile
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
+import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -54,10 +56,20 @@ fun ProfileScreen(viewModel: ProfileViewModel, onAchievementsClick: () -> Unit) 
         }
     }
 
-    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
-        TabRow(selectedTabIndex = 0, containerColor = Color.Transparent) {
-            Tab(selected = true, onClick = { }, text = { Text("Ajustes", style = MaterialTheme.typography.titleMedium) })
-            Tab(selected = false, onClick = onAchievementsClick, text = { Text("Logros", style = MaterialTheme.typography.titleMedium) })
+    Column(modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp)) {
+        Spacer(modifier = Modifier.height(16.dp))
+        TabRow(
+            selectedTabIndex = 0, 
+            containerColor = Color.Transparent,
+            indicator = { tabPositions ->
+                TabRowDefaults.SecondaryIndicator(
+                    Modifier.tabIndicatorOffset(tabPositions[0]),
+                    color = MaterialTheme.colorScheme.primary
+                )
+            }
+        ) {
+            Tab(selected = true, onClick = { }, text = { Text("Ajustes", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.primary) })
+            Tab(selected = false, onClick = onAchievementsClick, text = { Text("Logros", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) })
         }
         Spacer(modifier = Modifier.height(32.dp))
         

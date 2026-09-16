@@ -52,9 +52,9 @@ fun AppNavigation(factory: AppViewModelFactory) {
                 val currentRoute = navBackStackEntry?.destination?.route
 
                 val colors = NavigationBarItemDefaults.colors(
-                    selectedIconColor = MaterialTheme.colorScheme.onPrimaryContainer,
+                    selectedIconColor = MaterialTheme.colorScheme.primary,
                     selectedTextColor = MaterialTheme.colorScheme.primary,
-                    indicatorColor = MaterialTheme.colorScheme.primaryContainer,
+                    indicatorColor = MaterialTheme.colorScheme.surfaceVariant,
                     unselectedIconColor = MaterialTheme.colorScheme.onSurfaceVariant,
                     unselectedTextColor = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -90,8 +90,7 @@ fun AppNavigation(factory: AppViewModelFactory) {
             }
         }
     ) { paddingValues ->
-        Box(modifier = Modifier.padding(paddingValues).fillMaxSize()) {
-            MetalTableBackground()
+        Box(modifier = Modifier.padding(paddingValues).fillMaxSize().background(MaterialTheme.colorScheme.background)) {
             NavHost(
                 navController = navController,
                 startDestination = "main"
@@ -222,12 +221,13 @@ fun AchievementNotificationOverlay(viewModel: AchievementsViewModel) {
                         val progress = if (uiState.nextLevelPoints > 0) uiState.totalPoints.toFloat() / uiState.nextLevelPoints else 1f
                         Text("Nivel ${level.level}: ${level.name}", style = MaterialTheme.typography.bodySmall)
                         LinearProgressIndicator(
-                            progress = progress,
+                            progress = { progress },
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .height(8.dp)
                                 .clip(RoundedCornerShape(4.dp)),
-                            color = MaterialTheme.colorScheme.primary
+                            color = MaterialTheme.colorScheme.primary,
+                            trackColor = MaterialTheme.colorScheme.surfaceVariant
                         )
                         Text("${uiState.totalPoints} / ${uiState.nextLevelPoints} pts", style = MaterialTheme.typography.bodySmall, modifier = Modifier.align(Alignment.End))
                     }
@@ -237,39 +237,3 @@ fun AchievementNotificationOverlay(viewModel: AchievementsViewModel) {
     }
 }
 
-@Composable
-fun MetalTableBackground() {
-    val isDark = androidx.compose.foundation.isSystemInDarkTheme()
-    val bgColor = if (isDark) androidx.compose.ui.graphics.Color(0xFF1E1E1E) else androidx.compose.ui.graphics.Color(0xFFE5E5E5)
-    val ringColor = if (isDark) androidx.compose.ui.graphics.Color(0xFF333333).copy(alpha = 0.6f) else androidx.compose.ui.graphics.Color(0xFFFFFFFF).copy(alpha = 0.6f)
-    val innerColor = if (isDark) androidx.compose.ui.graphics.Color(0xFF2A2A2A).copy(alpha = 0.4f) else androidx.compose.ui.graphics.Color(0xFFCCCCCC).copy(alpha = 0.4f)
-
-    androidx.compose.foundation.Canvas(modifier = Modifier.fillMaxSize().background(bgColor)) {
-        val radius = 24.dp.toPx()
-        val spacing = radius * 1.2f
-        
-        var y = -radius
-        var row = 0
-        while (y < size.height + radius) {
-            var x = if (row % 2 == 0) -radius else spacing / 2 - radius
-            while (x < size.width + radius) {
-                // Outer subtle ring
-                drawCircle(
-                    color = ringColor,
-                    radius = radius,
-                    center = androidx.compose.ui.geometry.Offset(x, y),
-                    style = androidx.compose.ui.graphics.drawscope.Stroke(width = 2.dp.toPx())
-                )
-                // Inner metallic reflection
-                drawCircle(
-                    color = innerColor,
-                    radius = radius * 0.8f,
-                    center = androidx.compose.ui.geometry.Offset(x, y)
-                )
-                x += spacing
-            }
-            y += spacing * 0.866f // hexagonal grid
-            row++
-        }
-    }
-}

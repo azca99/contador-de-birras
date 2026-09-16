@@ -33,7 +33,8 @@ fun GroupsScreen(viewModel: GroupsViewModel, onGroupClick: (String) -> Unit, onF
             }
         }
     ) { padding ->
-        Column(modifier = Modifier.fillMaxSize().padding(padding).padding(16.dp)) {
+        Column(modifier = Modifier.fillMaxSize().padding(padding).padding(horizontal = 20.dp)) {
+            Spacer(modifier = Modifier.height(16.dp))
             Row(
                 modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
                 horizontalArrangement = Arrangement.Center
@@ -79,9 +80,9 @@ fun GroupsScreen(viewModel: GroupsViewModel, onGroupClick: (String) -> Unit, onF
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clickable { onGroupClick(group.id) },
-                            shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp),
-                            elevation = CardDefaults.elevatedCardElevation(defaultElevation = 6.dp),
-                            colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                            shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp),
+                            elevation = CardDefaults.elevatedCardElevation(defaultElevation = 2.dp),
+                            colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.surface)
                         ) {
                             Row(
                                 modifier = Modifier.padding(16.dp),

@@ -7,6 +7,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Edit
+import androidx.compose.material.icons.rounded.List
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -29,8 +30,19 @@ import androidx.compose.material.icons.rounded.BarChart
 @Composable
 fun HistoryScreen(viewModel: StatsViewModel, onStatsClick: () -> Unit) {
     val beers by viewModel.allBeers.collectAsState()
-    val dateFormat = SimpleDateFormat("dd/MM/yyyy HH:mm:ss", Locale.getDefault())
-
+    val timeFormat = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
+    val groupedBeers = remember(beers) {
+        val todayStr = SimpleDateFormat("dd/MM/yyyy", Locale.getDefault()).format(Date())
+        val yesterdayStr = SimpleDateFormat("dd/MM/yyyy", Locale.getDefault()).format(Date(System.currentTimeMillis() - 86400000))
+        beers.groupBy { beer ->
+            val dateStr = SimpleDateFormat("dd/MM/yyyy", Locale.getDefault()).format(Date(beer.timestamp))
+            when (dateStr) {
+                todayStr -> "HOY"
+                yesterdayStr -> "AYER"
+                else -> dateStr
+            }
+        }
+    }
 
     var showEditDialog by remember { mutableStateOf(false) }
     var beerToEdit by remember { mutableStateOf<BeerEntity?>(null) }
@@ -38,70 +50,86 @@ fun HistoryScreen(viewModel: StatsViewModel, onStatsClick: () -> Unit) {
     var editType by remember { mutableStateOf(BeerType.CANA) }
     var expandedDropdown by remember { mutableStateOf(false) }
 
-    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            Text("Historial", style = MaterialTheme.typography.headlineLarge)
+    Column(modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp)) {
+        Row(modifier = Modifier.fillMaxWidth().padding(vertical = 16.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Text("Tu Diario", style = MaterialTheme.typography.headlineLarge, color = MaterialTheme.colorScheme.primary)
             IconButton(onClick = onStatsClick) {
-                Icon(Icons.Rounded.BarChart, contentDescription = "Estadísticas")
+                Icon(Icons.Rounded.BarChart, contentDescription = "Estadísticas", tint = MaterialTheme.colorScheme.primary)
             }
         }
-        Spacer(modifier = Modifier.height(16.dp))
-        LazyColumn(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            items(beers) { beer ->
-                ElevatedCard(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp),
-                    elevation = CardDefaults.elevatedCardElevation(defaultElevation = 6.dp),
-                    colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
-                ) {
-                    Column(modifier = Modifier.padding(16.dp)) {
-                        Row(
+        
+        if (beers.isEmpty()) {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    Icon(Icons.Rounded.List, contentDescription = null, modifier = Modifier.size(64.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Spacer(Modifier.height(16.dp))
+                    Text("Aún no hay birras", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
+                    Text("Tu diario está vacío.", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        } else {
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp), contentPadding = PaddingValues(bottom = 80.dp)) {
+                groupedBeers.forEach { (dateHeader, beersInDate) ->
+                    item {
+                        Text(
+                            text = dateHeader, 
+                            style = MaterialTheme.typography.labelLarge, 
+                            color = MaterialTheme.colorScheme.secondary,
+                            modifier = Modifier.padding(top = 16.dp, bottom = 4.dp)
+                        )
+                    }
+                    items(beersInDate) { beer ->
+                        Card(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.Top
+                            shape = RoundedCornerShape(12.dp),
+                            elevation = CardDefaults.cardElevation(defaultElevation = 0.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
                         ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text(text = "Tipo: ${beer.type.displayName}", style = MaterialTheme.typography.titleMedium)
-                                Text(text = "Fecha: ${dateFormat.format(Date(beer.timestamp))}", style = MaterialTheme.typography.bodySmall)
+                            Row(modifier = Modifier.padding(16.dp).fillMaxWidth(), verticalAlignment = Alignment.Top) {
+                                val photoToLoad = beer.photoUri ?: beer.remotePhotoUrl
+                                if (photoToLoad != null) {
+                                    SecureFirebaseImage(
+                                        model = photoToLoad,
+                                        contentDescription = "Foto",
+                                        modifier = Modifier
+                                            .size(64.dp)
+                                            .clip(RoundedCornerShape(12.dp)),
+                                        contentScale = ContentScale.Crop
+                                    )
+                                    Spacer(modifier = Modifier.width(16.dp))
+                                }
                                 
-                                if (beer.locationName != null) {
-                                    Text(text = "📍 ${beer.locationName}", style = MaterialTheme.typography.bodySmall)
-                                } else if (beer.latitude != null && beer.longitude != null) {
-                                    Text(text = "📍 Ubicación registrada", style = MaterialTheme.typography.bodySmall)
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
+                                        Text(text = beer.type.displayName, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
+                                        Text(text = timeFormat.format(Date(beer.timestamp)), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                    
+                                    val loc = beer.locationName ?: if (beer.latitude != null) "Ubicación registrada" else null
+                                    if (loc != null) {
+                                        Text(text = loc, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                    
+                                    if (!beer.comment.isNullOrBlank()) {
+                                        Spacer(modifier = Modifier.height(4.dp))
+                                        Text(text = beer.comment, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurface)
+                                    }
                                 }
-                                if (!beer.comment.isNullOrBlank()) {
-                                    Spacer(modifier = Modifier.height(4.dp))
-                                    Text(text = "💬 ${beer.comment}", style = MaterialTheme.typography.bodyMedium)
+                                
+                                Column {
+                                    IconButton(onClick = {
+                                        beerToEdit = beer
+                                        editComment = beer.comment ?: ""
+                                        editType = beer.type
+                                        showEditDialog = true
+                                    }, modifier = Modifier.size(32.dp)) {
+                                        Icon(Icons.Rounded.Edit, contentDescription = "Edit", modifier = Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                    IconButton(onClick = { viewModel.deleteBeer(beer) }, modifier = Modifier.size(32.dp)) {
+                                        Icon(Icons.Rounded.Delete, contentDescription = "Delete", modifier = Modifier.size(20.dp), tint = MaterialTheme.colorScheme.error)
+                                    }
                                 }
                             }
-
-                            Row {
-                                IconButton(onClick = {
-                                    beerToEdit = beer
-                                    editComment = beer.comment ?: ""
-                                    editType = beer.type
-                                    showEditDialog = true
-                                }) {
-                                    Icon(Icons.Rounded.Edit, contentDescription = "Edit")
-                                }
-                                IconButton(onClick = { viewModel.deleteBeer(beer) }) {
-                                    Icon(Icons.Rounded.Delete, contentDescription = "Delete", tint = MaterialTheme.colorScheme.error)
-                                }
-                            }
-                        }
-
-                        val photoToLoad = beer.photoUri ?: beer.remotePhotoUrl
-                        if (photoToLoad != null) {
-                            Spacer(modifier = Modifier.height(8.dp))
-                            SecureFirebaseImage(
-                                model = photoToLoad,
-                                contentDescription = "Foto de cerveza",
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .height(200.dp)
-                                    .clip(RoundedCornerShape(8.dp)),
-                                contentScale = ContentScale.Crop
-                            )
                         }
                     }
                 }

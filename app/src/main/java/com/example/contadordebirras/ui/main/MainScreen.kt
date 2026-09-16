@@ -16,6 +16,7 @@ import androidx.activity.result.PickVisualMediaRequest
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AddPhotoAlternate
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Person
 import com.example.contadordebirras.ui.components.SecureFirebaseImage
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -121,15 +122,19 @@ fun MainScreen(viewModel: MainViewModel) {
     val dateFormat = remember { SimpleDateFormat("HH:mm:ss", Locale.getDefault()) }
 
     Column(
-        modifier = Modifier.fillMaxSize().padding(16.dp).verticalScroll(androidx.compose.foundation.rememberScrollState()),
+        modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp).verticalScroll(androidx.compose.foundation.rememberScrollState()),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Top
     ) {
-        Spacer(modifier = Modifier.height(16.dp))
-        Text(text = "🍻 Bar de $userAlias", style = MaterialTheme.typography.headlineLarge, color = MaterialTheme.colorScheme.primary)
+        Spacer(modifier = Modifier.height(24.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Icon(Icons.Rounded.Person, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(32.dp))
+            Spacer(Modifier.width(12.dp))
+            Text(text = "Bar de $userAlias", style = MaterialTheme.typography.headlineMedium, color = MaterialTheme.colorScheme.primary)
+        }
         Spacer(modifier = Modifier.height(32.dp))
         
-        Text(text = "Total Servidas", style = MaterialTheme.typography.titleMedium)
+        Text(text = "birras servidas", style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
         
         AnimatedContent(
             targetState = totalCount,
@@ -250,7 +255,11 @@ fun MainScreen(viewModel: MainViewModel) {
 
         val interactionSource = remember { MutableInteractionSource() }
         val isPressed by interactionSource.collectIsPressedAsState()
-        val scale by animateFloatAsState(targetValue = if (isPressed) 0.9f else 1f, label = "buttonScale")
+        val scale by animateFloatAsState(
+            targetValue = if (isPressed) 0.94f else 1f, 
+            animationSpec = androidx.compose.animation.core.tween(durationMillis = 150),
+            label = "buttonScale"
+        )
 
         ElevatedButton(
             onClick = {
@@ -332,27 +341,41 @@ fun MainScreen(viewModel: MainViewModel) {
 
         if (lastBeer != null) {
             ElevatedCard(
-                modifier = Modifier.fillMaxWidth(0.9f),
-                colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                modifier = Modifier.fillMaxWidth(),
+                elevation = CardDefaults.elevatedCardElevation(defaultElevation = 2.dp),
+                colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.surface),
                 shape = RoundedCornerShape(16.dp)
             ) {
                 Column(modifier = Modifier.padding(16.dp).fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
                     Text(
-                        text = "${lastBeer!!.type.displayName} a las ${dateFormat.format(Date(lastBeer!!.timestamp))}", 
-                        fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                        text = "Última ronda",
+                        style = MaterialTheme.typography.labelMedium,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
-                    Spacer(modifier = Modifier.height(12.dp))
-                    OutlinedButton(
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "${lastBeer!!.type.displayName} a las ${dateFormat.format(Date(lastBeer!!.timestamp))}", 
+                        style = MaterialTheme.typography.bodyLarge,
+                        fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    if (lastBeer!!.locationName != null) {
+                        Text(
+                            text = lastBeer!!.locationName!!,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(16.dp))
+                    TextButton(
                         onClick = { 
                             viewModel.undoLastBeer { msg ->
                                 Toast.makeText(context, msg, Toast.LENGTH_SHORT).show()
                             }
-                        }, 
-                        shape = RoundedCornerShape(12.dp),
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                        },
+                        colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
                     ) {
-                        Text("Deshacer última birra")
+                        Text("Deshacer última birra", style = MaterialTheme.typography.labelLarge)
                     }
                 }
             }

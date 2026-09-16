@@ -3,8 +3,14 @@ package com.example.contadordebirras.theme
 import androidx.compose.ui.graphics.Color
 
 val SpanishRed = Color(0xFFA6192E)
-val SpanishRedDark = Color(0xFF7A1222)
 val SpanishCream = Color(0xFFFDF7E3)
-val DarkCharcoal = Color(0xFF212121)
-val LightGreySurface = Color(0xFFF5F5F5)
-val SurfaceDark = Color(0xFF1E1E1E)
+val Charcoal = Color(0xFF262421)
+val DarkCream = Color(0xFFF1E8D2)
+val AmberTostado = Color(0xFFC87918)
+val BottleGreen = Color(0xFF356147)
+val DarkRedError = Color(0xFF8F2630)
+
+// Grays for borders/outlines
+val OutlineLight = Color(0xFFD6CDBA)
+val OutlineDark = Color(0xFF4A4641)
+val SurfaceVariantDark = Color(0xFF33302C)
