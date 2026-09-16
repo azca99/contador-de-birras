@@ -22,6 +22,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
@@ -294,7 +295,11 @@ fun BeerPhotoViewer(beer: BeerEntity, onDismiss: () -> Unit) {
                 contentDescription = "Foto de ${beer.type.displayName} del ${java.text.SimpleDateFormat("dd/MM/yyyy", java.util.Locale.getDefault()).format(java.util.Date(beer.timestamp))}",
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(vertical = 48.dp),
+                    .padding(vertical = 48.dp)
+                    .clickable(
+                        indication = null,
+                        interactionSource = remember { MutableInteractionSource() }
+                    ) {},
                 contentScale = ContentScale.Fit
             )
             
@@ -314,6 +319,10 @@ fun BeerPhotoViewer(beer: BeerEntity, onDismiss: () -> Unit) {
                 modifier = Modifier
                     .align(Alignment.BottomStart)
                     .padding(24.dp)
+                    .clickable(
+                        indication = null,
+                        interactionSource = remember { MutableInteractionSource() }
+                    ) {}
             ) {
                 Text(text = beer.type.displayName, style = MaterialTheme.typography.titleLarge, color = Color.White)
                 val loc = beer.locationName ?: if (beer.latitude != null) "Ubicación registrada" else null
