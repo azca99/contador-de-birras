@@ -294,8 +294,7 @@ fun BeerPhotoViewer(beer: BeerEntity, onDismiss: () -> Unit) {
                 contentDescription = "Foto de ${beer.type.displayName} del ${java.text.SimpleDateFormat("dd/MM/yyyy", java.util.Locale.getDefault()).format(java.util.Date(beer.timestamp))}",
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(vertical = 48.dp)
-                    .clickable(enabled = false) {}, // prevent clicks on image from closing
+                    .padding(vertical = 48.dp),
                 contentScale = ContentScale.Fit
             )
             
