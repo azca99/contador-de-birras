@@ -109,17 +109,28 @@ class AuthRepository(private val context: Context) {
         } catch (e: Exception) {
             val isDebug = com.example.contadordebirras.BuildConfig.DEBUG
             if (isDebug) {
-                android.util.Log.e("AuthRepository", "Error en setUsername: ${e.message}", e)
+                android.util.Log.e("AuthRepository", "Error en setUsername: ${e.message}")
             }
             if (e is com.google.firebase.functions.FirebaseFunctionsException) {
-                if (e.code == com.google.firebase.functions.FirebaseFunctionsException.Code.ALREADY_EXISTS) {
-                    return "Ese username ya está en uso."
-                }
-                if (e.code == com.google.firebase.functions.FirebaseFunctionsException.Code.INVALID_ARGUMENT) {
-                    return e.message ?: "Username inválido."
+                when (e.code) {
+                    com.google.firebase.functions.FirebaseFunctionsException.Code.ALREADY_EXISTS -> {
+                        return "Ese username ya está en uso."
+                    }
+                    com.google.firebase.functions.FirebaseFunctionsException.Code.INVALID_ARGUMENT -> {
+                        return e.message ?: "Username inválido."
+                    }
+                    com.google.firebase.functions.FirebaseFunctionsException.Code.UNAUTHENTICATED -> {
+                        return "Sesión inválida. Por favor, inicia sesión de nuevo e inténtalo."
+                    }
+                    com.google.firebase.functions.FirebaseFunctionsException.Code.UNAVAILABLE -> {
+                        return "No se pudo guardar el username. Comprueba tu conexión e inténtalo de nuevo."
+                    }
+                    else -> {
+                        return "Error al verificar o guardar el username."
+                    }
                 }
             }
-            return "Error al verificar o guardar el username."
+            return "No se pudo guardar el username. Comprueba tu conexión e inténtalo de nuevo."
         }
     }
 }

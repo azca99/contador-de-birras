@@ -28,8 +28,8 @@ describe("USERNAMES AND PUBLIC USERS (security_usernames.test.js)", () => {
     await assertFails(alice.collection("usernames").doc("alice").set({ uid: "alice" }));
   });
 
-  it("client can read from usernames collection if authenticated", async () => {
-    await assertSucceeds(alice.collection("usernames").doc("alice").get());
+  it("client cannot read from usernames collection if authenticated", async () => {
+    await assertFails(alice.collection("usernames").doc("alice").get());
   });
   
   it("unauthenticated cannot read from usernames collection", async () => {

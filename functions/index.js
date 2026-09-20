@@ -77,7 +77,21 @@ exports.setUsername = functions.runWith({ enforceAppCheck: true }).https.onCall(
                 throw new functions.https.HttpsError("already-exists", "Ese username ya está en uso.");
             }
             
+            if (!usernameDoc.exists) {
+                const legacyQuery = await t.get(db.collection("publicUsers").where("usernameLowercase", "==", usernameLowercase).limit(1));
+                if (!legacyQuery.empty && legacyQuery.docs[0].id !== uid) {
+                    throw new functions.https.HttpsError("already-exists", "Ese username ya está en uso.");
+                }
+            }
+            
             const publicUserDoc = await t.get(publicUserRef);
+            
+            let publicData = {
+                username: normalizedUsername,
+                usernameLowercase: usernameLowercase,
+                usernameUpdatedAt: admin.firestore.FieldValue.serverTimestamp()
+            };
+
             if (publicUserDoc.exists) {
                 const oldUsernameLowercase = publicUserDoc.data().usernameLowercase;
                 if (oldUsernameLowercase && oldUsernameLowercase !== usernameLowercase) {
@@ -87,6 +101,10 @@ exports.setUsername = functions.runWith({ enforceAppCheck: true }).https.onCall(
                         t.delete(oldUsernameRef);
                     }
                 }
+            } else {
+                publicData.uid = uid;
+                publicData.createdAt = admin.firestore.FieldValue.serverTimestamp();
+                publicData.updatedAt = admin.firestore.FieldValue.serverTimestamp();
             }
             
             t.set(usernameRef, {
@@ -94,11 +112,7 @@ exports.setUsername = functions.runWith({ enforceAppCheck: true }).https.onCall(
                 usernameLowercase: usernameLowercase
             });
             
-            t.set(publicUserRef, {
-                username: normalizedUsername,
-                usernameLowercase: usernameLowercase,
-                usernameUpdatedAt: admin.firestore.FieldValue.serverTimestamp()
-            }, { merge: true });
+            t.set(publicUserRef, publicData, { merge: true });
         });
         
         return { success: true };

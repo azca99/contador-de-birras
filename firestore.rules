@@ -47,8 +47,7 @@ service cloud.firestore {
     
     // --- USERNAMES ---
     match /usernames/{username} {
-      allow read: if isSignedIn();
-      allow write: if false; // Solo administrable via Cloud Functions
+      allow read, write: if false; // Solo administrable via Cloud Functions
     }
 
     // --- FRIENDSHIPS ---
