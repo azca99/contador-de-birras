@@ -44,6 +44,73 @@ exports.searchUser = functions.runWith({ enforceAppCheck: true }).https.onCall(a
     };
 });
 
+exports.setUsername = functions.runWith({ enforceAppCheck: true }).https.onCall(async (data, context) => {
+    if (!context.auth) {
+        throw new functions.https.HttpsError("unauthenticated", "Debe iniciar sesión para establecer un username.");
+    }
+    
+    const rawUsername = data.username;
+    if (!rawUsername || typeof rawUsername !== "string") {
+        throw new functions.https.HttpsError("invalid-argument", "Username inválido.");
+    }
+    
+    const normalizedUsername = rawUsername.trim();
+    if (normalizedUsername.length < 3 || normalizedUsername.length > 20) {
+        throw new functions.https.HttpsError("invalid-argument", "El username debe tener entre 3 y 20 caracteres.");
+    }
+    const regex = /^[a-zA-Z0-9_.]+$/;
+    if (!regex.test(normalizedUsername)) {
+        throw new functions.https.HttpsError("invalid-argument", "Solo se permiten letras, números, puntos y guiones bajos.");
+    }
+    
+    const usernameLowercase = normalizedUsername.toLowerCase();
+    const uid = context.auth.uid;
+    const db = admin.firestore();
+    
+    const usernameRef = db.collection("usernames").doc(usernameLowercase);
+    const publicUserRef = db.collection("publicUsers").doc(uid);
+    
+    try {
+        await db.runTransaction(async (t) => {
+            const usernameDoc = await t.get(usernameRef);
+            if (usernameDoc.exists && usernameDoc.data().uid !== uid) {
+                throw new functions.https.HttpsError("already-exists", "Ese username ya está en uso.");
+            }
+            
+            const publicUserDoc = await t.get(publicUserRef);
+            if (publicUserDoc.exists) {
+                const oldUsernameLowercase = publicUserDoc.data().usernameLowercase;
+                if (oldUsernameLowercase && oldUsernameLowercase !== usernameLowercase) {
+                    const oldUsernameRef = db.collection("usernames").doc(oldUsernameLowercase);
+                    const oldUsernameDoc = await t.get(oldUsernameRef);
+                    if (oldUsernameDoc.exists && oldUsernameDoc.data().uid === uid) {
+                        t.delete(oldUsernameRef);
+                    }
+                }
+            }
+            
+            t.set(usernameRef, {
+                uid: uid,
+                usernameLowercase: usernameLowercase
+            });
+            
+            t.set(publicUserRef, {
+                username: normalizedUsername,
+                usernameLowercase: usernameLowercase,
+                usernameUpdatedAt: admin.firestore.FieldValue.serverTimestamp()
+            }, { merge: true });
+        });
+        
+        return { success: true };
+    } catch (error) {
+        if (error.code === "already-exists" || error.code === "invalid-argument") {
+            throw error;
+        }
+        console.error("Error in setUsername transaction:", error);
+        throw new functions.https.HttpsError("internal", "Error al verificar o guardar el username.");
+    }
+});
+
 exports.getGroupRanking = functions.runWith({ enforceAppCheck: true }).https.onCall(async (data, context) => {
     if (!context.auth) {
         throw new functions.https.HttpsError("unauthenticated", "Debe iniciar sesión.");

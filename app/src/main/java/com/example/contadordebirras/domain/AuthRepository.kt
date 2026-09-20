@@ -98,32 +98,27 @@ class AuthRepository(private val context: Context) {
         }
 
         try {
-            // Comprobar disponibilidad
-            val querySnapshot = firestore.collection("publicUsers")
-                .whereEqualTo("usernameLowercase", usernameLowercase)
-                .limit(1)
-                .get()
-                .await()
-
-            if (!querySnapshot.isEmpty) {
-                val existingDoc = querySnapshot.documents[0]
-                if (existingDoc.id != user.uid) {
-                    return "Ese username ya está en uso."
-                }
-            }
-
-            // Guardar username
-            val publicUserRef = firestore.collection("publicUsers").document(user.uid)
-            val publicData = hashMapOf<String, Any?>(
-                "username" to normalizedUsername,
-                "usernameLowercase" to usernameLowercase,
-                "usernameUpdatedAt" to com.google.firebase.Timestamp.now()
-            )
+            val functions = com.google.firebase.functions.FirebaseFunctions.getInstance()
+            val data = hashMapOf("username" to normalizedUsername)
             
-            publicUserRef.set(publicData, com.google.firebase.firestore.SetOptions.merge()).await()
+            functions.getHttpsCallable("setUsername")
+                .call(data)
+                .await()
+                
             return null // Éxito
         } catch (e: Exception) {
-            e.printStackTrace()
+            val isDebug = com.example.contadordebirras.BuildConfig.DEBUG
+            if (isDebug) {
+                android.util.Log.e("AuthRepository", "Error en setUsername: ${e.message}", e)
+            }
+            if (e is com.google.firebase.functions.FirebaseFunctionsException) {
+                if (e.code == com.google.firebase.functions.FirebaseFunctionsException.Code.ALREADY_EXISTS) {
+                    return "Ese username ya está en uso."
+                }
+                if (e.code == com.google.firebase.functions.FirebaseFunctionsException.Code.INVALID_ARGUMENT) {
+                    return e.message ?: "Username inválido."
+                }
+            }
             return "Error al verificar o guardar el username."
         }
     }
