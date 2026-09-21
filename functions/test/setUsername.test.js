@@ -74,7 +74,7 @@ describe('setUsername Cloud Function', () => {
         }
     });
 
-    it('should throw already-exists if legacy username exists in publicUsers without reservation', async () => {
+    it('should throw already-exists if legacy username exists in publicUsers belonging to someone else', async () => {
         await db.collection('publicUsers').doc('legacyUser').set({
             uid: 'legacyUser',
             username: 'Bob',
@@ -89,7 +89,19 @@ describe('setUsername Cloud Function', () => {
         }
     });
 
-    it('should allow legacy owner to reclaim their own username and create reservation', async () => {
+    it('should throw already-exists if multiple users have legacy username including someone else', async () => {
+        await db.collection('publicUsers').doc('legacyUser1').set({ uid: 'legacyUser1', username: 'Bob', usernameLowercase: 'bob' });
+        await db.collection('publicUsers').doc('legacyUser2').set({ uid: 'legacyUser2', username: 'Bob', usernameLowercase: 'bob' });
+        
+        try {
+            await setUsernameWrapped({ username: 'Bob' }, { auth: { uid: 'legacyUser1' } });
+            assert.fail('Should have thrown already-exists because legacyUser2 also has it');
+        } catch (e) {
+            assert.strictEqual(e.code, 'already-exists');
+        }
+    });
+
+    it('should allow legacy owner to reclaim their own username if they are the ONLY one who has it', async () => {
         await db.collection('publicUsers').doc('legacyUser').set({
             uid: 'legacyUser',
             username: 'Bob',

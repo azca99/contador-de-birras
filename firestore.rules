@@ -42,7 +42,7 @@ service cloud.firestore {
                     && request.resource.data.get('usernameLowercase', null) == resource.data.get('usernameLowercase', null)
                     && request.resource.data.get('usernameUpdatedAt', null) == resource.data.get('usernameUpdatedAt', null)
                     && request.resource.data.keys().hasOnly(['uid', 'displayName', 'username', 'usernameLowercase', 'photoUrl', 'createdAt', 'updatedAt', 'usernameUpdatedAt']);
-      allow delete: if isOwner(userId);
+      allow delete: if false;
     }
     
     // --- USERNAMES ---

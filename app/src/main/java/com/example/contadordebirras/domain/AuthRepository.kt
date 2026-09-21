@@ -82,11 +82,10 @@ class AuthRepository(private val context: Context) {
     }
 
     suspend fun setUsername(username: String): String? {
-        val user = auth.currentUser ?: return "Debes iniciar sesión para asignar un username."
-        val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
+        auth.currentUser ?: return "Debes iniciar sesión para asignar un username."
         
         val normalizedUsername = username.trim()
-        val usernameLowercase = normalizedUsername.lowercase()
+
 
         // Reglas de validación
         if (normalizedUsername.length !in 3..20) {

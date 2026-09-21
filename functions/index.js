@@ -78,9 +78,12 @@ exports.setUsername = functions.runWith({ enforceAppCheck: true }).https.onCall(
             }
             
             if (!usernameDoc.exists) {
-                const legacyQuery = await t.get(db.collection("publicUsers").where("usernameLowercase", "==", usernameLowercase).limit(1));
-                if (!legacyQuery.empty && legacyQuery.docs[0].id !== uid) {
-                    throw new functions.https.HttpsError("already-exists", "Ese username ya está en uso.");
+                const legacyQuery = await t.get(db.collection("publicUsers").where("usernameLowercase", "==", usernameLowercase));
+                if (!legacyQuery.empty) {
+                    const hasOtherOwner = legacyQuery.docs.some(doc => doc.id !== uid);
+                    if (hasOtherOwner) {
+                        throw new functions.https.HttpsError("already-exists", "Ese username ya está en uso.");
+                    }
                 }
             }
             

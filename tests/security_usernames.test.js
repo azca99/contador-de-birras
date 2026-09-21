@@ -67,7 +67,29 @@ describe("USERNAMES AND PUBLIC USERS (security_usernames.test.js)", () => {
     
     // Trying to change displayName should succeed
     await assertSucceeds(alice.collection("publicUsers").doc("alice").update({
-      displayName: "Alice New"
+      displayName: "Alice New",
+      photoUrl: "https://example.com/photo.jpg"
     }));
+  });
+
+  it("client cannot delete publicUsers document", async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await context.firestore().collection("publicUsers").doc("alice").set({
+        uid: "alice",
+        displayName: "Alice",
+        username: "alice",
+        usernameLowercase: "alice",
+        createdAt: 123,
+        updatedAt: 123,
+        usernameUpdatedAt: 123
+      });
+    });
+    
+    // Owner cannot delete
+    await assertFails(alice.collection("publicUsers").doc("alice").delete());
+    
+    // Other users cannot delete
+    let bob = testEnv.authenticatedContext("bob").firestore();
+    await assertFails(bob.collection("publicUsers").doc("alice").delete());
   });
 });
