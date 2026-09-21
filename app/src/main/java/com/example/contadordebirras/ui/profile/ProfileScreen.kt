@@ -18,6 +18,7 @@ import com.google.firebase.auth.GoogleAuthProvider
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.EmojiEvents
 import androidx.compose.ui.graphics.Color
+import android.widget.Toast
 
 @Composable
 fun ProfileScreen(viewModel: ProfileViewModel, onAchievementsClick: () -> Unit) {
@@ -112,7 +113,7 @@ fun ProfileScreen(viewModel: ProfileViewModel, onAchievementsClick: () -> Unit) 
             onClick = { 
                 if (localUsername != null) {
                     viewModel.setUsername(localUsername!!) {
-                        // Success handling if needed
+                        Toast.makeText(context, "Username guardado", Toast.LENGTH_SHORT).show()
                     }
                 }
             },
