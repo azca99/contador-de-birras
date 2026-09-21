@@ -177,4 +177,41 @@ describe('deleteGroup Cloud Function', () => {
             assert.strictEqual(e.code, 'not-found');
         }
     });
+
+    it('19. admin can retry deletion if group is already in deleting:true state', async () => {
+        await db.collection('groups').doc('group_retry').set({ adminUid: 'admin1', members: ['admin1'], deleting: true });
+        
+        await db.collection('groups').doc('group_retry').collection('comments').doc('comment1').set({ text: 'Hello 1' });
+        
+        await deleteGroupWrapped({ groupId: 'group_retry' }, { auth: { uid: 'admin1' } });
+        
+        const groupSnap = await db.collection('groups').doc('group_retry').get();
+        assert.ok(!groupSnap.exists, 'Group should be completely deleted after retry');
+    });
+
+    it('20. non-admin member cannot retry or delete a group in deleting:true state', async () => {
+        await db.collection('groups').doc('group_retry').set({ adminUid: 'admin1', members: ['admin1', 'member1'], deleting: true });
+        
+        try {
+            await deleteGroupWrapped({ groupId: 'group_retry' }, { auth: { uid: 'member1' } });
+            assert.fail('Should have thrown permission-denied');
+        } catch (e) {
+            assert.strictEqual(e.code, 'permission-denied');
+        }
+        
+        const groupSnap = await db.collection('groups').doc('group_retry').get();
+        assert.ok(groupSnap.exists, 'Group should still exist');
+        assert.strictEqual(groupSnap.data().deleting, true, 'Deleting flag should still be true');
+    });
+
+    it('21. outsider cannot retry or delete a group in deleting:true state', async () => {
+        await db.collection('groups').doc('group_retry').set({ adminUid: 'admin1', members: ['admin1'], deleting: true });
+        
+        try {
+            await deleteGroupWrapped({ groupId: 'group_retry' }, { auth: { uid: 'outsider1' } });
+            assert.fail('Should have thrown permission-denied');
+        } catch (e) {
+            assert.strictEqual(e.code, 'permission-denied');
+        }
+    });
 });

@@ -145,4 +145,122 @@ describe("GROUPS AND GROUP DELETION SECURITY RULES", () => {
     const dbBob = testEnv.authenticatedContext("bob").firestore();
     await assertSucceeds(dbBob.collection("groupInvitations").doc("g1_bob").get());
   });
+
+  // deleting: true tests
+  it("admin cannot set deleting:true", async () => {
+    const db = testEnv.authenticatedContext("alice").firestore();
+    await assertFails(db.collection("groups").doc("g3").set({
+      adminUid: "alice",
+      members: ["alice"],
+      name: "Group 3",
+      createdAt: 123,
+      deleting: true
+    }));
+  });
+
+  it("member cannot set deleting:true", async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await context.firestore().collection("groups").doc("g1").set({ adminUid: "alice", members: ["alice", "bob"], name: "Group", createdAt: 123 });
+    });
+    const db = testEnv.authenticatedContext("bob").firestore();
+    await assertFails(db.collection("groups").doc("g1").update({
+      deleting: true
+    }));
+  });
+
+  it("admin cannot eliminate or change deleting flag", async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await context.firestore().collection("groups").doc("g1").set({ adminUid: "alice", members: ["alice"], name: "Group", createdAt: 123, deleting: true });
+    });
+    const db = testEnv.authenticatedContext("alice").firestore();
+    await assertFails(db.collection("groups").doc("g1").update({
+      deleting: false
+    }));
+  });
+
+  it("member cannot abandon when deleting=true", async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await context.firestore().collection("groups").doc("g1").set({ adminUid: "alice", members: ["alice", "bob"], name: "Group", createdAt: 123, deleting: true });
+    });
+    const db = testEnv.authenticatedContext("bob").firestore();
+    await assertFails(db.collection("groups").doc("g1").update({
+      adminUid: "alice",
+      members: ["alice"],
+      name: "Group",
+      createdAt: 123
+    }));
+  });
+
+  it("new invitation or resend blocked when deleting=true", async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await context.firestore().collection("groups").doc("g1").set({ adminUid: "alice", members: ["alice"], name: "Group", createdAt: 123, deleting: true });
+    });
+    const db = testEnv.authenticatedContext("alice").firestore();
+    await assertFails(db.collection("groupInvitations").doc("g1_bob").set({
+      groupId: "g1",
+      groupName: "Group",
+      inviteeUid: "bob",
+      inviterUid: "alice",
+      status: "PENDING"
+    }));
+  });
+
+  it("invitation acceptance blocked when deleting=true", async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await context.firestore().collection("groups").doc("g1").set({ adminUid: "alice", members: ["alice"], name: "Group", createdAt: 123, deleting: true });
+      await context.firestore().collection("groupInvitations").doc("g1_bob").set({ groupId: "g1", groupName: "Group", inviteeUid: "bob", inviterUid: "alice", status: "PENDING" });
+    });
+    const db = testEnv.authenticatedContext("bob").firestore();
+    await assertFails(db.collection("groupInvitations").doc("g1_bob").update({
+      status: "ACCEPTED"
+    }));
+  });
+
+  it("create comment blocked when deleting=true", async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await context.firestore().collection("groups").doc("g1").set({ adminUid: "alice", members: ["alice", "bob"], name: "Group", createdAt: 123, deleting: true });
+      await context.firestore().collection("publicUsers").doc("bob").set({ displayName: "Bob", username: "bobby" });
+    });
+    const db = testEnv.authenticatedContext("bob").firestore();
+    await assertFails(db.collection("groups").doc("g1").collection("comments").doc("c1").set({
+      text: "hello",
+      authorUid: "bob",
+      authorName: "Bob",
+      authorUsername: "bobby",
+      createdAt: 123
+    }));
+  });
+
+  it("edit comment blocked when deleting=true", async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await context.firestore().collection("groups").doc("g1").set({ adminUid: "alice", members: ["alice", "bob"], name: "Group", createdAt: 123, deleting: true });
+      await context.firestore().collection("groups").doc("g1").collection("comments").doc("c1").set({ text: "old", authorUid: "bob", authorName: "Bob", authorUsername: "bobby", createdAt: 123 });
+    });
+    const db = testEnv.authenticatedContext("bob").firestore();
+    await assertFails(db.collection("groups").doc("g1").collection("comments").doc("c1").update({
+      text: "new"
+    }));
+  });
+
+  it("delete comment blocked when deleting=true", async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await context.firestore().collection("groups").doc("g1").set({ adminUid: "alice", members: ["alice", "bob"], name: "Group", createdAt: 123, deleting: true });
+      await context.firestore().collection("groups").doc("g1").collection("comments").doc("c1").set({ text: "hello", authorUid: "bob", authorName: "Bob", authorUsername: "bobby", createdAt: 123 });
+    });
+    const db = testEnv.authenticatedContext("bob").firestore();
+    await assertFails(db.collection("groups").doc("g1").collection("comments").doc("c1").delete());
+  });
+
+  it("normal operations work when deleting does not exist", async () => {
+    // This just re-verifies one normal operation to make sure we didn't break them globally
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await context.firestore().collection("groups").doc("g1").set({ adminUid: "alice", members: ["alice", "bob"], name: "Group", createdAt: 123 });
+      await context.firestore().collection("publicUsers").doc("bob").set({ displayName: "Bob", username: "bobby" });
+      await context.firestore().collection("groups").doc("g1").collection("comments").doc("c1").set({ text: "hello", authorUid: "bob", authorName: "Bob", authorUsername: "bobby", createdAt: 123 });
+    });
+    const db = testEnv.authenticatedContext("bob").firestore();
+    await assertSucceeds(db.collection("groups").doc("g1").collection("comments").doc("c1").update({
+      text: "new"
+    }));
+  });
 });

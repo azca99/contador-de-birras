@@ -139,15 +139,24 @@ exports.deleteGroup = functions.runWith({ enforceAppCheck: true }).https.onCall(
 
     const db = admin.firestore();
     const groupRef = db.collection("groups").doc(groupId);
-    const groupDoc = await groupRef.get();
     
-    if (!groupDoc.exists) {
-        throw new functions.https.HttpsError("not-found", "Grupo no encontrado.");
-    }
-    
-    if (groupDoc.data().adminUid !== context.auth.uid) {
-        throw new functions.https.HttpsError("permission-denied", "Solo el administrador puede eliminar el grupo.");
-    }
+    await db.runTransaction(async (transaction) => {
+        const groupDoc = await transaction.get(groupRef);
+        
+        if (!groupDoc.exists) {
+            throw new functions.https.HttpsError("not-found", "Grupo no encontrado.");
+        }
+        
+        const group = groupDoc.data();
+        if (group.adminUid !== context.auth.uid) {
+            throw new functions.https.HttpsError("permission-denied", "Solo el administrador puede eliminar el grupo.");
+        }
+        
+        // Si no está ya en proceso de borrado, lo marcamos
+        if (group.deleting !== true) {
+            transaction.update(groupRef, { deleting: true });
+        }
+    });
     
     try {
         // 1. Eliminar recursivamente todas las subcolecciones del grupo (e.g. comments)
