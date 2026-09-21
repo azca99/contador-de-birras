@@ -184,6 +184,7 @@ service cloud.firestore {
                         && request.resource.data.adminUid == resource.data.adminUid
                         && request.resource.data.createdAt == resource.data.createdAt
                         && resource.data.members.hasAll(request.resource.data.members)
+                        && (request.auth.uid in request.resource.data.members)
                       )
                       ||
                       // 2. Member auto-expels
@@ -211,7 +212,7 @@ service cloud.firestore {
                       )
                     );
                     
-      allow delete: if isGroupAdmin(resource.data);
+      allow delete: if false;
 
       // --- GROUP COMMENTS ---
       match /comments/{commentId} {

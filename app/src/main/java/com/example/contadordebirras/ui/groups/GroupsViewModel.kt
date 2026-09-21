@@ -49,11 +49,15 @@ class GroupDetailViewModel(private val groupsRepository: GroupsRepository, priva
     private val _comments = MutableStateFlow<List<com.example.contadordebirras.domain.GroupComment>>(emptyList())
     val comments: StateFlow<List<com.example.contadordebirras.domain.GroupComment>> = _comments.asStateFlow()
 
+    private val _adminUid = MutableStateFlow<String?>(null)
+    val adminUid: StateFlow<String?> = _adminUid.asStateFlow()
+
     private val _isLoading = MutableStateFlow(false)
     val isLoading: StateFlow<Boolean> = _isLoading.asStateFlow()
 
     private var membersJob: kotlinx.coroutines.Job? = null
     private var commentsJob: kotlinx.coroutines.Job? = null
+    private var adminUidJob: kotlinx.coroutines.Job? = null
 
     fun loadRankings(groupId: String) {
         viewModelScope.launch {
@@ -80,6 +84,13 @@ class GroupDetailViewModel(private val groupsRepository: GroupsRepository, priva
             }
         }
         
+        adminUidJob?.cancel()
+        adminUidJob = viewModelScope.launch {
+            groupsRepository.getGroupAdminUid(groupId).collect { uid ->
+                _adminUid.value = uid
+            }
+        }
+        
         membersJob?.cancel()
         membersJob = viewModelScope.launch {
             groupsRepository.getGroupMembers(groupId).collect { membersList ->
@@ -92,6 +103,13 @@ class GroupDetailViewModel(private val groupsRepository: GroupsRepository, priva
             groupsRepository.getGroupComments(groupId).collect { commentsList ->
                 _comments.value = commentsList
             }
+        }
+    }
+
+    fun deleteGroup(groupId: String, onResult: (Boolean) -> Unit) {
+        viewModelScope.launch {
+            val success = groupsRepository.deleteGroup(groupId)
+            onResult(success)
         }
     }
 

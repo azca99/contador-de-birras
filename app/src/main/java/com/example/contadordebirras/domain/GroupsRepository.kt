@@ -186,9 +186,15 @@ class GroupsRepository(private val beerRepository: BeerRepository? = null) {
 
     suspend fun deleteGroup(groupId: String): Boolean {
         return try {
-            firestore.collection("groups").document(groupId).delete().await()
+            functions.getHttpsCallable("deleteGroup").call(mapOf("groupId" to groupId)).await()
             true
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: FirebaseFunctionsException) {
+            if (BuildConfig.DEBUG) Log.e("GroupFirebaseDiag", "FUNCTION_FAILURE function=deleteGroup code=${e.code} message=${e.message}", e)
+            false
         } catch (e: Exception) {
+            if (BuildConfig.DEBUG) Log.e("GroupFirebaseDiag", "FUNCTION_FAILURE function=deleteGroup type=${e.javaClass.simpleName} message=${e.message}", e)
             false
         }
     }
@@ -219,6 +225,19 @@ class GroupsRepository(private val beerRepository: BeerRepository? = null) {
             if (BuildConfig.DEBUG) Log.e("GroupFirebaseDiag", "FUNCTION_FAILURE function=getGroupRanking type=${e.javaClass.simpleName} message=${e.message}", e)
             Result.failure(e)
         }
+    }
+
+    fun getGroupAdminUid(groupId: String): Flow<String?> = callbackFlow {
+        val listenerRegistration = firestore.collection("groups").document(groupId)
+            .addSnapshotListener { groupDoc, error ->
+                if (error != null || groupDoc == null || !groupDoc.exists()) {
+                    trySend(null)
+                    return@addSnapshotListener
+                }
+                val adminUid = groupDoc.getString("adminUid")
+                trySend(adminUid)
+            }
+        awaitClose { listenerRegistration.remove() }
     }
 
     fun getGroupMembers(groupId: String): Flow<List<GroupMemberDetail>> = callbackFlow {

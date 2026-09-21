@@ -128,6 +128,44 @@ exports.setUsername = functions.runWith({ enforceAppCheck: true }).https.onCall(
     }
 });
 
+exports.deleteGroup = functions.runWith({ enforceAppCheck: true }).https.onCall(async (data, context) => {
+    if (!context.auth) {
+        throw new functions.https.HttpsError("unauthenticated", "Debe iniciar sesión para eliminar el grupo.");
+    }
+    const groupId = data.groupId;
+    if (!groupId || typeof groupId !== "string") {
+        throw new functions.https.HttpsError("invalid-argument", "Falta groupId.");
+    }
+
+    const db = admin.firestore();
+    const groupRef = db.collection("groups").doc(groupId);
+    const groupDoc = await groupRef.get();
+    
+    if (!groupDoc.exists) {
+        throw new functions.https.HttpsError("not-found", "Grupo no encontrado.");
+    }
+    
+    if (groupDoc.data().adminUid !== context.auth.uid) {
+        throw new functions.https.HttpsError("permission-denied", "Solo el administrador puede eliminar el grupo.");
+    }
+    
+    try {
+        // Eliminar invitaciones relacionadas al grupo usando BulkWriter
+        const bulkWriter = db.bulkWriter();
+        const invSnap = await db.collection("groupInvitations").where("groupId", "==", groupId).get();
+        invSnap.forEach(doc => bulkWriter.delete(doc.ref));
+        await bulkWriter.close();
+        
+        // Eliminar recursivamente el grupo y sus subcolecciones (e.g. comments)
+        await db.recursiveDelete(groupRef);
+        
+        return { success: true };
+    } catch (error) {
+        console.error("Error en deleteGroup:", error);
+        throw new functions.https.HttpsError("internal", "Error interno al eliminar el grupo.");
+    }
+});
+
 exports.getGroupRanking = functions.runWith({ enforceAppCheck: true }).https.onCall(async (data, context) => {
     if (!context.auth) {
         throw new functions.https.HttpsError("unauthenticated", "Debe iniciar sesión.");

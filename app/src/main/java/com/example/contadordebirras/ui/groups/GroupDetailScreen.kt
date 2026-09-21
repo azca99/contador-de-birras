@@ -6,6 +6,7 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.PersonAdd
 import androidx.compose.material.icons.rounded.ExitToApp
+import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -36,6 +37,12 @@ fun GroupDetailScreen(groupId: String, viewModel: GroupDetailViewModel, onBack: 
     var selectedMainTab by remember { mutableStateOf(0) } // 0 = Ranking, 1 = Participantes, 2 = Comentarios
     var commentInput by remember { mutableStateOf("") }
     var isSendingComment by remember { mutableStateOf(false) }
+
+    var showDeleteConfirmDialog by remember { mutableStateOf(false) }
+    var isDeleting by remember { mutableStateOf(false) }
+    var deleteErrorMsg by remember { mutableStateOf<String?>(null) }
+    
+    val adminUid by viewModel.adminUid.collectAsState()
 
     LaunchedEffect(groupId) {
         viewModel.loadRankings(groupId)
@@ -176,20 +183,35 @@ fun GroupDetailScreen(groupId: String, viewModel: GroupDetailViewModel, onBack: 
                     
                     item {
                         Spacer(modifier = Modifier.height(24.dp))
-                        OutlinedButton(
-                            onClick = {
-                                currentUserUid?.let { uid ->
-                                    viewModel.removeMember(groupId, uid) { success ->
-                                        if (success) onBack()
+                        if (adminUid == currentUserUid && currentUserUid != null) {
+                            OutlinedButton(
+                                onClick = { showDeleteConfirmDialog = true },
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 32.dp),
+                                colors = ButtonDefaults.outlinedButtonColors(
+                                    contentColor = MaterialTheme.colorScheme.onErrorContainer,
+                                    containerColor = MaterialTheme.colorScheme.errorContainer
+                                )
+                            ) {
+                                Icon(Icons.Rounded.Delete, contentDescription = null)
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Eliminar Grupo")
+                            }
+                        } else if (adminUid != null) {
+                            OutlinedButton(
+                                onClick = {
+                                    currentUserUid?.let { uid ->
+                                        viewModel.removeMember(groupId, uid) { success ->
+                                            if (success) onBack()
+                                        }
                                     }
-                                }
-                            },
-                            modifier = Modifier.fillMaxWidth().padding(horizontal = 32.dp),
-                            colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)
-                        ) {
-                            Icon(Icons.Rounded.ExitToApp, contentDescription = null)
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Abandonar Grupo")
+                                },
+                                modifier = Modifier.fillMaxWidth().padding(horizontal = 32.dp),
+                                colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                            ) {
+                                Icon(Icons.Rounded.ExitToApp, contentDescription = null)
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Text("Abandonar Grupo")
+                            }
                         }
                     }
                 }
@@ -295,6 +317,63 @@ fun GroupDetailScreen(groupId: String, viewModel: GroupDetailViewModel, onBack: 
                     emailInput = ""
                     addResultMsg = null
                 }) {
+                    Text("Cancelar")
+                }
+            }
+        )
+    }
+
+    if (showDeleteConfirmDialog) {
+        AlertDialog(
+            onDismissRequest = { 
+                if (!isDeleting) {
+                    showDeleteConfirmDialog = false
+                    deleteErrorMsg = null
+                }
+            },
+            title = { Text("¿Eliminar este grupo?") },
+            text = {
+                Column {
+                    Text("El grupo, sus comentarios y sus invitaciones se eliminarán definitivamente para todos los participantes.")
+                    if (deleteErrorMsg != null) {
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(deleteErrorMsg!!, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+                    }
+                    if (isDeleting) {
+                        Spacer(modifier = Modifier.height(16.dp))
+                        CircularProgressIndicator(modifier = Modifier.align(Alignment.CenterHorizontally))
+                    }
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        isDeleting = true
+                        deleteErrorMsg = null
+                        viewModel.deleteGroup(groupId) { success ->
+                            isDeleting = false
+                            if (success) {
+                                showDeleteConfirmDialog = false
+                                onBack()
+                            } else {
+                                deleteErrorMsg = "No se pudo eliminar el grupo. Inténtalo de nuevo."
+                            }
+                        }
+                    },
+                    enabled = !isDeleting,
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
+                ) {
+                    Text("Eliminar grupo")
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = { 
+                        showDeleteConfirmDialog = false
+                        deleteErrorMsg = null
+                    },
+                    enabled = !isDeleting
+                ) {
                     Text("Cancelar")
                 }
             }
