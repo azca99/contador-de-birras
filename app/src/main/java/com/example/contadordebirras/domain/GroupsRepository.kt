@@ -192,6 +192,9 @@ class GroupsRepository(private val beerRepository: BeerRepository? = null) {
             throw e
         } catch (e: FirebaseFunctionsException) {
             if (BuildConfig.DEBUG) Log.e("GroupFirebaseDiag", "FUNCTION_FAILURE function=deleteGroup code=${e.code} message=${e.message}", e)
+            if (e.code == FirebaseFunctionsException.Code.NOT_FOUND) {
+                return true
+            }
             false
         } catch (e: Exception) {
             if (BuildConfig.DEBUG) Log.e("GroupFirebaseDiag", "FUNCTION_FAILURE function=deleteGroup type=${e.javaClass.simpleName} message=${e.message}", e)

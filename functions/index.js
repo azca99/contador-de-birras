@@ -150,14 +150,18 @@ exports.deleteGroup = functions.runWith({ enforceAppCheck: true }).https.onCall(
     }
     
     try {
-        // Eliminar invitaciones relacionadas al grupo usando BulkWriter
+        // 1. Eliminar recursivamente todas las subcolecciones del grupo (e.g. comments)
+        const subcollections = await groupRef.listCollections();
+        await Promise.all(subcollections.map(subcol => db.recursiveDelete(subcol)));
+        
+        // 2. Eliminar invitaciones relacionadas al grupo usando BulkWriter
         const bulkWriter = db.bulkWriter();
         const invSnap = await db.collection("groupInvitations").where("groupId", "==", groupId).get();
         invSnap.forEach(doc => bulkWriter.delete(doc.ref));
         await bulkWriter.close();
         
-        // Eliminar recursivamente el grupo y sus subcolecciones (e.g. comments)
-        await db.recursiveDelete(groupRef);
+        // 3. Finalmente eliminar el documento raíz del grupo
+        await groupRef.delete();
         
         return { success: true };
     } catch (error) {
