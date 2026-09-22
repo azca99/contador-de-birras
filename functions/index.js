@@ -145,37 +145,44 @@ exports.sendGroupInvitation = functions.runWith({ enforceAppCheck: true }).https
 
     const db = admin.firestore();
     const groupRef = db.collection("groups").doc(groupId);
-    
-    const groupDoc = await groupRef.get();
-    if (!groupDoc.exists) {
-        throw new functions.https.HttpsError("not-found", "Grupo inexistente.");
-    }
-    
-    const groupData = groupDoc.data();
-    
-    if (groupData.deleting === true) {
-        throw new functions.https.HttpsError("failed-precondition", "Este grupo se está eliminando.");
-    }
-    
-    const members = groupData.members || [];
-    if (!members.includes(callerUid)) {
-        throw new functions.https.HttpsError("permission-denied", "Ya no perteneces a este grupo.");
-    }
-    
-    if (members.includes(inviteeUid)) {
-        throw new functions.https.HttpsError("already-exists", "Ese usuario ya pertenece al grupo.");
-    }
-    
-    const groupName = groupData.name || "Grupo";
+    const inviteeRef = db.collection("publicUsers").doc(inviteeUid);
     const invitationId = `${groupId}_${inviteeUid}`;
     const invitationRef = db.collection("groupInvitations").doc(invitationId);
     
-    await invitationRef.set({
-        groupId: groupId,
-        groupName: groupName,
-        inviterUid: callerUid,
-        inviteeUid: inviteeUid,
-        status: "PENDING"
+    await db.runTransaction(async (t) => {
+        const inviteeDoc = await t.get(inviteeRef);
+        if (!inviteeDoc.exists) {
+            throw new functions.https.HttpsError("not-found", "Usuario no encontrado.");
+        }
+        
+        const groupDoc = await t.get(groupRef);
+        if (!groupDoc.exists) {
+            throw new functions.https.HttpsError("not-found", "Grupo inexistente.");
+        }
+        
+        const groupData = groupDoc.data();
+        if (groupData.deleting === true) {
+            throw new functions.https.HttpsError("failed-precondition", "Este grupo se está eliminando.");
+        }
+        
+        const members = groupData.members || [];
+        if (!members.includes(callerUid)) {
+            throw new functions.https.HttpsError("permission-denied", "Ya no perteneces a este grupo.");
+        }
+        
+        if (members.includes(inviteeUid)) {
+            throw new functions.https.HttpsError("already-exists", "Ese usuario ya pertenece al grupo.");
+        }
+        
+        const groupName = groupData.name || "Grupo";
+        
+        t.set(invitationRef, {
+            groupId: groupId,
+            groupName: groupName,
+            inviterUid: callerUid,
+            inviteeUid: inviteeUid,
+            status: "PENDING"
+        });
     });
     
     return { success: true };

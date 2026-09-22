@@ -30,6 +30,9 @@ describe('sendGroupInvitation Cloud Function', () => {
             });
             await batch.commit();
         }
+        await db.collection('publicUsers').doc('user1').set({ displayName: 'User One' });
+        await db.collection('publicUsers').doc('user2').set({ displayName: 'User Two' });
+        await db.collection('publicUsers').doc('user3').set({ displayName: 'User Three' });
     });
 
     it('1. should throw unauthenticated if not logged in', async () => {
@@ -170,5 +173,49 @@ describe('sendGroupInvitation Cloud Function', () => {
         
         const inv2 = await db.collection('groupInvitations').doc('g2_user2').get();
         assert.strictEqual(inv2.data().status, 'REJECTED'); // Remains unchanged
+    });
+
+    it('16. should throw not-found if invitee does not exist in publicUsers', async () => {
+        await db.collection('groups').doc('g1').set({ adminUid: 'admin1', members: ['admin1'], name: 'Group 1' });
+        try {
+            await sendGroupInvitationWrapped({ groupId: 'g1', inviteeUid: 'ghost_user' }, { auth: { uid: 'admin1' } });
+            assert.fail('Should have thrown');
+        } catch (e) {
+            assert.strictEqual(e.code, 'not-found');
+        }
+    });
+
+    it('17. concurrency: should fail with failed-precondition if group is marked deleting=true during transaction', async () => {
+        await db.collection('groups').doc('g1').set({ adminUid: 'admin1', members: ['admin1'], name: 'Group 1' });
+        
+        let txAttempt = 0;
+        const originalRunTransaction = db.runTransaction.bind(db);
+        
+        // Mock runTransaction just for this test
+        db.runTransaction = async (updateFunction, transactionOptions) => {
+            return originalRunTransaction(async (t) => {
+                txAttempt++;
+                if (txAttempt === 1) {
+                    // Inject a concurrent write outside the transaction that sets deleting=true
+                    const anotherDbClient = admin.firestore();
+                    await anotherDbClient.collection('groups').doc('g1').update({ deleting: true });
+                }
+                return updateFunction(t);
+            }, transactionOptions);
+        };
+
+        try {
+            await sendGroupInvitationWrapped({ groupId: 'g1', inviteeUid: 'user2' }, { auth: { uid: 'admin1' } });
+            assert.fail('Should have thrown');
+        } catch (e) {
+            assert.strictEqual(e.code, 'failed-precondition');
+        } finally {
+            // Restore runTransaction
+            db.runTransaction = originalRunTransaction;
+        }
+        
+        // Check that invitation was NOT created
+        const inv = await db.collection('groupInvitations').doc('g1_user2').get();
+        assert.ok(!inv.exists, 'Invitation should not exist');
     });
 });
