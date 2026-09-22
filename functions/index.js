@@ -127,6 +127,59 @@ exports.setUsername = functions.runWith({ enforceAppCheck: true }).https.onCall(
         throw new functions.https.HttpsError("internal", "Error al verificar o guardar el username.");
     }
 });
+exports.sendGroupInvitation = functions.runWith({ enforceAppCheck: true }).https.onCall(async (data, context) => {
+    if (!context.auth) {
+        throw new functions.https.HttpsError("unauthenticated", "Tu sesión no es válida. Vuelve a iniciar sesión.");
+    }
+    const groupId = data.groupId;
+    const inviteeUid = data.inviteeUid;
+    
+    if (!groupId || typeof groupId !== "string" || !inviteeUid || typeof inviteeUid !== "string") {
+        throw new functions.https.HttpsError("invalid-argument", "Argumentos inválidos.");
+    }
+
+    const callerUid = context.auth.uid;
+    if (callerUid === inviteeUid) {
+        throw new functions.https.HttpsError("invalid-argument", "No puedes invitarte a ti mismo.");
+    }
+
+    const db = admin.firestore();
+    const groupRef = db.collection("groups").doc(groupId);
+    
+    const groupDoc = await groupRef.get();
+    if (!groupDoc.exists) {
+        throw new functions.https.HttpsError("not-found", "Grupo inexistente.");
+    }
+    
+    const groupData = groupDoc.data();
+    
+    if (groupData.deleting === true) {
+        throw new functions.https.HttpsError("failed-precondition", "Este grupo se está eliminando.");
+    }
+    
+    const members = groupData.members || [];
+    if (!members.includes(callerUid)) {
+        throw new functions.https.HttpsError("permission-denied", "Ya no perteneces a este grupo.");
+    }
+    
+    if (members.includes(inviteeUid)) {
+        throw new functions.https.HttpsError("already-exists", "Ese usuario ya pertenece al grupo.");
+    }
+    
+    const groupName = groupData.name || "Grupo";
+    const invitationId = `${groupId}_${inviteeUid}`;
+    const invitationRef = db.collection("groupInvitations").doc(invitationId);
+    
+    await invitationRef.set({
+        groupId: groupId,
+        groupName: groupName,
+        inviterUid: callerUid,
+        inviteeUid: inviteeUid,
+        status: "PENDING"
+    });
+    
+    return { success: true };
+});
 
 exports.deleteGroup = functions.runWith({ enforceAppCheck: true }).https.onCall(async (data, context) => {
     if (!context.auth) {

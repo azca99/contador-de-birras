@@ -122,16 +122,7 @@ service cloud.firestore {
       allow read: if isSignedIn() && (request.auth.uid == resource.data.inviterUid || request.auth.uid == resource.data.inviteeUid);
       
       // CREATE: New invitation
-      allow create: if isSignedIn()
-                    && !isGroupDeleting(request.resource.data.groupId)
-                    && request.auth.uid == request.resource.data.inviterUid
-                    && request.resource.data.status == 'PENDING'
-                    && request.resource.data.keys().hasOnly(['groupId', 'groupName', 'inviterUid', 'inviteeUid', 'status'])
-                    && request.auth.uid in getGroup(request.resource.data.groupId).members
-                    && request.resource.data.inviterUid != request.resource.data.inviteeUid
-                    && !(request.resource.data.inviteeUid in getGroup(request.resource.data.groupId).members)
-                    && invitationId == (request.resource.data.groupId + '_' + request.resource.data.inviteeUid)
-                    && request.resource.data.groupName == getGroup(request.resource.data.groupId).name;
+      allow create: if false; // Creation is now strictly handled by Cloud Functions
 
       allow update: if isSignedIn() 
                     && !isGroupDeleting(resource.data.groupId)
@@ -146,20 +137,6 @@ service cloud.firestore {
                         && resource.data.status == 'PENDING'
                         && (request.resource.data.status == 'ACCEPTED' || request.resource.data.status == 'REJECTED')
                         && request.resource.data.keys().hasOnly(['groupId', 'groupName', 'inviterUid', 'inviteeUid', 'status'])
-                      )
-                      ||
-                      // 2. Group member re-sends or overwrites invitation
-                      (
-                        request.auth.uid == request.resource.data.inviterUid
-                        && request.resource.data.status == 'PENDING'
-                        && request.resource.data.keys().hasOnly(['groupId', 'groupName', 'inviterUid', 'inviteeUid', 'status'])
-                        && request.auth.uid in getGroup(request.resource.data.groupId).members
-                        && request.resource.data.inviterUid != request.resource.data.inviteeUid
-                        && !(request.resource.data.inviteeUid in getGroup(request.resource.data.groupId).members)
-                        && request.resource.data.groupId == resource.data.groupId
-                        && request.resource.data.inviteeUid == resource.data.inviteeUid
-                        && invitationId == (request.resource.data.groupId + '_' + request.resource.data.inviteeUid)
-                        && request.resource.data.groupName == getGroup(request.resource.data.groupId).name
                       )
                     );
                     

@@ -95,25 +95,26 @@ class GroupsRepository(private val beerRepository: BeerRepository? = null) {
         }
 
         return try {
-            val groupDoc = firestore.collection("groups").document(groupId).get().await()
-            val groupName = groupDoc.getString("name") ?: "Grupo"
-            val invitationData = hashMapOf(
+            functions.getHttpsCallable("sendGroupInvitation").call(mapOf(
                 "groupId" to groupId,
-                "groupName" to groupName,
-                "inviterUid" to currentUser.uid,
-                "inviteeUid" to uid,
-                "status" to "PENDING"
-            )
-            firestore.collection("groupInvitations").document(groupId + "_" + uid).set(invitationData).await()
+                "inviteeUid" to uid
+            )).await()
             null
         } catch (e: CancellationException) {
             throw e
-        } catch (e: com.google.firebase.firestore.FirebaseFirestoreException) {
-            if (BuildConfig.DEBUG) Log.e("GroupFirebaseDiag", "FIRESTORE_FAILURE operation=createInvitation code=${e.code} message=${e.message}", e)
-            if (BuildConfig.DEBUG) "Error al crear invitacion (Firestore: ${e.code}). Revisa Logcat." else "Error al enviar la invitacion."
+        } catch (e: FirebaseFunctionsException) {
+            if (BuildConfig.DEBUG) Log.e("GroupFirebaseDiag", "FUNCTION_FAILURE operation=sendGroupInvitation code=${e.code} message=${e.message}", e)
+            when (e.code) {
+                FirebaseFunctionsException.Code.ALREADY_EXISTS -> "Ese usuario ya pertenece al grupo."
+                FirebaseFunctionsException.Code.FAILED_PRECONDITION -> "Este grupo se está eliminando."
+                FirebaseFunctionsException.Code.PERMISSION_DENIED -> "Ya no perteneces a este grupo."
+                FirebaseFunctionsException.Code.UNAUTHENTICATED -> "Tu sesión no es válida. Vuelve a iniciar sesión."
+                FirebaseFunctionsException.Code.UNAVAILABLE -> "No se pudo enviar la invitación. Comprueba tu conexión."
+                else -> if (BuildConfig.DEBUG) "Error al crear invitacion (Functions: ${e.code}). Revisa Logcat." else "No se pudo enviar la invitación."
+            }
         } catch (e: Exception) {
             if (BuildConfig.DEBUG) Log.e("GroupFirebaseDiag", "FIRESTORE_FAILURE operation=createInvitation type=${e.javaClass.simpleName} message=${e.message}", e)
-            if (BuildConfig.DEBUG) "Error al crear invitacion (${e.javaClass.simpleName}). Revisa Logcat." else "Error al enviar la invitacion."
+            if (BuildConfig.DEBUG) "Error al crear invitacion (${e.javaClass.simpleName}). Revisa Logcat." else "No se pudo enviar la invitación."
         }
     }
 

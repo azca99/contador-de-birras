@@ -129,21 +129,52 @@ describe("GROUPS AND GROUP DELETION SECURITY RULES", () => {
     await assertSucceeds(db.collection("groups").doc("g1").collection("comments").doc("c1").get());
   });
 
-  it("invitation rules still work for group creation and reading", async () => {
+  it("client cannot create directly groupInvitations", async () => {
     await testEnv.withSecurityRulesDisabled(async (context) => {
       await context.firestore().collection("groups").doc("g1").set({ adminUid: "alice", members: ["alice"], name: "Group", createdAt: 123 });
     });
     const dbAlice = testEnv.authenticatedContext("alice").firestore();
-    await assertSucceeds(dbAlice.collection("groupInvitations").doc("g1_bob").set({
+    await assertFails(dbAlice.collection("groupInvitations").doc("g1_bob").set({
       groupId: "g1",
       groupName: "Group",
       inviteeUid: "bob",
       inviterUid: "alice",
       status: "PENDING"
     }));
+  });
 
+  it("client can read their own groupInvitations", async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await context.firestore().collection("groups").doc("g1").set({ adminUid: "alice", members: ["alice"], name: "Group", createdAt: 123 });
+      await context.firestore().collection("groupInvitations").doc("g1_bob").set({
+        groupId: "g1",
+        groupName: "Group",
+        inviteeUid: "bob",
+        inviterUid: "alice",
+        status: "PENDING"
+      });
+    });
     const dbBob = testEnv.authenticatedContext("bob").firestore();
     await assertSucceeds(dbBob.collection("groupInvitations").doc("g1_bob").get());
+    const dbCharlie = testEnv.authenticatedContext("charlie").firestore();
+    await assertFails(dbCharlie.collection("groupInvitations").doc("g1_bob").get());
+  });
+
+  it("client cannot resend/update invitation directly", async () => {
+    await testEnv.withSecurityRulesDisabled(async (context) => {
+      await context.firestore().collection("groups").doc("g1").set({ adminUid: "alice", members: ["alice"], name: "Group", createdAt: 123 });
+      await context.firestore().collection("groupInvitations").doc("g1_bob").set({
+        groupId: "g1",
+        groupName: "Group",
+        inviteeUid: "bob",
+        inviterUid: "alice",
+        status: "REJECTED"
+      });
+    });
+    const dbAlice = testEnv.authenticatedContext("alice").firestore();
+    await assertFails(dbAlice.collection("groupInvitations").doc("g1_bob").update({
+      status: "PENDING"
+    }));
   });
 
   // deleting: true tests
