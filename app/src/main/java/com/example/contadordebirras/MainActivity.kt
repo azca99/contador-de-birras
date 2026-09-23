@@ -42,10 +42,10 @@ class MainActivity : ComponentActivity() {
         kotlin.system.exitProcess(1)
     }
 
-    val beerDatabase = BeerDatabase.getDatabase(this)
-    val beerRepository = BeerRepository(beerDatabase.beerDao(), this)
-    val userRepository = UserRepository(this)
     val authRepository = AuthRepository(this)
+    val beerDatabase = BeerDatabase.getDatabase(this)
+    val beerRepository = BeerRepository(beerDatabase.beerDao(), this, authRepository)
+    val userRepository = UserRepository(this)
     val friendsRepository = FriendsRepository()
     val groupsRepository = com.example.contadordebirras.domain.GroupsRepository()
     val achievementRepository = com.example.contadordebirras.data.achievements.DefaultAchievementRepository(beerDatabase.achievementDao())

@@ -17,35 +17,35 @@ interface BeerDao {
     @androidx.room.Update
     fun updateBeer(beer: BeerEntity): Int
 
-    @Query("UPDATE beers SET syncStatus = 'DELETED' WHERE id = :id")
-    fun softDeleteBeer(id: Int): Int
+    @Query("UPDATE beers SET syncStatus = 'DELETED' WHERE id = :id AND ownerUid = :ownerUid")
+    fun softDeleteBeer(id: Int, ownerUid: String): Int
 
-    @Query("UPDATE beers SET syncStatus = 'SYNCED', remotePhotoUrl = :remoteUrl WHERE id = :id AND syncStatus != 'DELETED'")
-    fun markAsSynced(id: Int, remoteUrl: String?): Int
+    @Query("UPDATE beers SET syncStatus = 'SYNCED', remotePhotoUrl = :remoteUrl WHERE id = :id AND syncStatus != 'DELETED' AND ownerUid = :ownerUid")
+    fun markAsSynced(id: Int, remoteUrl: String?, ownerUid: String): Int
 
-    @Query("UPDATE beers SET syncStatus = 'DELETED' WHERE id = (SELECT id FROM beers WHERE syncStatus != 'DELETED' ORDER BY timestamp DESC LIMIT 1)")
-    fun deleteLastBeer(): Int
+    @Query("UPDATE beers SET syncStatus = 'DELETED' WHERE id = (SELECT id FROM beers WHERE syncStatus != 'DELETED' AND ownerUid = :ownerUid ORDER BY timestamp DESC LIMIT 1) AND ownerUid = :ownerUid")
+    fun deleteLastBeer(ownerUid: String): Int
 
-    @Query("SELECT * FROM beers WHERE syncStatus != 'DELETED' ORDER BY timestamp DESC")
-    fun getAllBeers(): Flow<List<BeerEntity>>
+    @Query("SELECT * FROM beers WHERE syncStatus != 'DELETED' AND ownerUid = :ownerUid ORDER BY timestamp DESC")
+    fun getAllBeers(ownerUid: String): Flow<List<BeerEntity>>
 
-    @Query("SELECT COUNT(*) FROM beers WHERE syncStatus != 'DELETED'")
-    fun getTotalCount(): Flow<Int>
+    @Query("SELECT COUNT(*) FROM beers WHERE syncStatus != 'DELETED' AND ownerUid = :ownerUid")
+    fun getTotalCount(ownerUid: String): Flow<Int>
 
-    @Query("SELECT * FROM beers WHERE syncStatus != 'DELETED' ORDER BY timestamp DESC LIMIT 1")
-    fun getLastBeer(): Flow<BeerEntity?>
+    @Query("SELECT * FROM beers WHERE syncStatus != 'DELETED' AND ownerUid = :ownerUid ORDER BY timestamp DESC LIMIT 1")
+    fun getLastBeer(ownerUid: String): Flow<BeerEntity?>
 
-    @Query("SELECT * FROM beers WHERE syncStatus = 'PENDING' OR syncStatus = 'DELETED'")
-    fun getPendingSyncBeers(): List<BeerEntity>
-    @Query("SELECT * FROM beers WHERE syncId = :syncId LIMIT 1")
-    fun getBeerBySyncId(syncId: String): BeerEntity?
+    @Query("SELECT * FROM beers WHERE (syncStatus = 'PENDING' OR syncStatus = 'DELETED') AND ownerUid = :ownerUid")
+    fun getPendingSyncBeers(ownerUid: String): List<BeerEntity>
+    @Query("SELECT * FROM beers WHERE syncId = :syncId AND ownerUid = :ownerUid LIMIT 1")
+    fun getBeerBySyncId(syncId: String, ownerUid: String): BeerEntity?
 
-    @Query("DELETE FROM beers WHERE syncId = :syncId")
-    fun hardDeleteBySyncId(syncId: String): Int
+    @Query("DELETE FROM beers WHERE syncId = :syncId AND ownerUid = :ownerUid")
+    fun hardDeleteBySyncId(syncId: String, ownerUid: String): Int
 
-    @Query("SELECT * FROM beers WHERE id = :id LIMIT 1")
-    fun getBeerById(id: Int): BeerEntity?
+    @Query("SELECT * FROM beers WHERE id = :id AND ownerUid = :ownerUid LIMIT 1")
+    fun getBeerById(id: Int, ownerUid: String): BeerEntity?
 
-    @Query("SELECT syncId FROM beers WHERE syncStatus = 'SYNCED'")
-    fun getAllSyncedIds(): List<String>
+    @Query("SELECT syncId FROM beers WHERE syncStatus = 'SYNCED' AND ownerUid = :ownerUid")
+    fun getAllSyncedIds(ownerUid: String): List<String>
 }

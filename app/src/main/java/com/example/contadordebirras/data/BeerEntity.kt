@@ -20,5 +20,6 @@ data class BeerEntity(
     val syncStatus: String = SyncStatus.PENDING,
     val remotePhotoUrl: String? = null,
     val updatedAt: Long = System.currentTimeMillis(),
-    val photoSource: String? = null
+    val photoSource: String? = null,
+    val ownerUid: String = "legacy_local"
 )
