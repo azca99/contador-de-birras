@@ -28,23 +28,23 @@ import java.util.Locale
 
 class BeerRepository(private val beerDao: BeerDao, private val context: Context, private val authRepository: AuthRepository) {
     
-    private fun currentOwnerUid(): String = authRepository.currentUser.value?.uid ?: "legacy_local"
+    private fun currentOwnerUid(): String = authRepository.currentUser.value?.uid ?: "guest_local"
 
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     val allBeers: Flow<List<BeerEntity>> = authRepository.currentUser
-        .map { it?.uid ?: "legacy_local" }
+        .map { it?.uid ?: "guest_local" }
         .distinctUntilChanged()
         .flatMapLatest { uid -> beerDao.getAllBeers(uid) }
 
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     val totalCount: Flow<Int> = authRepository.currentUser
-        .map { it?.uid ?: "legacy_local" }
+        .map { it?.uid ?: "guest_local" }
         .distinctUntilChanged()
         .flatMapLatest { uid -> beerDao.getTotalCount(uid) }
 
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     val lastBeer: Flow<BeerEntity?> = authRepository.currentUser
-        .map { it?.uid ?: "legacy_local" }
+        .map { it?.uid ?: "guest_local" }
         .distinctUntilChanged()
         .flatMapLatest { uid -> beerDao.getLastBeer(uid) }
     
@@ -56,6 +56,13 @@ class BeerRepository(private val beerDao: BeerDao, private val context: Context,
         repoScope.launch {
             syncTrigger.collect {
                 syncWithCloud()
+            }
+        }
+        repoScope.launch {
+            authRepository.currentUser.collect { user ->
+                if (user != null) {
+                    requestSync()
+                }
             }
         }
     }
@@ -72,7 +79,9 @@ class BeerRepository(private val beerDao: BeerDao, private val context: Context,
                 syncStatus = SyncStatus.PENDING, updatedAt = System.currentTimeMillis(),
                 ownerUid = currentOwnerUid()
             )
-            beerDao.insertBeer(beer)
+            val id = beerDao.insertBeer(beer)
+            requestSync()
+            id
         }
     }
 
@@ -91,10 +100,12 @@ class BeerRepository(private val beerDao: BeerDao, private val context: Context,
             val ownerUid = currentOwnerUid()
             val beer = beerDao.getBeerById(beerId.toInt(), ownerUid)
             if (beer != null) {
-                beerDao.updateBeer(beer.copy(
-                    latitude = latitude, longitude = longitude, locationName = locationName,
-                    updatedAt = System.currentTimeMillis()
-                ))
+                beerDao.updateBeer(
+                    id = beer.id, type = beer.type, timestamp = beer.timestamp, latitude = latitude,
+                    longitude = longitude, photoUri = beer.photoUri, comment = beer.comment,
+                    locationName = locationName, syncStatus = beer.syncStatus, remotePhotoUrl = beer.remotePhotoUrl,
+                    updatedAt = System.currentTimeMillis(), photoSource = beer.photoSource, ownerUid = ownerUid
+                )
             }
         }
     }
@@ -113,23 +124,32 @@ class BeerRepository(private val beerDao: BeerDao, private val context: Context,
         withContext(Dispatchers.IO) {
             val ownerUid = currentOwnerUid()
             if (beer.ownerUid == ownerUid) {
-                beerDao.updateBeer(beer.copy(syncStatus = SyncStatus.PENDING, updatedAt = System.currentTimeMillis()))
+                beerDao.updateBeer(
+                    id = beer.id, type = beer.type, timestamp = beer.timestamp, latitude = beer.latitude,
+                    longitude = beer.longitude, photoUri = beer.photoUri, comment = beer.comment,
+                    locationName = beer.locationName, syncStatus = SyncStatus.PENDING, remotePhotoUrl = beer.remotePhotoUrl,
+                    updatedAt = System.currentTimeMillis(), photoSource = beer.photoSource, ownerUid = ownerUid
+                )
                 requestSync()
             }
         }
     }
 
     suspend fun syncWithCloud() {
-        val user = FirebaseAuth.getInstance().currentUser ?: return
+        val user = authRepository.currentUser.value ?: return
+        val syncUid = user.uid
         val firestore = FirebaseFirestore.getInstance()
         val storage = FirebaseStorage.getInstance()
 
         syncMutex.withLock {
             withContext(Dispatchers.IO) {
+                if (authRepository.currentUser.value?.uid != syncUid) return@withContext
+
                 // 1. PUSH local PENDING/DELETED
                 val pendingBeers = beerDao.getPendingSyncBeers(user.uid)
                 for (beer in pendingBeers) {
-                    if (beer.ownerUid != user.uid) continue // Extra safety check
+                    if (authRepository.currentUser.value?.uid != syncUid) return@withContext
+                    if (beer.ownerUid != syncUid) continue // Extra safety check
                     var remoteUrl = beer.remotePhotoUrl
                     var photoUploadFailed = false
                     if (beer.photoUri != null && remoteUrl == null) {
@@ -148,7 +168,8 @@ class BeerRepository(private val beerDao: BeerDao, private val context: Context,
                     if (beer.syncStatus == SyncStatus.DELETED) {
                         try {
                             firestore.collection("beers").document(beer.syncId).delete().await()
-                            beerDao.hardDeleteBySyncId(beer.syncId, user.uid) // Borrado fsico local real
+                            if (authRepository.currentUser.value?.uid != syncUid) return@withContext
+                            beerDao.hardDeleteBySyncId(beer.syncId, syncUid) // Borrado fsico local real
                         } catch (e: CancellationException) { throw e }
                     catch (e: Exception) {
                             android.util.Log.e("SyncDebug", "Error al borrar en Firestore", e)
@@ -168,8 +189,9 @@ class BeerRepository(private val beerDao: BeerDao, private val context: Context,
                         )
                         try {
                             firestore.collection("beers").document(beer.syncId).set(map).await()
+                            if (authRepository.currentUser.value?.uid != syncUid) return@withContext
                             if (!photoUploadFailed) {
-                                beerDao.markAsSynced(beer.id, remoteUrl, user.uid)
+                                beerDao.markAsSynced(beer.id, remoteUrl, syncUid)
                             }
                         } catch (e: CancellationException) { throw e }
                     catch (e: Exception) {
@@ -180,7 +202,8 @@ class BeerRepository(private val beerDao: BeerDao, private val context: Context,
 
                 // 2. PULL / RECONCILE from Cloud
                 try {
-                    val snapshot = firestore.collection("beers").whereEqualTo("userId", user.uid).get(Source.SERVER).await()
+                    if (authRepository.currentUser.value?.uid != syncUid) return@withContext
+                    val snapshot = firestore.collection("beers").whereEqualTo("userId", syncUid).get(Source.SERVER).await()
                     val remoteIds = mutableSetOf<String>()
 
                     for (doc in snapshot.documents) {
@@ -202,7 +225,8 @@ class BeerRepository(private val beerDao: BeerDao, private val context: Context,
                         val photoSource = doc.getString("photoSource")
                         val updatedAt = doc.getLong("updatedAt") ?: 0L
 
-                        val localBeer = beerDao.getBeerBySyncId(syncId, user.uid)
+                        if (authRepository.currentUser.value?.uid != syncUid) return@withContext
+                        val localBeer = beerDao.getBeerBySyncId(syncId, syncUid)
                         val decision = SyncResolver.resolvePullConflict(localBeer, updatedAt)
 
                         if (decision == SyncResolver.SyncDecision.INSERT_LOCAL) {
@@ -210,7 +234,7 @@ class BeerRepository(private val beerDao: BeerDao, private val context: Context,
                                 type = type, timestamp = timestamp, latitude = lat, longitude = lng,
                                 comment = comment, locationName = locName, remotePhotoUrl = remotePhotoUrl,
                                 photoSource = photoSource, syncId = syncId, syncStatus = SyncStatus.SYNCED, updatedAt = updatedAt,
-                                ownerUid = user.uid
+                                ownerUid = syncUid
                             )
                             beerDao.insertBeer(newBeer)
                         } else if (decision == SyncResolver.SyncDecision.UPDATE_LOCAL) {
@@ -219,17 +243,25 @@ class BeerRepository(private val beerDao: BeerDao, private val context: Context,
                                 comment = comment, locationName = locName, remotePhotoUrl = remotePhotoUrl,
                                 photoSource = photoSource, updatedAt = updatedAt
                             )
-                            if (updatedBeer.ownerUid == user.uid) {
-                                beerDao.updateBeer(updatedBeer)
+                            if (updatedBeer.ownerUid == syncUid) {
+                                beerDao.updateBeer(
+                                    id = updatedBeer.id, type = updatedBeer.type, timestamp = updatedBeer.timestamp,
+                                    latitude = updatedBeer.latitude, longitude = updatedBeer.longitude,
+                                    photoUri = updatedBeer.photoUri, comment = updatedBeer.comment,
+                                    locationName = updatedBeer.locationName, syncStatus = updatedBeer.syncStatus,
+                                    remotePhotoUrl = updatedBeer.remotePhotoUrl, updatedAt = updatedBeer.updatedAt,
+                                    photoSource = updatedBeer.photoSource, ownerUid = syncUid
+                                )
                             }
                         }
                     }
 
                     // 3. RECONCILIACION DE BORRADOS
-                    val localSyncedIds = beerDao.getAllSyncedIds(user.uid)
+                    if (authRepository.currentUser.value?.uid != syncUid) return@withContext
+                    val localSyncedIds = beerDao.getAllSyncedIds(syncUid)
                     val toDelete = SyncResolver.resolveDeletions(localSyncedIds, Result.success(remoteIds))
                     for (id in toDelete) {
-                        beerDao.hardDeleteBySyncId(id, user.uid)
+                        beerDao.hardDeleteBySyncId(id, syncUid)
                     }
 
                 } catch (e: CancellationException) { throw e }

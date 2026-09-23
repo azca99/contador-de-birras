@@ -7,7 +7,7 @@ import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
-@Database(entities = [BeerEntity::class, com.example.contadordebirras.data.achievements.AchievementEntity::class], version = 7, exportSchema = false)
+@Database(entities = [BeerEntity::class, com.example.contadordebirras.data.achievements.AchievementEntity::class], version = 7, exportSchema = true)
 abstract class BeerDatabase : RoomDatabase() {
     abstract fun beerDao(): BeerDao
     abstract fun achievementDao(): com.example.contadordebirras.data.achievements.AchievementDao
@@ -55,7 +55,9 @@ abstract class BeerDatabase : RoomDatabase() {
 
         val MIGRATION_6_7 = object : Migration(6, 7) {
             override fun migrate(db: SupportSQLiteDatabase) {
-                db.execSQL("ALTER TABLE beers ADD COLUMN ownerUid TEXT NOT NULL DEFAULT 'legacy_local'")
+                db.execSQL("ALTER TABLE beers ADD COLUMN ownerUid TEXT NOT NULL DEFAULT 'legacy_unassigned'")
+                db.execSQL("DROP INDEX IF EXISTS `index_beers_syncId`")
+                db.execSQL("CREATE UNIQUE INDEX IF NOT EXISTS `index_beers_ownerUid_syncId` ON `beers` (`ownerUid`, `syncId`)")
             }
         }
 

@@ -16,6 +16,12 @@ class AuthRepository(private val context: Context) {
     private val _currentUser = MutableStateFlow<FirebaseUser?>(auth.currentUser)
     val currentUser: StateFlow<FirebaseUser?> = _currentUser.asStateFlow()
 
+    init {
+        auth.addAuthStateListener { firebaseAuth ->
+            _currentUser.value = firebaseAuth.currentUser
+        }
+    }
+
     fun getGoogleSignInClient(): GoogleSignInClient {
         val webClientIdRes = context.resources.getIdentifier("default_web_client_id", "string", context.packageName)
         val gsoBuilder = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)

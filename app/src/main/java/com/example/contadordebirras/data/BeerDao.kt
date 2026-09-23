@@ -5,17 +5,26 @@ import androidx.room.Insert
 import androidx.room.Query
 import androidx.room.Delete
 import kotlinx.coroutines.flow.Flow
+import com.example.contadordebirras.domain.BeerType
 
 @Dao
 interface BeerDao {
     @Insert
     fun insertBeer(beer: BeerEntity): Long
 
-    @Delete
-    fun deleteBeer(beer: BeerEntity): Int
-
-    @androidx.room.Update
-    fun updateBeer(beer: BeerEntity): Int
+    @Query("""
+        UPDATE beers SET 
+            type = :type, timestamp = :timestamp, latitude = :latitude, longitude = :longitude, 
+            photoUri = :photoUri, comment = :comment, locationName = :locationName, 
+            syncStatus = :syncStatus, remotePhotoUrl = :remotePhotoUrl, updatedAt = :updatedAt, 
+            photoSource = :photoSource 
+        WHERE id = :id AND ownerUid = :ownerUid
+    """)
+    fun updateBeer(
+        id: Int, type: BeerType, timestamp: Long, latitude: Double?, longitude: Double?,
+        photoUri: String?, comment: String?, locationName: String?, syncStatus: String,
+        remotePhotoUrl: String?, updatedAt: Long, photoSource: String?, ownerUid: String
+    ): Int
 
     @Query("UPDATE beers SET syncStatus = 'DELETED' WHERE id = :id AND ownerUid = :ownerUid")
     fun softDeleteBeer(id: Int, ownerUid: String): Int

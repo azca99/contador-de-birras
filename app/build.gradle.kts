@@ -17,6 +17,10 @@ android {
         versionName = "1.0"
     }
 
+    ksp {
+        arg("room.schemaLocation", "$projectDir/schemas")
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
@@ -90,6 +94,7 @@ dependencies {
   implementation(libs.room.runtime)
   implementation(libs.room.ktx)
   ksp(libs.room.compiler)
+  androidTestImplementation(libs.room.testing)
   implementation(libs.datastore.preferences)
 
   // Location

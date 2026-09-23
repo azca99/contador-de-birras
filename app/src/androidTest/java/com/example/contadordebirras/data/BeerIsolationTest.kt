@@ -73,14 +73,14 @@ class BeerIsolationTest {
 
     @Test
     fun testIsolation_getLastBeer() = runBlocking {
-        beerDao.insertBeer(createBeer("userB", BeerType.BOTELLA).copy(timestamp = 100))
+        beerDao.insertBeer(createBeer("userB", BeerType.BOTELLIN).copy(timestamp = 100))
         beerDao.insertBeer(createBeer("userA", BeerType.LATA).copy(timestamp = 200))
 
         val lastA = beerDao.getLastBeer("userA").first()
         val lastB = beerDao.getLastBeer("userB").first()
 
         assertEquals(BeerType.LATA, lastA?.type)
-        assertEquals(BeerType.BOTELLA, lastB?.type)
+        assertEquals(BeerType.BOTELLIN, lastB?.type)
     }
 
     @Test
@@ -147,5 +147,55 @@ class BeerIsolationTest {
         // A hard deletes A's beer
         val rows2 = beerDao.hardDeleteBySyncId(beer.syncId, "userA")
         assertEquals(1, rows2)
+    }
+    @Test
+    fun testIsolation_updateBeer() = runBlocking {
+        val beer = createBeer("userA")
+        val id = beerDao.insertBeer(beer).toInt()
+
+        // B tries to update A's beer
+        val rows = beerDao.updateBeer(
+            id, BeerType.BOTELLIN, beer.timestamp, null, null, null, null, null, SyncStatus.PENDING, null, 0, null, "userB"
+        )
+        assertEquals(0, rows)
+
+        // A updates A's beer
+        val rows2 = beerDao.updateBeer(
+            id, BeerType.BOTELLIN, beer.timestamp, null, null, null, null, null, SyncStatus.PENDING, null, 0, null, "userA"
+        )
+        assertEquals(1, rows2)
+    }
+
+    @Test
+    fun testIsolation_markAsSynced() = runBlocking {
+        val beer = createBeer("userA")
+        val id = beerDao.insertBeer(beer).toInt()
+
+        // B tries to mark A's beer as synced
+        val rows = beerDao.markAsSynced(id, "url", "userB")
+        assertEquals(0, rows)
+
+        // A marks A's beer as synced
+        val rows2 = beerDao.markAsSynced(id, "url", "userA")
+        assertEquals(1, rows2)
+    }
+
+    @Test
+    fun testIsolation_deleteLastBeer() = runBlocking {
+        val beer = createBeer("userA").copy(timestamp = 500)
+        beerDao.insertBeer(beer)
+        
+        val beerB = createBeer("userB").copy(timestamp = 1000) // This is technically the most recent globally
+        beerDao.insertBeer(beerB)
+
+        // A deletes its last beer, it should delete its own beer at t=500, not B's at t=1000
+        val rows = beerDao.deleteLastBeer("userA")
+        assertEquals(1, rows)
+
+        val lastA = beerDao.getLastBeer("userA").first()
+        assertNull(lastA)
+
+        val lastB = beerDao.getLastBeer("userB").first()
+        assertEquals(1000, lastB?.timestamp)
     }
 }

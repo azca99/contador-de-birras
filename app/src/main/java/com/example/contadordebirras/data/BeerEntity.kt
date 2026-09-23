@@ -6,7 +6,7 @@ import com.example.contadordebirras.domain.BeerType
 
 import java.util.UUID
 
-@Entity(tableName = "beers", indices = [androidx.room.Index(value = ["syncId"], unique = true)])
+@Entity(tableName = "beers", indices = [androidx.room.Index(value = ["ownerUid", "syncId"], unique = true)])
 data class BeerEntity(
     @PrimaryKey(autoGenerate = true) val id: Int = 0,
     val type: BeerType,
@@ -21,5 +21,5 @@ data class BeerEntity(
     val remotePhotoUrl: String? = null,
     val updatedAt: Long = System.currentTimeMillis(),
     val photoSource: String? = null,
-    val ownerUid: String = "legacy_local"
+    val ownerUid: String = "guest_local"
 )
