@@ -213,4 +213,39 @@ class BeerIsolationTest {
         assertEquals(1, syncedA.size)
         assertEquals("syncA1", syncedA[0])
     }
+
+    @Test
+    fun testIsolation_sameSyncIdDifferentOwners() = runBlocking {
+        val syncId = "same-sync-id"
+        val beerA = createBeer("userA").copy(syncId = syncId)
+        val beerB = createBeer("userB").copy(syncId = syncId)
+        
+        beerDao.insertBeer(beerA)
+        beerDao.insertBeer(beerB)
+
+        val retrievedA = beerDao.getBeerBySyncId(syncId, "userA")
+        val retrievedB = beerDao.getBeerBySyncId(syncId, "userB")
+
+        assertEquals("userA", retrievedA?.ownerUid)
+        assertEquals("userB", retrievedB?.ownerUid)
+        assertEquals(syncId, retrievedA?.syncId)
+        assertEquals(syncId, retrievedB?.syncId)
+    }
+
+    @Test
+    fun testIsolation_guestAndLegacyAreIndependent() = runBlocking {
+        val beerGuest = createBeer("guest_local")
+        val beerLegacy = createBeer("legacy_unassigned")
+        
+        beerDao.insertBeer(beerGuest)
+        beerDao.insertBeer(beerLegacy)
+
+        val guestBeers = beerDao.getAllBeers("guest_local").first()
+        val legacyBeers = beerDao.getAllBeers("legacy_unassigned").first()
+
+        assertEquals(1, guestBeers.size)
+        assertEquals(1, legacyBeers.size)
+        assertEquals("guest_local", guestBeers[0].ownerUid)
+        assertEquals("legacy_unassigned", legacyBeers[0].ownerUid)
+    }
 }

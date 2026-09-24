@@ -80,7 +80,6 @@ class BeerRepository(private val beerDao: BeerDao, private val context: Context,
                 ownerUid = currentOwnerUid()
             )
             val id = beerDao.insertBeer(beer)
-            requestSync()
             id
         }
     }
@@ -103,7 +102,7 @@ class BeerRepository(private val beerDao: BeerDao, private val context: Context,
                 beerDao.updateBeer(
                     id = beer.id, type = beer.type, timestamp = beer.timestamp, latitude = latitude,
                     longitude = longitude, photoUri = beer.photoUri, comment = beer.comment,
-                    locationName = locationName, syncStatus = beer.syncStatus, remotePhotoUrl = beer.remotePhotoUrl,
+                    locationName = locationName, syncStatus = SyncStatus.PENDING, remotePhotoUrl = beer.remotePhotoUrl,
                     updatedAt = System.currentTimeMillis(), photoSource = beer.photoSource, ownerUid = ownerUid
                 )
             }
@@ -157,6 +156,7 @@ class BeerRepository(private val beerDao: BeerDao, private val context: Context,
                             val storageRef = storage.reference.child("users/${user.uid}/beers/${beer.syncId}.jpg")
                             val uri = android.net.Uri.parse(beer.photoUri)
                             storageRef.putFile(uri).await()
+                            if (authRepository.currentUser.value?.uid != syncUid) return@withContext
                             remoteUrl = "users/${user.uid}/beers/${beer.syncId}.jpg"
                         } catch (e: CancellationException) { throw e }
                     catch (e: Exception) {
@@ -167,9 +167,17 @@ class BeerRepository(private val beerDao: BeerDao, private val context: Context,
 
                     if (beer.syncStatus == SyncStatus.DELETED) {
                         try {
-                            firestore.collection("beers").document(beer.syncId).delete().await()
+                            firestore.runTransaction { transaction ->
+                                val docRef = firestore.collection("beers").document(beer.syncId)
+                                val doc = transaction.get(docRef)
+                                if (doc.exists()) {
+                                    if (doc.getString("userId") == syncUid) {
+                                        transaction.delete(docRef)
+                                    }
+                                }
+                            }.await()
                             if (authRepository.currentUser.value?.uid != syncUid) return@withContext
-                            beerDao.hardDeleteBySyncId(beer.syncId, syncUid) // Borrado fsico local real
+                            beerDao.hardDeleteBySyncId(beer.syncId, syncUid) // Borrado fisico local real
                         } catch (e: CancellationException) { throw e }
                     catch (e: Exception) {
                             android.util.Log.e("SyncDebug", "Error al borrar en Firestore", e)
