@@ -198,4 +198,19 @@ class BeerIsolationTest {
         val lastB = beerDao.getLastBeer("userB").first()
         assertEquals(1000, lastB?.timestamp)
     }
+
+    @Test
+    fun testIsolation_getAllSyncedIds() = runBlocking {
+        val b1 = createBeer("userA").copy(syncId = "syncA1", syncStatus = SyncStatus.SYNCED)
+        val b2 = createBeer("userA").copy(syncId = "syncA2", syncStatus = SyncStatus.PENDING)
+        val b3 = createBeer("userB").copy(syncId = "syncB1", syncStatus = SyncStatus.SYNCED)
+        
+        beerDao.insertBeer(b1)
+        beerDao.insertBeer(b2)
+        beerDao.insertBeer(b3)
+
+        val syncedA = beerDao.getAllSyncedIds("userA")
+        assertEquals(1, syncedA.size)
+        assertEquals("syncA1", syncedA[0])
+    }
 }
