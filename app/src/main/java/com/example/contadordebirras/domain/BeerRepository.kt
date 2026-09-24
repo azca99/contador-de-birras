@@ -175,6 +175,7 @@ class BeerRepository(private val beerDao: BeerDao, private val context: Context,
                                         transaction.delete(docRef)
                                     }
                                 }
+                                null
                             }.await()
                             if (authRepository.currentUser.value?.uid != syncUid) return@withContext
                             beerDao.hardDeleteBySyncId(beer.syncId, syncUid) // Borrado fisico local real
