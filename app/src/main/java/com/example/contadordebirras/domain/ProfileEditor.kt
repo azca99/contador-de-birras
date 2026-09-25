@@ -4,8 +4,8 @@ import com.example.contadordebirras.data.UserRepository
 
 class ProfileEditor(
     private val userRepository: UserRepository,
-    private val setRemoteUsername: suspend (String) -> String?,
-    private val syncRemoteProfile: suspend (String, String?) -> Unit
+    private val setRemoteUsername: suspend (String, String) -> String?,
+    private val syncRemoteProfile: suspend (String, String) -> Unit
 ) {
     suspend fun setAlias(newAlias: String, activeUidProvider: () -> String?) {
         val initialUid = activeUidProvider()
@@ -19,11 +19,16 @@ class ProfileEditor(
 
     suspend fun setUsername(newUsername: String, activeUidProvider: () -> String?): String? {
         val initialUid = activeUidProvider()
-        val error = setRemoteUsername(newUsername)
+        if (initialUid == null) {
+            return "Debes iniciar sesión para asignar un username."
+        }
+        if (activeUidProvider() != initialUid) {
+            return "La sesión cambió antes de la operación."
+        }
+        val error = setRemoteUsername(newUsername, initialUid)
         if (error == null) {
-            if (initialUid != null && activeUidProvider() == initialUid) {
-                val scopeId = UserRepository.getScopeId(initialUid)
-                userRepository.saveUsernameForScope(scopeId, newUsername.trim())
+            if (activeUidProvider() == initialUid) {
+                userRepository.saveUsernameForScope(initialUid, newUsername.trim())
             } else {
                 return "La sesión cambió durante la operación."
             }

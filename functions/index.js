@@ -49,6 +49,14 @@ exports.setUsername = functions.runWith({ enforceAppCheck: true }).https.onCall(
         throw new functions.https.HttpsError("unauthenticated", "Debe iniciar sesión para establecer un username.");
     }
     
+    const expectedUid = data.expectedUid;
+    if (!expectedUid || typeof expectedUid !== "string") {
+        throw new functions.https.HttpsError("invalid-argument", "Falta expectedUid o es inválido.");
+    }
+    if (context.auth.uid !== expectedUid) {
+        throw new functions.https.HttpsError("permission-denied", "La sesión no coincide con la esperada.");
+    }
+    
     const rawUsername = data.username;
     if (!rawUsername || typeof rawUsername !== "string") {
         throw new functions.https.HttpsError("invalid-argument", "Username inválido.");

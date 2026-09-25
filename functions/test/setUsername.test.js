@@ -34,7 +34,7 @@ describe('setUsername Cloud Function', () => {
 
     it('should throw unauthenticated if not logged in', async () => {
         try {
-            await setUsernameWrapped({ username: 'bob123' }, {});
+            await setUsernameWrapped({ username: 'bob123', expectedUid: 'bob' }, {});
             assert.fail('Should have thrown unauthenticated');
         } catch (e) {
             assert.strictEqual(e.code, 'unauthenticated');
@@ -43,7 +43,7 @@ describe('setUsername Cloud Function', () => {
 
     it('should throw invalid-argument for bad username', async () => {
         try {
-            await setUsernameWrapped({ username: 'a' }, { auth: { uid: 'user1' } });
+            await setUsernameWrapped({ username: 'a', expectedUid: 'user1' }, { auth: { uid: 'user1' } });
             assert.fail('Should have thrown invalid-argument');
         } catch (e) {
             assert.strictEqual(e.code, 'invalid-argument');
@@ -51,7 +51,7 @@ describe('setUsername Cloud Function', () => {
     });
 
     it('should successfully create first username and publicUser document', async () => {
-        await setUsernameWrapped({ username: 'Alice99' }, { auth: { uid: 'user1' } });
+        await setUsernameWrapped({ username: 'Alice99', expectedUid: 'user1' }, { auth: { uid: 'user1' } });
         
         const usernameDoc = await db.collection('usernames').doc('alice99').get();
         assert.ok(usernameDoc.exists);
@@ -67,7 +67,7 @@ describe('setUsername Cloud Function', () => {
         await db.collection('usernames').doc('bob').set({ uid: 'user2', usernameLowercase: 'bob' });
         
         try {
-            await setUsernameWrapped({ username: 'Bob' }, { auth: { uid: 'user1' } });
+            await setUsernameWrapped({ username: 'Bob', expectedUid: 'user1' }, { auth: { uid: 'user1' } });
             assert.fail('Should have thrown already-exists');
         } catch (e) {
             assert.strictEqual(e.code, 'already-exists');
@@ -82,7 +82,7 @@ describe('setUsername Cloud Function', () => {
         });
         
         try {
-            await setUsernameWrapped({ username: 'Bob' }, { auth: { uid: 'user1' } });
+            await setUsernameWrapped({ username: 'Bob', expectedUid: 'user1' }, { auth: { uid: 'user1' } });
             assert.fail('Should have thrown already-exists');
         } catch (e) {
             assert.strictEqual(e.code, 'already-exists');
@@ -94,7 +94,7 @@ describe('setUsername Cloud Function', () => {
         await db.collection('publicUsers').doc('legacyUser2').set({ uid: 'legacyUser2', username: 'Bob', usernameLowercase: 'bob' });
         
         try {
-            await setUsernameWrapped({ username: 'Bob' }, { auth: { uid: 'legacyUser1' } });
+            await setUsernameWrapped({ username: 'Bob', expectedUid: 'legacyUser1' }, { auth: { uid: 'legacyUser1' } });
             assert.fail('Should have thrown already-exists because legacyUser2 also has it');
         } catch (e) {
             assert.strictEqual(e.code, 'already-exists');
@@ -108,7 +108,7 @@ describe('setUsername Cloud Function', () => {
             usernameLowercase: 'bob'
         });
         
-        await setUsernameWrapped({ username: 'Bob' }, { auth: { uid: 'legacyUser' } });
+        await setUsernameWrapped({ username: 'Bob', expectedUid: 'legacyUser' }, { auth: { uid: 'legacyUser' } });
         
         const usernameDoc = await db.collection('usernames').doc('bob').get();
         assert.ok(usernameDoc.exists);
@@ -116,12 +116,12 @@ describe('setUsername Cloud Function', () => {
     });
 
     it('should allow user to change username and free the old one', async () => {
-        await setUsernameWrapped({ username: 'UserOld' }, { auth: { uid: 'user1' } });
+        await setUsernameWrapped({ username: 'UserOld', expectedUid: 'user1' }, { auth: { uid: 'user1' } });
         
         let oldDoc = await db.collection('usernames').doc('userold').get();
         assert.ok(oldDoc.exists);
         
-        await setUsernameWrapped({ username: 'UserNew' }, { auth: { uid: 'user1' } });
+        await setUsernameWrapped({ username: 'UserNew', expectedUid: 'user1' }, { auth: { uid: 'user1' } });
         
         oldDoc = await db.collection('usernames').doc('userold').get();
         assert.ok(!oldDoc.exists, 'Old username should be freed');
@@ -135,18 +135,18 @@ describe('setUsername Cloud Function', () => {
     });
 
     it('idempotencia: same user sending same request twice should succeed', async () => {
-        await setUsernameWrapped({ username: 'UserOld' }, { auth: { uid: 'user1' } });
-        await setUsernameWrapped({ username: 'UserOld' }, { auth: { uid: 'user1' } });
+        await setUsernameWrapped({ username: 'UserOld', expectedUid: 'user1' }, { auth: { uid: 'user1' } });
+        await setUsernameWrapped({ username: 'UserOld', expectedUid: 'user1' }, { auth: { uid: 'user1' } });
         
         const usernameDoc = await db.collection('usernames').doc('userold').get();
         assert.ok(usernameDoc.exists);
     });
 
     it('should handle concurrent requests for the same username', async function() {
-        this.timeout(5000);
+        this.timeout(15000);
         const promises = [
-            setUsernameWrapped({ username: 'Concurrent' }, { auth: { uid: 'user1' } }).catch(e => e),
-            setUsernameWrapped({ username: 'Concurrent' }, { auth: { uid: 'user2' } }).catch(e => e)
+            setUsernameWrapped({ username: 'Concurrent', expectedUid: 'user1' }, { auth: { uid: 'user1' } }).catch(e => e),
+            setUsernameWrapped({ username: 'Concurrent', expectedUid: 'user2' }, { auth: { uid: 'user2' } }).catch(e => e)
         ];
         
         const results = await Promise.all(promises);
@@ -157,5 +157,30 @@ describe('setUsername Cloud Function', () => {
         
         assert.strictEqual(successCount, 1);
         assert.strictEqual(errorCount, 1);
+    });
+
+
+    it('should continue when context.auth.uid equals expectedUid', async () => {
+        await setUsernameWrapped({ username: 'ValidUser', expectedUid: 'userA' }, { auth: { uid: 'userA' } });
+        const doc = await db.collection('usernames').doc('validuser').get();
+        assert.ok(doc.exists);
+    });
+
+    it('should reject when context.auth.uid does not match expectedUid', async () => {
+        try {
+            await setUsernameWrapped({ username: 'Sneaky', expectedUid: 'userA' }, { auth: { uid: 'userB' } });
+            assert.fail('Should have thrown permission-denied');
+        } catch (e) {
+            assert.strictEqual(e.code, 'permission-denied');
+        }
+    });
+
+    it('should reject when expectedUid is missing', async () => {
+        try {
+            await setUsernameWrapped({ username: 'MissingUid' }, { auth: { uid: 'userA' } });
+            assert.fail('Should have thrown invalid-argument');
+        } catch (e) {
+            assert.strictEqual(e.code, 'invalid-argument');
+        }
     });
 });

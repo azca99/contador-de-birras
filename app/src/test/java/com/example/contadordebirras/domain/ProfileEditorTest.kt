@@ -40,7 +40,7 @@ class ProfileEditorTest {
         
         val editor = ProfileEditor(
             userRepository = repository,
-            setRemoteUsername = { null },
+            setRemoteUsername = { _, _ -> null },
             syncRemoteProfile = { alias, uid ->
                 remoteSyncedAlias = alias
                 remoteSyncedUid = uid
@@ -54,7 +54,7 @@ class ProfileEditorTest {
         // Instead of simulating inside syncRemoteProfile, let's simulate the delay
         val delayedEditor = ProfileEditor(
             userRepository = repository,
-            setRemoteUsername = { null },
+            setRemoteUsername = { _, _ -> null },
             syncRemoteProfile = { alias, uid ->
                 remoteSyncedAlias = alias
                 remoteSyncedUid = uid
@@ -88,7 +88,7 @@ class ProfileEditorTest {
         var remoteSynced = false
         val editor = ProfileEditor(
             userRepository = repository,
-            setRemoteUsername = { null },
+            setRemoteUsername = { _, _ -> null },
             syncRemoteProfile = { _, _ -> remoteSynced = true }
         )
         
@@ -103,7 +103,7 @@ class ProfileEditorTest {
     fun `setUsername a no se guarda localmente en B si auth cambia`() = runTest {
         val editor = ProfileEditor(
             userRepository = repository,
-            setRemoteUsername = { 
+            setRemoteUsername = { _, _ -> 
                 // Simulate network returning success, but auth changed during network
                 activeUid.value = "userB"
                 null 

@@ -47,9 +47,9 @@ class AuthRepository(private val context: Context) {
         _currentUser.value = null
     }
 
-    suspend fun syncProfile(alias: String, syncUid: String? = null) {
+    suspend fun syncProfile(alias: String, syncUid: String) {
         val user = auth.currentUser ?: return
-        if (syncUid != null && user.uid != syncUid) return
+        if (user.uid != syncUid) return
         
         val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
         val data = hashMapOf(
@@ -89,9 +89,9 @@ class AuthRepository(private val context: Context) {
         }
     }
 
-    suspend fun setUsername(username: String): String? {
-        auth.currentUser ?: return "Debes iniciar sesión para asignar un username."
-        
+    suspend fun setUsername(username: String, expectedUid: String): String? {
+        val user = auth.currentUser ?: return "Debes iniciar sesion para asignar un username."; if (user.uid != expectedUid) return "La sesión cambió antes de iniciar la operación."
+
         val normalizedUsername = username.trim()
 
 
@@ -106,7 +106,7 @@ class AuthRepository(private val context: Context) {
 
         try {
             val functions = com.google.firebase.functions.FirebaseFunctions.getInstance()
-            val data = hashMapOf("username" to normalizedUsername)
+            val data = hashMapOf("username" to normalizedUsername, "expectedUid" to expectedUid)
             
             functions.getHttpsCallable("setUsername")
                 .call(data)

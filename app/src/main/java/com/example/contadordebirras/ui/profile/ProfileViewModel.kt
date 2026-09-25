@@ -23,7 +23,7 @@ class ProfileViewModel(
 
     private val profileEditor = com.example.contadordebirras.domain.ProfileEditor(
         userRepository = userRepository,
-        setRemoteUsername = { username -> authRepository.setUsername(username) },
+        setRemoteUsername = { username, expectedUid -> authRepository.setUsername(username, expectedUid) },
         syncRemoteProfile = { alias, uid -> authRepository.syncProfile(alias, uid) }
     )
 
