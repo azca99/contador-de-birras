@@ -30,11 +30,16 @@ class ProfileViewModel(
 
     fun setUsername(newUsername: String, onSuccess: () -> Unit) {
         viewModelScope.launch {
+            val initialUid = currentUser.value?.uid
             _usernameError.value = null
             val error = authRepository.setUsername(newUsername)
             if (error == null) {
-                userRepository.saveUsername(newUsername.trim())
-                onSuccess()
+                if (currentUser.value?.uid == initialUid) {
+                    userRepository.saveUsername(newUsername.trim())
+                    onSuccess()
+                } else {
+                    _usernameError.value = "La sesión cambió durante la operación."
+                }
             } else {
                 _usernameError.value = error
             }
@@ -53,9 +58,5 @@ class ProfileViewModel(
 
     fun updateCurrentUser() {
         authRepository.updateCurrentUser()
-        viewModelScope.launch {
-            val currentAlias = userRepository.userAlias.first()
-            authRepository.syncProfile(currentAlias)
-        }
     }
 }
