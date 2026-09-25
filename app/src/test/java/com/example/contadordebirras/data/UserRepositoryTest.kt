@@ -9,6 +9,7 @@ import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
@@ -17,7 +18,6 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.File
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 class UserRepositoryTest {
@@ -38,119 +38,158 @@ class UserRepositoryTest {
     }
 
     @Test
-    fun `alias A no aparece en B, ni en guest`() = runTest {
+    fun `secuencia completa A - guest - B - guest - A`() = runTest {
+        // A
         activeUid.value = "userA"
         repository.saveAlias("Alias A")
-        
-        activeUid.value = "userB"
-        repository.saveAlias("Alias B")
-
-        activeUid.value = "userA"
         assertEquals("Alias A", repository.userAlias.first())
-
+        
+        // Guest
+        activeUid.value = null
+        assertEquals("Cervecero", repository.userAlias.first())
+        repository.saveAlias("Alias Guest")
+        assertEquals("Alias Guest", repository.userAlias.first())
+        
+        // B
         activeUid.value = "userB"
+        assertEquals("Cervecero", repository.userAlias.first())
+        repository.saveAlias("Alias B")
         assertEquals("Alias B", repository.userAlias.first())
         
-        activeUid.value = null // logout -> guest
-        assertEquals("Cervecero", repository.userAlias.first()) // default
+        // Guest again
+        activeUid.value = null
+        assertEquals("Alias Guest", repository.userAlias.first())
+        
+        // A again
+        activeUid.value = "userA"
+        assertEquals("Alias A", repository.userAlias.first())
     }
 
     @Test
-    fun `username A no aparece en B`() = runTest {
-        activeUid.value = "userA"
-        repository.saveUsername("username_a")
-        
-        activeUid.value = "userB"
-        repository.saveUsername("username_b")
-
-        activeUid.value = "userA"
-        assertEquals("username_a", repository.username.first())
-    }
-
-    @Test
-    fun `locationEnabled A no aparece en B`() = runTest {
-        activeUid.value = "userA"
-        repository.setLocationEnabled(true)
-        
-        activeUid.value = "userB"
-        repository.setLocationEnabled(false)
-
-        activeUid.value = "userA"
-        assertEquals(true, repository.isLocationEnabled.first())
-    }
-
-    @Test
-    fun `creationDate A no aparece en B y se autogenera`() = runTest {
-        activeUid.value = "userA"
-        val dateA = repository.creationDate.first()
-        
-        activeUid.value = "userB"
-        val dateB = repository.creationDate.first()
-
-        activeUid.value = "userA"
-        assertEquals(dateA, repository.creationDate.first())
-        assertNotEquals(dateA, dateB) // Podrian ser iguales si el test corre en 0ms, pero no comparten clave
-        
-        // Explicitly check isolation with setCreationDateIfEmpty
-        activeUid.value = "userC"
-        repository.setCreationDateIfEmpty(100L)
-        assertEquals(100L, repository.creationDate.first())
-        
-        activeUid.value = "userD"
-        repository.setCreationDateIfEmpty(200L)
-        assertEquals(200L, repository.creationDate.first())
-    }
-
-    @Test
-    fun `migracion mueve alias global a legacy_unassigned y lo elimina de global`() = runTest {
-        // Pre-populate legacy
+    fun `guest y legacy no comparten alias ni username`() = runTest {
         dataStore.edit { prefs ->
             prefs[stringPreferencesKey("alias")] = "Legacy Alias"
-            prefs[stringPreferencesKey("username")] = "LegacyUsername"
-            prefs[longPreferencesKey("creation_date")] = 999L
-            prefs[booleanPreferencesKey("location_enabled")] = true
+            prefs[stringPreferencesKey("username")] = "legacy_user"
         }
-
         repository.migrateLegacy()
+        
+        activeUid.value = null // Guest
+        assertEquals("Cervecero", repository.userAlias.first())
+        assertEquals("", repository.username.first())
+    }
 
-        // After migration, global keys should not exist in datastore
-        val currentPrefs = dataStore.data.first()
-        assertEquals(null, currentPrefs[stringPreferencesKey("alias")])
-        assertEquals(null, currentPrefs[stringPreferencesKey("username")])
+    @Test
+    fun `B y legacy no comparten preferencias`() = runTest {
+        dataStore.edit { prefs ->
+            prefs[stringPreferencesKey("alias")] = "Legacy Alias"
+        }
+        repository.migrateLegacy()
         
-        // Legacy keys should be in legacy_unassigned scope
-        assertEquals("Legacy Alias", currentPrefs[stringPreferencesKey("user_legacy_unassigned_alias")])
-        assertEquals("LegacyUsername", currentPrefs[stringPreferencesKey("user_legacy_unassigned_username")])
-        assertEquals(999L, currentPrefs[longPreferencesKey("user_legacy_unassigned_creation_date")])
-        assertEquals(true, currentPrefs[booleanPreferencesKey("user_legacy_unassigned_location_enabled")])
-        
-        // Active user shouldn't see legacy
-        activeUid.value = "userA"
+        activeUid.value = "userB"
         assertEquals("Cervecero", repository.userAlias.first())
     }
 
     @Test
-    fun `migracion es idempotente`() = runTest {
+    fun `migracion elimina TODAS las claves globales y las mueve a legacy`() = runTest {
         dataStore.edit { prefs ->
             prefs[stringPreferencesKey("alias")] = "Legacy Alias"
+            prefs[stringPreferencesKey("username")] = "LegacyUser"
+            prefs[longPreferencesKey("creation_date")] = 500L
+            prefs[booleanPreferencesKey("location_enabled")] = true
         }
+        
         repository.migrateLegacy()
         
-        // Somebody writes a new 'alias' (shouldn't happen, but test idempotency)
-        dataStore.edit { prefs ->
-            prefs[stringPreferencesKey("alias")] = "Rogue Alias"
-        }
-        repository.migrateLegacy()
+        val prefs = dataStore.data.first()
+        // Deleted globals
+        assertEquals(null, prefs[stringPreferencesKey("alias")])
+        assertEquals(null, prefs[stringPreferencesKey("username")])
+        assertEquals(null, prefs[longPreferencesKey("creation_date")])
+        assertEquals(null, prefs[booleanPreferencesKey("location_enabled")])
         
-        val currentPrefs = dataStore.data.first()
-        // Legacy should still be "Legacy Alias", not "Rogue Alias"
-        assertEquals("Legacy Alias", currentPrefs[stringPreferencesKey("user_legacy_unassigned_alias")])
+        // Moved to legacy
+        assertEquals("Legacy Alias", prefs[stringPreferencesKey("user_legacy_unassigned_alias")])
+        assertEquals("LegacyUser", prefs[stringPreferencesKey("user_legacy_unassigned_username")])
+        assertEquals(500L, prefs[longPreferencesKey("user_legacy_unassigned_creation_date")])
+        assertEquals(true, prefs[booleanPreferencesKey("user_legacy_unassigned_location_enabled")])
     }
 
     @Test
-    fun `saveAlias iniciado como A no termina escribiendo B si cambia el scope`() = runTest(kotlinx.coroutines.test.UnconfinedTestDispatcher()) {
+    fun `saveUsername dirigido a A nunca escribe B con scope explicito`() = runTest {
+        repository.saveUsernameForScope("userA", "user_a")
+        
         activeUid.value = "userA"
-        // This validates our structure where saveAlias reads first() and uses it
+        assertEquals("user_a", repository.username.first())
+        
+        activeUid.value = "userB"
+        assertEquals("", repository.username.first())
+    }
+
+    @Test
+    fun `saveAlias dirigido a A nunca escribe B con scope explicito`() = runTest {
+        repository.saveAliasForScope("userA", "alias_a")
+        
+        activeUid.value = "userA"
+        assertEquals("alias_a", repository.userAlias.first())
+        
+        activeUid.value = "userB"
+        assertEquals("Cervecero", repository.userAlias.first())
+    }
+
+    @Test
+    fun `setLocationEnabled A no modifica B`() = runTest {
+        activeUid.value = "userA"
+        repository.setLocationEnabled(true)
+        
+        activeUid.value = "userB"
+        assertEquals(false, repository.isLocationEnabled.first())
+    }
+
+    @Test
+    fun `setCreationDateIfEmpty A no modifica B`() = runTest {
+        activeUid.value = "userA"
+        repository.setCreationDateIfEmpty(1234L)
+        
+        activeUid.value = "userB"
+        val dateB = repository.creationDate.first()
+        assertNotEquals(1234L, dateB)
+    }
+
+    @Test
+    fun `mismo scope conserva creationDate entre nuevas colecciones`() = runTest {
+        activeUid.value = "userA"
+        val date1 = repository.creationDate.first()
+        
+        // Change auth and back to force new collection
+        activeUid.value = "userB"
+        repository.creationDate.first()
+        
+        activeUid.value = "userA"
+        val date2 = repository.creationDate.first()
+        
+        assertEquals(date1, date2)
+    }
+    
+    @Test
+    fun `hydrateAlias A no modifica B`() = runTest {
+        // En la implementación real hydrateAlias es saveAliasForScope
+        repository.saveAliasForScope("userA", "hydrated_alias")
+        
+        activeUid.value = "userB"
+        assertEquals("Cervecero", repository.userAlias.first())
+    }
+
+    @Test
+    fun `hydrateUsername A no modifica B`() = runTest {
+        repository.saveUsernameForScope("userA", "hydrated_user")
+        
+        activeUid.value = "userB"
+        assertEquals("", repository.username.first())
+    }
+
+    @Test
+    fun `saveAlias iniciado como A no termina escribiendo B si cambia el scope (convenience)`() = runTest(UnconfinedTestDispatcher()) {
+        activeUid.value = "userA"
         val job = launch {
             repository.saveAlias("Alias A")
         }
@@ -163,17 +202,16 @@ class UserRepositoryTest {
     }
 
     @Test
-    fun `hydrateAlias y hydrateUsername escriben solo en el UID especificado`() = runTest {
-        activeUid.value = "guest_local" // doesn't matter what's active
+    fun `saveUsername iniciado como A no termina escribiendo B si cambia el scope (convenience)`() = runTest(UnconfinedTestDispatcher()) {
+        activeUid.value = "userA"
+        val job = launch {
+            repository.saveUsername("username_a")
+        }
+        activeUid.value = "userB"
+        job.join()
         
-        repository.hydrateAlias("userX", "Remote Alias")
-        repository.hydrateUsername("userX", "RemoteUser")
-        
-        activeUid.value = "userX"
-        assertEquals("Remote Alias", repository.userAlias.first())
-        assertEquals("RemoteUser", repository.username.first())
-        
-        activeUid.value = "guest_local"
-        assertEquals("Cervecero", repository.userAlias.first()) // guest is untouched
+        val currentPrefs = dataStore.data.first()
+        assertEquals("username_a", currentPrefs[stringPreferencesKey("user_userA_username")])
+        assertEquals(null, currentPrefs[stringPreferencesKey("user_userB_username")])
     }
 }

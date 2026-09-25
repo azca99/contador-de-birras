@@ -57,26 +57,24 @@ class MainActivity : ComponentActivity() {
     val achievementRepository = com.example.contadordebirras.data.achievements.DefaultAchievementRepository(beerDatabase.achievementDao())
     val factory = AppViewModelFactory(beerRepository, userRepository, authRepository, friendsRepository, groupsRepository, achievementRepository)
 
+    val profileHydrator = com.example.contadordebirras.domain.ProfileHydrator(userRepository) { uid ->
+        try {
+            val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
+            val doc = firestore.collection("publicUsers").document(uid).get().await()
+            if (doc.exists()) {
+                Pair(doc.getString("displayName"), doc.getString("username"))
+            } else null
+        } catch (e: Exception) {
+            e.printStackTrace()
+            null
+        }
+    }
+
     lifecycleScope.launch {
         userRepository.migrateLegacy()
         authRepository.currentUser.collect { user ->
             if (user != null) {
-                try {
-                    val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
-                    val doc = firestore.collection("publicUsers").document(user.uid).get().await()
-                    if (doc.exists()) {
-                        val displayName = doc.getString("displayName")
-                        val username = doc.getString("username")
-                        if (!displayName.isNullOrBlank()) {
-                            userRepository.hydrateAlias(user.uid, displayName)
-                        }
-                        if (!username.isNullOrBlank()) {
-                            userRepository.hydrateUsername(user.uid, username)
-                        }
-                    }
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                }
+                profileHydrator.hydrateIfActive(user.uid) { authRepository.currentUser.value?.uid }
             }
         }
     }

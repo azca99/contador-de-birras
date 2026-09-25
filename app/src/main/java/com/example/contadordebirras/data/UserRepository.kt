@@ -21,6 +21,13 @@ class UserRepository(
     private val dataStore: DataStore<Preferences>,
     private val activeUidFlow: Flow<String?>
 ) {
+    companion object {
+        const val SCOPE_GUEST = "guest_local"
+        const val SCOPE_LEGACY = "legacy_unassigned"
+        
+        fun getScopeId(uid: String?): String = uid ?: SCOPE_GUEST
+    }
+
     // Legacy global keys
     private val LEGACY_ALIAS_KEY = stringPreferencesKey("alias")
     private val LEGACY_USERNAME_KEY = stringPreferencesKey("username")
@@ -30,8 +37,6 @@ class UserRepository(
     private val MIGRATED_LEGACY_V1 = booleanPreferencesKey("migrated_legacy_to_scoped_v1")
 
     // Scoped key generators
-    private fun getScopeId(uid: String?): String = uid ?: "guest_local"
-    
     private fun aliasKey(scopeId: String) = stringPreferencesKey("user_${scopeId}_alias")
     private fun usernameKey(scopeId: String) = stringPreferencesKey("user_${scopeId}_username")
     private fun creationDateKey(scopeId: String) = longPreferencesKey("user_${scopeId}_creation_date")
@@ -72,25 +77,17 @@ class UserRepository(
         dataStore.data.map { prefs -> prefs[locationEnabledKey(scopeId)] ?: false }
     }
 
-    suspend fun saveAlias(alias: String) {
-        val uid = activeUidFlow.first()
-        val scopeId = getScopeId(uid)
-        dataStore.edit { prefs ->
-            prefs[aliasKey(scopeId)] = alias
-        }
+    // --- EXPLÍCIT SCOPE WRITERS ---
+
+    suspend fun saveAliasForScope(scopeId: String, alias: String) {
+        dataStore.edit { prefs -> prefs[aliasKey(scopeId)] = alias }
     }
 
-    suspend fun saveUsername(username: String) {
-        val uid = activeUidFlow.first()
-        val scopeId = getScopeId(uid)
-        dataStore.edit { prefs ->
-            prefs[usernameKey(scopeId)] = username
-        }
+    suspend fun saveUsernameForScope(scopeId: String, username: String) {
+        dataStore.edit { prefs -> prefs[usernameKey(scopeId)] = username }
     }
 
-    suspend fun setCreationDateIfEmpty(date: Long) {
-        val uid = activeUidFlow.first()
-        val scopeId = getScopeId(uid)
+    suspend fun setCreationDateForScopeIfEmpty(scopeId: String, date: Long) {
         dataStore.edit { prefs ->
             if (prefs[creationDateKey(scopeId)] == null) {
                 prefs[creationDateKey(scopeId)] = date
@@ -98,27 +95,30 @@ class UserRepository(
         }
     }
 
+    suspend fun setLocationEnabledForScope(scopeId: String, enabled: Boolean) {
+        dataStore.edit { prefs -> prefs[locationEnabledKey(scopeId)] = enabled }
+    }
+
+    // --- CONVENIENCE WRITERS (Current active scope) ---
+
+    suspend fun saveAlias(alias: String) {
+        val uid = activeUidFlow.first()
+        saveAliasForScope(getScopeId(uid), alias)
+    }
+
+    suspend fun saveUsername(username: String) {
+        val uid = activeUidFlow.first()
+        saveUsernameForScope(getScopeId(uid), username)
+    }
+
+    suspend fun setCreationDateIfEmpty(date: Long) {
+        val uid = activeUidFlow.first()
+        setCreationDateForScopeIfEmpty(getScopeId(uid), date)
+    }
+
     suspend fun setLocationEnabled(enabled: Boolean) {
         val uid = activeUidFlow.first()
-        val scopeId = getScopeId(uid)
-        dataStore.edit { prefs ->
-            prefs[locationEnabledKey(scopeId)] = enabled
-        }
-    }
-
-    // Hydration functions to safely set remote data only to the specific UID
-    suspend fun hydrateAlias(uid: String, alias: String) {
-        val scopeId = getScopeId(uid)
-        dataStore.edit { prefs ->
-            prefs[aliasKey(scopeId)] = alias
-        }
-    }
-
-    suspend fun hydrateUsername(uid: String, username: String) {
-        val scopeId = getScopeId(uid)
-        dataStore.edit { prefs ->
-            prefs[usernameKey(scopeId)] = username
-        }
+        setLocationEnabledForScope(getScopeId(uid), enabled)
     }
 
     suspend fun migrateLegacy() {
@@ -129,10 +129,10 @@ class UserRepository(
                 val legacyCreationDate = prefs[LEGACY_CREATION_DATE_KEY]
                 val legacyLocation = prefs[LEGACY_LOCATION_ENABLED_KEY]
 
-                if (legacyAlias != null) prefs[aliasKey("legacy_unassigned")] = legacyAlias
-                if (legacyUsername != null) prefs[usernameKey("legacy_unassigned")] = legacyUsername
-                if (legacyCreationDate != null) prefs[creationDateKey("legacy_unassigned")] = legacyCreationDate
-                if (legacyLocation != null) prefs[locationEnabledKey("legacy_unassigned")] = legacyLocation
+                if (legacyAlias != null) prefs[aliasKey(SCOPE_LEGACY)] = legacyAlias
+                if (legacyUsername != null) prefs[usernameKey(SCOPE_LEGACY)] = legacyUsername
+                if (legacyCreationDate != null) prefs[creationDateKey(SCOPE_LEGACY)] = legacyCreationDate
+                if (legacyLocation != null) prefs[locationEnabledKey(SCOPE_LEGACY)] = legacyLocation
 
                 prefs.remove(LEGACY_ALIAS_KEY)
                 prefs.remove(LEGACY_USERNAME_KEY)

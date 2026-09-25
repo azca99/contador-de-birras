@@ -21,25 +21,24 @@ class ProfileViewModel(
     private val _usernameError = MutableStateFlow<String?>(null)
     val usernameError: StateFlow<String?> = _usernameError
 
+    private val profileEditor = com.example.contadordebirras.domain.ProfileEditor(
+        userRepository = userRepository,
+        setRemoteUsername = { username -> authRepository.setUsername(username) },
+        syncRemoteProfile = { alias, uid -> authRepository.syncProfile(alias, uid) }
+    )
+
     fun setAlias(newAlias: String) {
         viewModelScope.launch {
-            userRepository.saveAlias(newAlias)
-            authRepository.syncProfile(newAlias)
+            profileEditor.setAlias(newAlias) { currentUser.value?.uid }
         }
     }
 
     fun setUsername(newUsername: String, onSuccess: () -> Unit) {
         viewModelScope.launch {
-            val initialUid = currentUser.value?.uid
             _usernameError.value = null
-            val error = authRepository.setUsername(newUsername)
+            val error = profileEditor.setUsername(newUsername) { currentUser.value?.uid }
             if (error == null) {
-                if (currentUser.value?.uid == initialUid) {
-                    userRepository.saveUsername(newUsername.trim())
-                    onSuccess()
-                } else {
-                    _usernameError.value = "La sesión cambió durante la operación."
-                }
+                onSuccess()
             } else {
                 _usernameError.value = error
             }

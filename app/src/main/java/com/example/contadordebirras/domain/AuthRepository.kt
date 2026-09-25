@@ -47,8 +47,10 @@ class AuthRepository(private val context: Context) {
         _currentUser.value = null
     }
 
-    suspend fun syncProfile(alias: String) {
+    suspend fun syncProfile(alias: String, syncUid: String? = null) {
         val user = auth.currentUser ?: return
+        if (syncUid != null && user.uid != syncUid) return
+        
         val firestore = com.google.firebase.firestore.FirebaseFirestore.getInstance()
         val data = hashMapOf(
             "email" to user.email,
