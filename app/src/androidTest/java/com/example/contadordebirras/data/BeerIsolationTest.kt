@@ -196,7 +196,7 @@ class BeerIsolationTest {
         assertNull(lastA)
 
         val lastB = beerDao.getLastBeer("userB").first()
-        assertEquals(1000, lastB?.timestamp)
+        assertEquals(1000L, lastB?.timestamp)
     }
 
     @Test
