@@ -90,7 +90,8 @@ class AuthRepository(private val context: Context) {
     }
 
     suspend fun setUsername(username: String, expectedUid: String): String? {
-        val user = auth.currentUser ?: return "Debes iniciar sesion para asignar un username."; if (user.uid != expectedUid) return "La sesión cambió antes de iniciar la operación."
+        val user = auth.currentUser ?: return "Debes iniciar sesión para asignar un username."
+        if (user.uid != expectedUid) return "La sesión cambió antes de iniciar la operación."
 
         val normalizedUsername = username.trim()
 

@@ -28,15 +28,17 @@ class ProfileViewModel(
     )
 
     fun setAlias(newAlias: String) {
+        val initialUid = currentUser.value?.uid
         viewModelScope.launch {
-            profileEditor.setAlias(newAlias) { currentUser.value?.uid }
+            profileEditor.setAlias(newAlias, initialUid) { currentUser.value?.uid }
         }
     }
 
     fun setUsername(newUsername: String, onSuccess: () -> Unit) {
+        val initialUid = currentUser.value?.uid
         viewModelScope.launch {
             _usernameError.value = null
-            val error = profileEditor.setUsername(newUsername) { currentUser.value?.uid }
+            val error = profileEditor.setUsername(newUsername, initialUid) { currentUser.value?.uid }
             if (error == null) {
                 onSuccess()
             } else {
@@ -46,8 +48,10 @@ class ProfileViewModel(
     }
 
     fun setLocationEnabled(enabled: Boolean) {
+        val initialUid = currentUser.value?.uid
+        val scope = UserRepository.getScopeId(initialUid)
         viewModelScope.launch {
-            userRepository.setLocationEnabled(enabled)
+            userRepository.setLocationEnabledForScope(scope, enabled)
         }
     }
 

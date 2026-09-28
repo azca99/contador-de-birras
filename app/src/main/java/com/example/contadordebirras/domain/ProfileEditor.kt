@@ -7,8 +7,7 @@ class ProfileEditor(
     private val setRemoteUsername: suspend (String, String) -> String?,
     private val syncRemoteProfile: suspend (String, String) -> Unit
 ) {
-    suspend fun setAlias(newAlias: String, activeUidProvider: () -> String?) {
-        val initialUid = activeUidProvider()
+    suspend fun setAlias(newAlias: String, initialUid: String?, activeUidProvider: () -> String?) {
         val scopeId = UserRepository.getScopeId(initialUid)
         userRepository.saveAliasForScope(scopeId, newAlias)
         
@@ -17,8 +16,7 @@ class ProfileEditor(
         }
     }
 
-    suspend fun setUsername(newUsername: String, activeUidProvider: () -> String?): String? {
-        val initialUid = activeUidProvider()
+    suspend fun setUsername(newUsername: String, initialUid: String?, activeUidProvider: () -> String?): String? {
         if (initialUid == null) {
             return "Debes iniciar sesión para asignar un username."
         }

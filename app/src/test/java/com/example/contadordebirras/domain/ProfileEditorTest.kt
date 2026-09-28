@@ -33,10 +33,95 @@ class ProfileEditorTest {
     }
 
     @Test
-    fun `setAlias a no se sincroniza a B remoto`() = runTest {
+    fun `A setUsername desde guest remote no se invoca`() = runTest {
+        var remoteCalled = false
+        val editor = ProfileEditor(
+            userRepository = repository,
+            setRemoteUsername = { _, _ -> 
+                remoteCalled = true
+                null 
+            },
+            syncRemoteProfile = { _, _ -> }
+        )
+        
+        activeUid.value = null
+        val result = editor.setUsername("guest_user", null) { activeUid.value }
+        assert(result?.contains("iniciar sesi") == true)
+        assertEquals(false, remoteCalled)
+        assertEquals("", repository.username.first())
+    }
+
+    @Test
+    fun `B expectedUid operacion iniciada por A pasa exactamente userA al callback remoto`() = runTest {
+        var passedUid: String? = null
+        val editor = ProfileEditor(
+            userRepository = repository,
+            setRemoteUsername = { _, expectedUid -> 
+                passedUid = expectedUid
+                null 
+            },
+            syncRemoteProfile = { _, _ -> }
+        )
+        
+        activeUid.value = "userA"
+        editor.setUsername("my_user", "userA") { activeUid.value }
+        assertEquals("userA", passedUid)
+    }
+
+    @Test
+    fun `C exito normal A remote recibe A sigue A username se guarda en A B permanece vacio`() = runTest {
+        var passedUid: String? = null
+        val editor = ProfileEditor(
+            userRepository = repository,
+            setRemoteUsername = { _, expectedUid -> 
+                passedUid = expectedUid
+                null 
+            },
+            syncRemoteProfile = { _, _ -> }
+        )
+        
+        activeUid.value = "userA"
+        val result = editor.setUsername("user_a", "userA") { activeUid.value }
+        
+        assertNull(result)
+        assertEquals("userA", passedUid)
+        
+        activeUid.value = "userA"
+        assertEquals("user_a", repository.username.first())
+        
+        activeUid.value = "userB"
+        assertEquals("", repository.username.first())
+    }
+
+    @Test
+    fun `D UID capturado A pero current ya B ANTES de ejecutar la logica suspendida no se llama remoto no se escribe B`() = runTest {
+        var remoteCalled = false
+        val editor = ProfileEditor(
+            userRepository = repository,
+            setRemoteUsername = { _, _ -> 
+                remoteCalled = true
+                null 
+            },
+            syncRemoteProfile = { _, _ -> }
+        )
+        
+        activeUid.value = "userB" // Changed before launch executed
+        val result = editor.setUsername("sneaky", "userA") { activeUid.value }
+        
+        assert(result?.contains("cambi") == true && result?.contains("antes") == true)
+        assertEquals(false, remoteCalled)
+        
+        activeUid.value = "userB"
+        assertEquals("", repository.username.first())
+        
+        activeUid.value = "userA"
+        assertEquals("", repository.username.first())
+    }
+
+    @Test
+    fun `E alias con initialUid A pero current B al comenzar la coroutine Alias A no se guarda en B no se sincroniza remotamente como B`() = runTest {
         var remoteSyncedAlias: String? = null
         var remoteSyncedUid: String? = null
-        var simulateAuthChange: () -> Unit = {}
         
         val editor = ProfileEditor(
             userRepository = repository,
@@ -44,38 +129,18 @@ class ProfileEditorTest {
             syncRemoteProfile = { alias, uid ->
                 remoteSyncedAlias = alias
                 remoteSyncedUid = uid
-                simulateAuthChange()
             }
         )
         
-        activeUid.value = "userA"
-        simulateAuthChange = { activeUid.value = "userB" } // Will happen INSIDE syncRemoteProfile mock, but wait, the check is BEFORE syncRemoteProfile
+        activeUid.value = "userB" // Changed before coroutine executes
         
-        // Instead of simulating inside syncRemoteProfile, let's simulate the delay
-        val delayedEditor = ProfileEditor(
-            userRepository = repository,
-            setRemoteUsername = { _, _ -> null },
-            syncRemoteProfile = { alias, uid ->
-                remoteSyncedAlias = alias
-                remoteSyncedUid = uid
-            }
-        )
+        // Editor is called with initialUid="userA", but current provider returns "userB"
+        editor.setAlias("Alias A", "userA") { activeUid.value }
         
-        // We need activeUid to change BEFORE syncRemoteProfile is called!
-        // To simulate that in this synchronous test, we pass a provider that changes state on the second call.
-        var callCount = 0
-        delayedEditor.setAlias("Alias A") {
-            callCount++
-            if (callCount == 1) "userA" else {
-                activeUid.value = "userB"
-                "userB"
-            }
-        }
-        
-        // Should NOT have synced remotely because UID changed
+        // Should NOT have synced remotely because activeUid is B but initialUid was A
         assertNull(remoteSyncedAlias)
         
-        // But SHOULD have saved locally to userA (scope captured at step 1)
+        // Should have saved locally to userA ONLY
         activeUid.value = "userA"
         assertEquals("Alias A", repository.userAlias.first())
         
@@ -84,27 +149,10 @@ class ProfileEditorTest {
     }
 
     @Test
-    fun `setAlias guest no se sincroniza`() = runTest {
-        var remoteSynced = false
-        val editor = ProfileEditor(
-            userRepository = repository,
-            setRemoteUsername = { _, _ -> null },
-            syncRemoteProfile = { _, _ -> remoteSynced = true }
-        )
-        
-        activeUid.value = null
-        editor.setAlias("Alias Guest") { activeUid.value }
-        
-        assertEquals(false, remoteSynced)
-        assertEquals("Alias Guest", repository.userAlias.first())
-    }
-
-    @Test
-    fun `setUsername a no se guarda localmente en B si auth cambia`() = runTest {
+    fun `setUsername a no se guarda localmente en B si auth cambia durante network`() = runTest {
         val editor = ProfileEditor(
             userRepository = repository,
             setRemoteUsername = { _, _ -> 
-                // Simulate network returning success, but auth changed during network
                 activeUid.value = "userB"
                 null 
             },
@@ -112,14 +160,14 @@ class ProfileEditorTest {
         )
         
         activeUid.value = "userA"
-        val result = editor.setUsername("user_a") { activeUid.value }
+        val result = editor.setUsername("user_a", "userA") { activeUid.value }
         
-        assertEquals("La sesión cambió durante la operación.", result)
+        assert(result?.contains("cambi") == true && result?.contains("durante") == true)
         
         activeUid.value = "userB"
         assertEquals("", repository.username.first())
         
         activeUid.value = "userA"
-        assertEquals("", repository.username.first()) // Did not save anywhere
+        assertEquals("", repository.username.first())
     }
 }

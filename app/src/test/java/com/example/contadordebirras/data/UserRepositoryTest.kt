@@ -214,4 +214,18 @@ class UserRepositoryTest {
         assertEquals("username_a", currentPrefs[stringPreferencesKey("user_userA_username")])
         assertEquals(null, currentPrefs[stringPreferencesKey("user_userB_username")])
     }
+
+    @Test
+    fun `F locationEnabled scope A capturado Auth pasa B antes de ejecutar la escritura solo A cambia`() = runTest {
+        val capturedScope = "userA"
+        activeUid.value = "userB" // Current session is B when write executes
+        
+        repository.setLocationEnabledForScope(capturedScope, true)
+        
+        activeUid.value = "userA"
+        assertEquals(true, repository.isLocationEnabled.first())
+        
+        activeUid.value = "userB"
+        assertEquals(false, repository.isLocationEnabled.first())
+    }
 }
