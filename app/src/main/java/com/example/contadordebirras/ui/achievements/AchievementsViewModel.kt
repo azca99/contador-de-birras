@@ -1,7 +1,8 @@
-package com.example.contadordebirras.ui.achievements
+﻿package com.example.contadordebirras.ui.achievements
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.contadordebirras.domain.AuthRepository
 import com.example.contadordebirras.domain.BeerRepository
 import com.example.contadordebirras.data.achievements.AchievementEntity
 import com.example.contadordebirras.data.achievements.AchievementRepository
@@ -16,6 +17,9 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.launchIn
 import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flatMapLatest
 
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.asSharedFlow
@@ -33,7 +37,8 @@ data class AchievementsUiState(
 
 class AchievementsViewModel(
     private val beerRepository: BeerRepository,
-    private val achievementRepository: AchievementRepository
+    private val achievementRepository: AchievementRepository,
+    private val authRepository: AuthRepository
 ) : ViewModel() {
 
     private val calculator = AchievementCalculator()
@@ -45,58 +50,70 @@ class AchievementsViewModel(
     val newUnlocksEvent = _newUnlocksEvent.asSharedFlow()
 
     init {
-        combine(
-            beerRepository.allBeers,
-            achievementRepository.getAllAchievements()
-        ) { beers, savedAchievements ->
-            val countByType = beers.groupingBy { it.type }.eachCount()
-            val distinctLocations = beers.mapNotNull { it.locationName }.distinct().size
-            val photosAdded = beers.count { it.photoUri != null || it.remotePhotoUrl != null }
-
-            val input = AchievementStatsInput(
-                beers = beers,
-                totalBeers = beers.size,
-                countByType = countByType,
-                distinctLocations = distinctLocations,
-                photosAdded = photosAdded
-                // the rest are empty for now until implemented
-            )
-
-            val progresses = calculator.calculateProgress(input, savedAchievements)
-            val uiModels = calculator.buildUiModels(progresses)
-
-            val totalPoints = uiModels.filter { it.state == com.example.contadordebirras.domain.achievements.AchievementState.UNLOCKED || it.state == com.example.contadordebirras.domain.achievements.AchievementState.CLAIMED }.sumOf { it.points }
-            val level = calculator.calculateLevels(totalPoints)
-            val nextLevelPts = calculator.getNextLevelRequiredPoints(totalPoints)
-
-            // Save new unlocks to DB
-            val newUnlocks = progresses.filter { it.isUnlocked && savedAchievements.none { saved -> saved.achievementId == it.id } }
-            if (newUnlocks.isNotEmpty()) {
-                val entitiesToSave = newUnlocks.map {
-                    AchievementEntity(
-                        achievementId = it.id,
-                        unlockedAt = it.unlockedAt,
-                        claimed = false,
-                        progressAtUnlock = it.currentProgress,
-                        points = uiModels.first { ui -> ui.id == it.id }.points
-                    )
+        @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+        authRepository.currentUser
+            .map { it?.uid ?: "guest_local" }
+            .distinctUntilChanged()
+            .flatMapLatest { ownerUid ->
+                combine(
+                    beerRepository.observeBeers(ownerUid),
+                    achievementRepository.getAllAchievements(ownerUid)
+                ) { beers, savedAchievements ->
+                    Triple(ownerUid, beers, savedAchievements)
                 }
-                viewModelScope.launch {
-                    achievementRepository.insertAll(entitiesToSave)
-                }
-                val newlyUnlockedModels = uiModels.filter { ui -> newUnlocks.any { it.id == ui.id } }
-                _newUnlocksEvent.tryEmit(newlyUnlockedModels)
             }
+            .onEach { (ownerUid, beers, savedAchievements) ->
+                val countByType = beers.groupingBy { it.type }.eachCount()
+                val distinctLocations = beers.mapNotNull { it.locationName }.distinct().size
+                val photosAdded = beers.count { it.photoUri != null || it.remotePhotoUrl != null }
 
-            _uiState.value = AchievementsUiState(
-                isLoading = false,
-                achievements = uiModels,
-                totalPoints = totalPoints,
-                userLevel = level,
-                nextLevelPoints = nextLevelPts,
-                unlockedCount = uiModels.count { it.state == com.example.contadordebirras.domain.achievements.AchievementState.UNLOCKED || it.state == com.example.contadordebirras.domain.achievements.AchievementState.CLAIMED },
-                totalCount = uiModels.filter { !it.isHidden || it.state == com.example.contadordebirras.domain.achievements.AchievementState.UNLOCKED }.size
-            )
-        }.launchIn(viewModelScope)
+                val input = AchievementStatsInput(
+                    beers = beers,
+                    totalBeers = beers.size,
+                    countByType = countByType,
+                    distinctLocations = distinctLocations,
+                    photosAdded = photosAdded
+                )
+
+                val progresses = calculator.calculateProgress(input, savedAchievements)
+                val uiModels = calculator.buildUiModels(progresses)
+
+                val totalPoints = uiModels.filter { it.state == com.example.contadordebirras.domain.achievements.AchievementState.UNLOCKED || it.state == com.example.contadordebirras.domain.achievements.AchievementState.CLAIMED }.sumOf { it.points }
+                val level = calculator.calculateLevels(totalPoints)
+                val nextLevelPts = calculator.getNextLevelRequiredPoints(totalPoints)
+
+                // Save new unlocks to DB
+                val newUnlocks = progresses.filter { it.isUnlocked && savedAchievements.none { saved -> saved.achievementId == it.id } }
+                if (newUnlocks.isNotEmpty()) {
+                    val entitiesToSave = newUnlocks.map {
+                        AchievementEntity(
+                            ownerUid = ownerUid,
+                            achievementId = it.id,
+                            unlockedAt = it.unlockedAt,
+                            claimed = false,
+                            progressAtUnlock = it.currentProgress,
+                            points = uiModels.first { ui -> ui.id == it.id }.points
+                        )
+                    }
+                    viewModelScope.launch {
+                        val currentActiveUid = authRepository.currentUser.value?.uid ?: "guest_local"
+                        if (currentActiveUid == ownerUid) {
+                            achievementRepository.insertAll(ownerUid, entitiesToSave)
+                            val newlyUnlockedModels = uiModels.filter { ui -> newUnlocks.any { it.id == ui.id } }
+                            _newUnlocksEvent.tryEmit(newlyUnlockedModels)
+                        }
+                    }
+                }
+
+                _uiState.value = AchievementsUiState(
+                    isLoading = false,
+                    achievements = uiModels,
+                    totalPoints = totalPoints,
+                    userLevel = level,
+                    nextLevelPoints = nextLevelPts,
+                    unlockedCount = uiModels.count { it.state == com.example.contadordebirras.domain.achievements.AchievementState.UNLOCKED || it.state == com.example.contadordebirras.domain.achievements.AchievementState.CLAIMED },
+                    totalCount = uiModels.filter { !it.isHidden || it.state == com.example.contadordebirras.domain.achievements.AchievementState.UNLOCKED }.size
+                )
+            }.launchIn(viewModelScope)
     }
 }

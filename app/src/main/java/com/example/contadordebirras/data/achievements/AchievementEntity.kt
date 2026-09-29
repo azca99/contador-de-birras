@@ -1,11 +1,14 @@
-package com.example.contadordebirras.data.achievements
+﻿package com.example.contadordebirras.data.achievements
 
 import androidx.room.Entity
-import androidx.room.PrimaryKey
 
-@Entity(tableName = "achievements")
+@Entity(
+    tableName = "achievements",
+    primaryKeys = ["ownerUid", "achievementId"]
+)
 data class AchievementEntity(
-    @PrimaryKey val achievementId: String,
+    val ownerUid: String,
+    val achievementId: String,
     val unlockedAt: Long? = null,
     val claimed: Boolean = false,
     val claimedAt: Long? = null,

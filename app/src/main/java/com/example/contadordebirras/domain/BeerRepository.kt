@@ -36,6 +36,8 @@ class BeerRepository(private val beerDao: BeerDao, private val context: Context,
         .distinctUntilChanged()
         .flatMapLatest { uid -> beerDao.getAllBeers(uid) }
 
+    fun observeBeers(ownerUid: String): Flow<List<BeerEntity>> = beerDao.getAllBeers(ownerUid)
+
     @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
     val totalCount: Flow<Int> = authRepository.currentUser
         .map { it?.uid ?: "guest_local" }

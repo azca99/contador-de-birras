@@ -51,7 +51,7 @@ class AppViewModelFactory(
         }
         if (modelClass.isAssignableFrom(AchievementsViewModel::class.java)) {
             @Suppress("UNCHECKED_CAST")
-            return AchievementsViewModel(beerRepository, achievementRepository) as T
+            return AchievementsViewModel(beerRepository, achievementRepository, authRepository) as T
         }
         throw IllegalArgumentException("Unknown ViewModel class")
     }

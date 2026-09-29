@@ -1,4 +1,4 @@
-package com.example.contadordebirras.data.achievements
+﻿package com.example.contadordebirras.data.achievements
 
 import androidx.room.Dao
 import androidx.room.Insert
@@ -8,11 +8,11 @@ import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface AchievementDao {
-    @Query("SELECT * FROM achievements")
-    fun getAllAchievements(): Flow<List<AchievementEntity>>
+    @Query("SELECT * FROM achievements WHERE ownerUid = :ownerUid")
+    fun getAllAchievements(ownerUid: String): Flow<List<AchievementEntity>>
 
-    @Query("SELECT * FROM achievements WHERE achievementId = :id")
-    fun getAchievementById(id: String): AchievementEntity?
+    @Query("SELECT * FROM achievements WHERE ownerUid = :ownerUid AND achievementId = :id")
+    fun getAchievementById(ownerUid: String, id: String): AchievementEntity?
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     fun insertOrUpdate(achievement: AchievementEntity)

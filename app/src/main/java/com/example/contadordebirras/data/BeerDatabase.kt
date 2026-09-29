@@ -7,7 +7,7 @@ import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
-@Database(entities = [BeerEntity::class, com.example.contadordebirras.data.achievements.AchievementEntity::class], version = 7, exportSchema = true)
+@Database(entities = [BeerEntity::class, com.example.contadordebirras.data.achievements.AchievementEntity::class], version = 8, exportSchema = true)
 abstract class BeerDatabase : RoomDatabase() {
     abstract fun beerDao(): BeerDao
     abstract fun achievementDao(): com.example.contadordebirras.data.achievements.AchievementDao
@@ -61,6 +61,15 @@ abstract class BeerDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS `achievements_new` (`ownerUid` TEXT NOT NULL, `achievementId` TEXT NOT NULL, `unlockedAt` INTEGER, `claimed` INTEGER NOT NULL, `claimedAt` INTEGER, `progressAtUnlock` INTEGER NOT NULL, `points` INTEGER NOT NULL, PRIMARY KEY(`ownerUid`, `achievementId`))")
+                db.execSQL("INSERT INTO `achievements_new` (`ownerUid`, `achievementId`, `unlockedAt`, `claimed`, `claimedAt`, `progressAtUnlock`, `points`) SELECT 'legacy_unassigned', `achievementId`, `unlockedAt`, `claimed`, `claimedAt`, `progressAtUnlock`, `points` FROM `achievements`")
+                db.execSQL("DROP TABLE `achievements`")
+                db.execSQL("ALTER TABLE `achievements_new` RENAME TO `achievements`")
+            }
+        }
+
         fun getDatabase(context: Context): BeerDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -68,7 +77,7 @@ abstract class BeerDatabase : RoomDatabase() {
                     BeerDatabase::class.java,
                     "beer_database"
                 )
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
                 .build()
                 INSTANCE = instance
                 instance
