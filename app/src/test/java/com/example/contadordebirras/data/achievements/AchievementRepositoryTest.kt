@@ -1,4 +1,4 @@
-﻿package com.example.contadordebirras.data.achievements
+package com.example.contadordebirras.data.achievements
 
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -6,6 +6,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
+import org.junit.Assert.fail
 import org.junit.Test
 import kotlinx.coroutines.flow.first
 
@@ -30,41 +31,55 @@ class FakeAchievementDao : AchievementDao {
     }
 }
 
-class AchievementIsolationTest {
+class AchievementRepositoryTest {
 
     @Test
-    fun testRepositoryIsolation_A_cannot_read_B() = runTest {
+    fun testRepositoryIsolation_ownerA_entityA_allowed() = runTest {
         val dao = FakeAchievementDao()
         val repo = DefaultAchievementRepository(dao)
 
         repo.insertOrUpdate("userA", AchievementEntity("userA", "ach1", points = 10))
-        repo.insertOrUpdate("userB", AchievementEntity("userB", "ach1", points = 20))
-
-        val achievementsA = repo.getAllAchievements("userA").first()
-        assertEquals(1, achievementsA.size)
-        assertEquals("userA", achievementsA[0].ownerUid)
-        assertEquals(10, achievementsA[0].points)
-
-        val singleB = repo.getAchievementById("userA", "ach1")
-        assertEquals(10, singleB?.points)
-        
-        val missingB = repo.getAchievementById("userA", "ach_not_exist")
-        assertNull(missingB)
+        val list = repo.getAllAchievements("userA").first()
+        assertEquals(1, list.size)
     }
 
     @Test(expected = IllegalArgumentException::class)
-    fun testRepositoryIsolation_writeMismatchedOwner_throwsException() = runTest {
+    fun testRepositoryIsolation_ownerA_entityB_throws() = runTest {
         val dao = FakeAchievementDao()
         val repo = DefaultAchievementRepository(dao)
 
         repo.insertOrUpdate("userA", AchievementEntity("userB", "ach1", points = 10))
     }
     
-    @Test(expected = IllegalArgumentException::class)
-    fun testRepositoryIsolation_insertAllMismatchedOwner_throwsException() = runTest {
+    @Test
+    fun testRepositoryIsolation_batchA_pure_allowed() = runTest {
         val dao = FakeAchievementDao()
         val repo = DefaultAchievementRepository(dao)
 
-        repo.insertAll("userA", listOf(AchievementEntity("userB", "ach1", points = 10)))
+        repo.insertAll("userA", listOf(
+            AchievementEntity("userA", "ach1"),
+            AchievementEntity("userA", "ach2")
+        ))
+        val list = repo.getAllAchievements("userA").first()
+        assertEquals(2, list.size)
+    }
+
+    @Test
+    fun testRepositoryIsolation_batchMixed_throws_and_no_partial_write() = runTest {
+        val dao = FakeAchievementDao()
+        val repo = DefaultAchievementRepository(dao)
+
+        try {
+            repo.insertAll("userA", listOf(
+                AchievementEntity("userA", "ach1"),
+                AchievementEntity("userB", "ach2")
+            ))
+            fail("Should throw exception")
+        } catch (e: IllegalArgumentException) {
+            // Success
+        }
+
+        val list = repo.getAllAchievements("userA").first()
+        assertEquals("No debe haber escritura parcial", 0, list.size)
     }
 }

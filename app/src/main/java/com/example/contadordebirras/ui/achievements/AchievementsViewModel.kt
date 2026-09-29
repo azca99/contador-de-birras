@@ -1,4 +1,4 @@
-﻿package com.example.contadordebirras.ui.achievements
+package com.example.contadordebirras.ui.achievements
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -55,6 +55,7 @@ class AchievementsViewModel(
             .map { it?.uid ?: "guest_local" }
             .distinctUntilChanged()
             .flatMapLatest { ownerUid ->
+                _uiState.value = AchievementsUiState(isLoading = true)
                 combine(
                     beerRepository.observeBeers(ownerUid),
                     achievementRepository.getAllAchievements(ownerUid)
@@ -96,24 +97,29 @@ class AchievementsViewModel(
                         )
                     }
                     viewModelScope.launch {
+                        // Siempre persiste el logro para el owner original que lo obtuvo, incluso si Auth cambia.
+                        achievementRepository.insertAll(ownerUid, entitiesToSave)
+                        
                         val currentActiveUid = authRepository.currentUser.value?.uid ?: "guest_local"
                         if (currentActiveUid == ownerUid) {
-                            achievementRepository.insertAll(ownerUid, entitiesToSave)
                             val newlyUnlockedModels = uiModels.filter { ui -> newUnlocks.any { it.id == ui.id } }
                             _newUnlocksEvent.tryEmit(newlyUnlockedModels)
                         }
                     }
                 }
 
-                _uiState.value = AchievementsUiState(
-                    isLoading = false,
-                    achievements = uiModels,
-                    totalPoints = totalPoints,
-                    userLevel = level,
-                    nextLevelPoints = nextLevelPts,
-                    unlockedCount = uiModels.count { it.state == com.example.contadordebirras.domain.achievements.AchievementState.UNLOCKED || it.state == com.example.contadordebirras.domain.achievements.AchievementState.CLAIMED },
-                    totalCount = uiModels.filter { !it.isHidden || it.state == com.example.contadordebirras.domain.achievements.AchievementState.UNLOCKED }.size
-                )
+                val currentActiveUid = authRepository.currentUser.value?.uid ?: "guest_local"
+                if (currentActiveUid == ownerUid) {
+                    _uiState.value = AchievementsUiState(
+                        isLoading = false,
+                        achievements = uiModels,
+                        totalPoints = totalPoints,
+                        userLevel = level,
+                        nextLevelPoints = nextLevelPts,
+                        unlockedCount = uiModels.count { it.state == com.example.contadordebirras.domain.achievements.AchievementState.UNLOCKED || it.state == com.example.contadordebirras.domain.achievements.AchievementState.CLAIMED },
+                        totalCount = uiModels.filter { !it.isHidden || it.state == com.example.contadordebirras.domain.achievements.AchievementState.UNLOCKED }.size
+                    )
+                }
             }.launchIn(viewModelScope)
     }
 }
