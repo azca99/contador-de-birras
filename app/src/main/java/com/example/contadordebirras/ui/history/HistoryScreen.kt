@@ -174,7 +174,7 @@ fun HistoryScreen(viewModel: StatsViewModel, onStatsClick: () -> Unit) {
                 }
             }
         } else {
-            val beersWithPhotos = beers.filter { it.photoUri != null || it.remotePhotoUrl != null }
+            val beersWithPhotos = beers.filter { it.hasPhoto() }
             if (beersWithPhotos.isEmpty()) {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {

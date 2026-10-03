@@ -66,17 +66,41 @@ class AchievementsViewModel(
             .onEach { (ownerUid, beers, savedAchievements) ->
                 val countByType = beers.groupingBy { it.type }.eachCount()
                 val distinctLocations = beers.mapNotNull { it.locationName }.distinct().size
-                val photosAdded = beers.count { it.photoUri != null || it.remotePhotoUrl != null }
+                val beersWithPhotos = beers.filter { it.hasPhoto() }
+                val photosAdded = beersWithPhotos.size
+                val photosFromCamera = beersWithPhotos.count { it.photoSource == "CAMERA" }
+                val formatter = java.time.format.DateTimeFormatter.ofPattern("yyyy-MM").withZone(java.time.ZoneId.systemDefault())
+                val photosByMonth = beersWithPhotos.groupingBy { formatter.format(java.time.Instant.ofEpochMilli(it.timestamp)) }.eachCount()
 
                 val input = AchievementStatsInput(
                     beers = beers,
                     totalBeers = beers.size,
                     countByType = countByType,
                     distinctLocations = distinctLocations,
-                    photosAdded = photosAdded
+                    photosAdded = photosAdded,
+                    photosFromCamera = photosFromCamera,
+                    photosByMonth = photosByMonth
                 )
 
-                val progresses = calculator.calculateProgress(input, savedAchievements)
+                val invalidIds = savedAchievements.filter { saved ->
+                    when (saved.achievementId) {
+                        "FOT_003" -> input.photosFromCamera == 0
+                        "FOT_004" -> true // Cannot be verified from beers alone without event tracking, conservatively lock
+                        "FOT_007" -> input.photosByMonth.isEmpty()
+                        "FOT_008" -> input.photosByMonth.size < 5
+                        else -> false
+                    }
+                }.map { it.achievementId }
+
+                if (invalidIds.isNotEmpty()) {
+                    viewModelScope.launch {
+                        achievementRepository.deleteAchievements(ownerUid, invalidIds)
+                    }
+                }
+
+                val validSavedAchievements = savedAchievements.filter { it.achievementId !in invalidIds }
+
+                val progresses = calculator.calculateProgress(input, validSavedAchievements)
                 val uiModels = calculator.buildUiModels(progresses)
 
                 val totalPoints = uiModels.filter { it.state == com.example.contadordebirras.domain.achievements.AchievementState.UNLOCKED || it.state == com.example.contadordebirras.domain.achievements.AchievementState.CLAIMED }.sumOf { it.points }
@@ -84,7 +108,7 @@ class AchievementsViewModel(
                 val nextLevelPts = calculator.getNextLevelRequiredPoints(totalPoints)
 
                 // Save new unlocks to DB
-                val newUnlocks = progresses.filter { it.isUnlocked && savedAchievements.none { saved -> saved.achievementId == it.id } }
+                val newUnlocks = progresses.filter { it.isUnlocked && validSavedAchievements.none { saved -> saved.achievementId == it.id } }
                 if (newUnlocks.isNotEmpty()) {
                     val entitiesToSave = newUnlocks.map {
                         AchievementEntity(

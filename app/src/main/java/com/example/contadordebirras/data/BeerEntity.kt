@@ -22,4 +22,8 @@ data class BeerEntity(
     val updatedAt: Long = System.currentTimeMillis(),
     val photoSource: String? = null,
     val ownerUid: String = "guest_local"
-)
+) {
+    fun hasPhoto(): Boolean {
+        return !photoUri.isNullOrBlank() || !remotePhotoUrl.isNullOrBlank()
+    }
+}

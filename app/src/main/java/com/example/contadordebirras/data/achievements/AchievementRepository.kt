@@ -1,4 +1,4 @@
-﻿package com.example.contadordebirras.data.achievements
+package com.example.contadordebirras.data.achievements
 
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.Dispatchers
@@ -9,6 +9,7 @@ interface AchievementRepository {
     suspend fun getAchievementById(ownerUid: String, id: String): AchievementEntity?
     suspend fun insertOrUpdate(ownerUid: String, achievement: AchievementEntity)
     suspend fun insertAll(ownerUid: String, achievements: List<AchievementEntity>)
+    suspend fun deleteAchievements(ownerUid: String, ids: List<String>)
 }
 
 class DefaultAchievementRepository(private val dao: AchievementDao) : AchievementRepository {
@@ -29,6 +30,12 @@ class DefaultAchievementRepository(private val dao: AchievementDao) : Achievemen
         require(achievements.all { it.ownerUid == ownerUid }) { "Mismatch in ownerUid in list" }
         withContext(Dispatchers.IO) {
             dao.insertAll(achievements)
+        }
+    }
+
+    override suspend fun deleteAchievements(ownerUid: String, ids: List<String>) {
+        withContext(Dispatchers.IO) {
+            dao.deleteAchievements(ownerUid, ids)
         }
     }
 }

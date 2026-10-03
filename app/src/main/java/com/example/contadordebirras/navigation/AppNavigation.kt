@@ -182,11 +182,12 @@ fun AchievementNotificationOverlay(viewModel: AchievementsViewModel) {
 
     LaunchedEffect(viewModel) {
         viewModel.newUnlocksEvent.collect { unlocks ->
-            if (unlocks.isNotEmpty()) {
-                currentUnlock = unlocks.first()
+            for (ach in unlocks) {
+                currentUnlock = ach
                 isVisible = true
                 kotlinx.coroutines.delay(4000)
                 isVisible = false
+                kotlinx.coroutines.delay(500) // Small pause between notifications
             }
         }
     }

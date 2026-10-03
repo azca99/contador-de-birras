@@ -78,6 +78,10 @@ class AchievementCalculator {
             def.id.startsWith("JAR_") -> input.countByType[com.example.contadordebirras.domain.BeerType.JARRA] ?: 0
             def.id.startsWith("PIN_") -> input.countByType[com.example.contadordebirras.domain.BeerType.PINTA] ?: 0
             def.id.startsWith("LIT_") -> input.countByType[com.example.contadordebirras.domain.BeerType.LITRO] ?: 0
+            def.id == "FOT_003" -> input.photosFromCamera
+            def.id == "FOT_004" -> 0 // Requires complex event tracking, leave as 0
+            def.id == "FOT_007" -> input.photosByMonth.size
+            def.id == "FOT_008" -> input.photosByMonth.size
             def.id.startsWith("FOT_") -> input.photosAdded
             def.id.startsWith("SOC_") -> input.friendsAdded
             def.id.startsWith("UBI_") -> input.distinctLocations

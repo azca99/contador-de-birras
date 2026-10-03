@@ -1,4 +1,4 @@
-﻿package com.example.contadordebirras.data.achievements
+package com.example.contadordebirras.data.achievements
 
 import androidx.room.Dao
 import androidx.room.Insert
@@ -19,4 +19,7 @@ interface AchievementDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     fun insertAll(achievements: List<AchievementEntity>)
+
+    @Query("DELETE FROM achievements WHERE ownerUid = :ownerUid AND achievementId IN (:ids)")
+    fun deleteAchievements(ownerUid: String, ids: List<String>)
 }

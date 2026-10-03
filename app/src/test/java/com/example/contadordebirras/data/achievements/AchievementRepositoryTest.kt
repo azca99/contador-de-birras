@@ -29,6 +29,11 @@ class FakeAchievementDao : AchievementDao {
     override fun insertAll(achievements: List<AchievementEntity>) {
         achievements.forEach { insertOrUpdate(it) }
     }
+
+    override fun deleteAchievements(ownerUid: String, ids: List<String>) {
+        data.removeAll { it.ownerUid == ownerUid && it.achievementId in ids }
+        state.value = data.toList()
+    }
 }
 
 class AchievementRepositoryTest {

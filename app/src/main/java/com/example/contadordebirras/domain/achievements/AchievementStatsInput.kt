@@ -19,6 +19,7 @@ data class AchievementStatsInput(
     val currentStreak: Int = 0,
     val bestStreak: Int = 0,
     val photosAdded: Int = 0,
+    val photosFromCamera: Int = 0,
     val photosByMonth: Map<String, Int> = emptyMap(),
     val friendsAdded: Int = 0,
     val groupsCreated: Int = 0,
