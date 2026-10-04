@@ -86,6 +86,13 @@ class AchievementsViewModel(
                 val validSavedAchievements = savedAchievements
 
                 val progresses = calculator.calculateProgress(input, validSavedAchievements)
+                
+                if (com.example.contadordebirras.BuildConfig.DEBUG) {
+                    val fot001 = progresses.find { it.id == "FOT_001" }
+                    val fot002 = progresses.find { it.id == "FOT_002" }
+                    android.util.Log.d("PhotoDiagnostic", "AchievementsVM - Owner: $ownerUid, Beers: ${beers.size}, PhotosAdded: $photosAdded, FOT_001 prog: ${fot001?.currentProgress}, FOT_002 prog: ${fot002?.currentProgress}")
+                }
+
                 val uiModels = calculator.buildUiModels(progresses)
 
                 val totalPoints = uiModels.filter { it.state == com.example.contadordebirras.domain.achievements.AchievementState.UNLOCKED || it.state == com.example.contadordebirras.domain.achievements.AchievementState.CLAIMED }.sumOf { it.points }

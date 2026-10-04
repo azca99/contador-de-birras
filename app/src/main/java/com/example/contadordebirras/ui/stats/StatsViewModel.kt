@@ -65,6 +65,12 @@ class StatsViewModel(private val repository: BeerRepository) : ViewModel() {
         
         android.util.Log.d("StreakDebug", "Unique Dates: $uniqueDatesDesc")
         android.util.Log.d("StreakDebug", "Current Streak: $currentStreak, Best Streak: $bestStreak")
+        
+        if (com.example.contadordebirras.BuildConfig.DEBUG) {
+            val photosCount = beers.count { it.hasPhoto() }
+            val ownerUid = beers.firstOrNull()?.ownerUid ?: "unknown"
+            android.util.Log.d("PhotoDiagnostic", "StatsVM - Owner: $ownerUid, Beers: ${beers.size}, Photos: $photosCount")
+        }
 
         StatsUiState(
             total = total, 
