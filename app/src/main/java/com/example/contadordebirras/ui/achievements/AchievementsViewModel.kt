@@ -82,23 +82,8 @@ class AchievementsViewModel(
                     photosByMonth = photosByMonth
                 )
 
-                val invalidIds = savedAchievements.filter { saved ->
-                    when (saved.achievementId) {
-                        "FOT_003" -> input.photosFromCamera == 0
-                        "FOT_004" -> true // Cannot be verified from beers alone without event tracking, conservatively lock
-                        "FOT_007" -> input.photosByMonth.isEmpty()
-                        "FOT_008" -> input.photosByMonth.size < 5
-                        else -> false
-                    }
-                }.map { it.achievementId }
-
-                if (invalidIds.isNotEmpty()) {
-                    viewModelScope.launch {
-                        achievementRepository.deleteAchievements(ownerUid, invalidIds)
-                    }
-                }
-
-                val validSavedAchievements = savedAchievements.filter { it.achievementId !in invalidIds }
+                // REMOVED: Automatic deletion of invalid achievements to preserve historical data
+                val validSavedAchievements = savedAchievements
 
                 val progresses = calculator.calculateProgress(input, validSavedAchievements)
                 val uiModels = calculator.buildUiModels(progresses)
