@@ -9,9 +9,17 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
+import kotlinx.coroutines.flow.onEach
+
 class StatsViewModel(private val repository: BeerRepository) : ViewModel() {
     
-    val allBeers = repository.allBeers.stateIn(
+    val allBeers = repository.allBeers.onEach { beers ->
+        if (com.example.contadordebirras.BuildConfig.DEBUG) {
+            val photosCount = beers.count { it.hasPhoto() }
+            val uid = beers.firstOrNull()?.ownerUid ?: "none"
+            android.util.Log.d("PhotoDiagnostic", "Stats(History): owner=$uid, beers=${beers.size}, photos=$photosCount")
+        }
+    }.stateIn(
         viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList()
     )
 
@@ -66,12 +74,6 @@ class StatsViewModel(private val repository: BeerRepository) : ViewModel() {
         android.util.Log.d("StreakDebug", "Unique Dates: $uniqueDatesDesc")
         android.util.Log.d("StreakDebug", "Current Streak: $currentStreak, Best Streak: $bestStreak")
         
-        if (com.example.contadordebirras.BuildConfig.DEBUG) {
-            val photosCount = beers.count { it.hasPhoto() }
-            val ownerUid = beers.firstOrNull()?.ownerUid ?: "unknown"
-            android.util.Log.d("PhotoDiagnostic", "StatsVM - Owner: $ownerUid, Beers: ${beers.size}, Photos: $photosCount")
-        }
-
         StatsUiState(
             total = total, 
             byType = byType, 

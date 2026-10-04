@@ -8,6 +8,12 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.fail
 import org.junit.Test
+import org.junit.Before
+import org.junit.After
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.setMain
 import kotlinx.coroutines.flow.first
 
 class FakeAchievementDao : AchievementDao {
@@ -37,6 +43,18 @@ class FakeAchievementDao : AchievementDao {
 }
 
 class AchievementRepositoryTest {
+
+    private val testDispatcher = StandardTestDispatcher()
+
+    @org.junit.Before
+    fun setUpDispatcher() {
+        Dispatchers.setMain(testDispatcher)
+    }
+
+    @org.junit.After
+    fun tearDownDispatcher() {
+        Dispatchers.resetMain()
+    }
 
     @Test
     fun testRepositoryIsolation_ownerA_entityA_allowed() = runTest {
@@ -88,3 +106,5 @@ class AchievementRepositoryTest {
         assertEquals("No debe haber escritura parcial", 0, list.size)
     }
 }
+
+

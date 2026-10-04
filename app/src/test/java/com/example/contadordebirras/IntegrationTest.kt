@@ -4,7 +4,6 @@ import com.example.contadordebirras.data.BeerDao
 import com.example.contadordebirras.data.BeerEntity
 import com.example.contadordebirras.domain.BeerType
 import com.example.contadordebirras.data.achievements.AchievementDao
-import com.example.contadordebirras.data.achievements.AchievementEntity
 import com.example.contadordebirras.data.achievements.DefaultAchievementRepository
 import com.example.contadordebirras.domain.AuthRepository
 import com.example.contadordebirras.domain.BeerRepository
@@ -27,8 +26,10 @@ import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Before
 import org.junit.Test
+import org.junit.runner.RunWith
 
 @OptIn(ExperimentalCoroutinesApi::class)
+
 class IntegrationTest {
 
     private val testDispatcher = StandardTestDispatcher()
@@ -36,18 +37,17 @@ class IntegrationTest {
     @Before
     fun setup() {
         Dispatchers.setMain(testDispatcher)
+
     }
 
     @After
     fun tearDown() {
         Dispatchers.resetMain()
+
     }
 
     @Test
     fun testHistoryAndAchievementsDivergence() = runTest {
-        val beerDao = mockk<BeerDao>()
-        val achievementDao = mockk<AchievementDao>()
-        
         val userFlow = MutableStateFlow(mockk<FirebaseUser>(relaxed = true) { every { uid } returns "userA" })
         val authRepo = mockk<AuthRepository>(relaxed = true)
         every { authRepo.currentUser } returns userFlow
@@ -58,11 +58,12 @@ class IntegrationTest {
             BeerEntity(id = 3, type = BeerType.LATA, timestamp = 3000L, photoUri = "local2.jpg", remotePhotoUrl = "remote2.jpg", ownerUid = "userA")
         )
         
-        every { beerDao.getAllBeers("userA") } returns flowOf(beers)
+        val beerRepo = mockk<BeerRepository>(relaxed = true)
+        every { beerRepo.allBeers } returns flowOf(beers)
+        every { beerRepo.observeBeers("userA") } returns flowOf(beers)
+        
+        val achievementDao = mockk<AchievementDao>(relaxed = true)
         every { achievementDao.getAllAchievements("userA") } returns flowOf(emptyList())
-
-        val context = mockk<android.content.Context>(relaxed = true)
-        val beerRepo = BeerRepository(beerDao, context, authRepo)
         val achievementRepo = DefaultAchievementRepository(achievementDao)
 
         // StatsViewModel (HistoryScreen)
@@ -92,3 +93,5 @@ class IntegrationTest {
         assertEquals(3, fot002?.currentProgress)
     }
 }
+
+

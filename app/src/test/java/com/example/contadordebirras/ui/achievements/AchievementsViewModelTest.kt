@@ -28,10 +28,12 @@ import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
+
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assert.assertFalse
 import org.junit.Before
+
 import org.junit.Test
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -42,11 +44,13 @@ class AchievementsViewModelTest {
     @Before
     fun setup() {
         Dispatchers.setMain(testDispatcher)
+
     }
 
     @After
     fun teardown() {
         Dispatchers.resetMain()
+
     }
 
     @Test
@@ -204,3 +208,5 @@ class AchievementsViewModelTest {
         assertEquals(com.example.contadordebirras.domain.achievements.AchievementState.LOCKED, achGEN003_B?.state)
     }
 }
+
+

@@ -15,6 +15,12 @@ import org.junit.Test
 import org.junit.rules.TemporaryFolder
 import java.io.File
 
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.resetMain
+import kotlinx.coroutines.test.setMain
+import org.junit.After
+
 class ProfileEditorTest {
     @get:Rule
     val tmpFolder = TemporaryFolder()
@@ -22,14 +28,21 @@ class ProfileEditorTest {
     private lateinit var dataStore: DataStore<Preferences>
     private lateinit var activeUid: MutableStateFlow<String?>
     private lateinit var repository: UserRepository
+    private val testDispatcher = StandardTestDispatcher()
 
     @Before
     fun setup() {
+        Dispatchers.setMain(testDispatcher)
         dataStore = PreferenceDataStoreFactory.create(
             produceFile = { File(tmpFolder.root, "test_prefs_editor.preferences_pb") }
         )
         activeUid = MutableStateFlow(null)
         repository = UserRepository(dataStore, activeUid)
+    }
+
+    @After
+    fun tearDown() {
+        Dispatchers.resetMain()
     }
 
     @Test
