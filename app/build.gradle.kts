@@ -27,9 +27,6 @@ android {
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }
-    testOptions {
-        unitTests.isReturnDefaultValues = true
-    }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -125,3 +122,4 @@ dependencies {
   implementation(libs.work.runtime.ktx)
   implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.7.3")
 }
+

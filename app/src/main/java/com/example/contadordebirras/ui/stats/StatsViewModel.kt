@@ -16,8 +16,12 @@ class StatsViewModel(private val repository: BeerRepository) : ViewModel() {
     val allBeers = repository.allBeers.onEach { beers ->
         if (com.example.contadordebirras.BuildConfig.DEBUG) {
             val photosCount = beers.count { it.hasPhoto() }
-            val uid = beers.firstOrNull()?.ownerUid ?: "none"
-            android.util.Log.d("PhotoDiagnostic", "Stats(History): owner=$uid, beers=${beers.size}, photos=$photosCount")
+            val msg = "Stats(History): beers=${beers.size}, photos=$photosCount"
+            try {
+                android.util.Log.d("PhotoDiagnostic", msg)
+            } catch (e: Exception) {
+                println("PhotoDiagnostic: $msg")
+            }
         }
     }.stateIn(
         viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList()
@@ -71,8 +75,10 @@ class StatsViewModel(private val repository: BeerRepository) : ViewModel() {
             }
         }
         
-        android.util.Log.d("StreakDebug", "Unique Dates: $uniqueDatesDesc")
-        android.util.Log.d("StreakDebug", "Current Streak: $currentStreak, Best Streak: $bestStreak")
+        try {
+            android.util.Log.d("StreakDebug", "Unique Dates: $uniqueDatesDesc")
+            android.util.Log.d("StreakDebug", "Current Streak: $currentStreak, Best Streak: $bestStreak")
+        } catch (e: Exception) {}
         
         StatsUiState(
             total = total, 
