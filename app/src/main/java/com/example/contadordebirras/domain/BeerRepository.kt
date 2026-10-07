@@ -82,6 +82,9 @@ class BeerRepository(private val beerDao: BeerDao, private val context: Context,
                 ownerUid = currentOwnerUid()
             )
             val id = beerDao.insertBeer(beer)
+            if (id > 0) {
+                requestSync()
+            }
             id
         }
     }
@@ -101,12 +104,15 @@ class BeerRepository(private val beerDao: BeerDao, private val context: Context,
             val ownerUid = currentOwnerUid()
             val beer = beerDao.getBeerById(beerId.toInt(), ownerUid)
             if (beer != null) {
-                beerDao.updateBeer(
+                val updatedRows = beerDao.updateBeer(
                     id = beer.id, type = beer.type, timestamp = beer.timestamp, latitude = latitude,
                     longitude = longitude, photoUri = beer.photoUri, comment = beer.comment,
                     locationName = locationName, syncStatus = SyncStatus.PENDING, remotePhotoUrl = beer.remotePhotoUrl,
                     updatedAt = System.currentTimeMillis(), photoSource = beer.photoSource, ownerUid = ownerUid
                 )
+                if (updatedRows > 0) {
+                    requestSync()
+                }
             }
         }
     }
@@ -151,43 +157,76 @@ class BeerRepository(private val beerDao: BeerDao, private val context: Context,
                 for (beer in pendingBeers) {
                     if (authRepository.currentUser.value?.uid != syncUid) return@withContext
                     if (beer.ownerUid != syncUid) continue // Extra safety check
-                    var remoteUrl = beer.remotePhotoUrl
-                    var photoUploadFailed = false
-                    if (beer.photoUri != null && remoteUrl == null) {
-                        try {
-                            val storageRef = storage.reference.child("users/${user.uid}/beers/${beer.syncId}.jpg")
-                            val uri = android.net.Uri.parse(beer.photoUri)
-                            storageRef.putFile(uri).await()
-                            if (authRepository.currentUser.value?.uid != syncUid) return@withContext
-                            remoteUrl = "users/${user.uid}/beers/${beer.syncId}.jpg"
-                        } catch (e: CancellationException) { throw e }
-                    catch (e: Exception) {
-                            android.util.Log.e("SyncDebug", "Error uploading photo", e)
-                            photoUploadFailed = true
-                        }
-                    }
-
                     if (beer.syncStatus == SyncStatus.DELETED) {
                         try {
-                            firestore.runTransaction { transaction ->
-                                val docRef = firestore.collection("beers").document(beer.syncId)
-                                val doc = transaction.get(docRef)
-                                if (doc.exists()) {
-                                    if (doc.getString("userId") == syncUid) {
-                                        transaction.delete(docRef)
+                            var firestoreSuccess = false
+                            try {
+                                firestore.runTransaction { transaction ->
+                                    val docRef = firestore.collection("beers").document(beer.syncId)
+                                    val doc = transaction.get(docRef)
+                                    if (doc.exists()) {
+                                        if (doc.getString("userId") == syncUid) {
+                                            transaction.delete(docRef)
+                                        } else {
+                                            throw com.google.firebase.firestore.FirebaseFirestoreException("UserId mismatch", com.google.firebase.firestore.FirebaseFirestoreException.Code.ABORTED)
+                                        }
+                                    }
+                                    null
+                                }.await()
+                                firestoreSuccess = true
+                            } catch (e: Exception) {
+                                if (e is com.google.firebase.firestore.FirebaseFirestoreException && e.code == com.google.firebase.firestore.FirebaseFirestoreException.Code.ABORTED) {
+                                    android.util.Log.e("SyncDebug", "UserId mismatch en doc de Firestore para ${beer.syncId}")
+                                } else {
+                                    throw e
+                                }
+                            }
+                            
+                            if (authRepository.currentUser.value?.uid != syncUid) return@withContext
+                            
+                            if (firestoreSuccess) {
+                                var storageSuccess = false
+                                try {
+                                    val storageRef = storage.reference.child("users/${syncUid}/beers/${beer.syncId}.jpg")
+                                    storageRef.delete().await()
+                                    storageSuccess = true
+                                } catch (e: Exception) {
+                                    if (e is com.google.firebase.storage.StorageException && e.errorCode == com.google.firebase.storage.StorageException.ERROR_OBJECT_NOT_FOUND) {
+                                        storageSuccess = true
+                                    } else {
+                                        android.util.Log.e("SyncDebug", "Error borrando imagen de Storage para ${beer.syncId}", e)
+                                        throw e
                                     }
                                 }
-                                null
-                            }.await()
-                            if (authRepository.currentUser.value?.uid != syncUid) return@withContext
-                            beerDao.hardDeleteBySyncId(beer.syncId, syncUid) // Borrado fisico local real
+                                
+                                if (authRepository.currentUser.value?.uid != syncUid) return@withContext
+                                if (storageSuccess) {
+                                    beerDao.hardDeleteBySyncId(beer.syncId, syncUid)
+                                }
+                            }
                         } catch (e: CancellationException) { throw e }
-                    catch (e: Exception) {
-                            android.util.Log.e("SyncDebug", "Error al borrar en Firestore", e)
+                        catch (e: Exception) {
+                            android.util.Log.e("SyncDebug", "Error al borrar en la nube", e)
                         }
                     } else {
+                        var remoteUrl = beer.remotePhotoUrl
+                        var photoUploadFailed = false
+                        if (beer.photoUri != null && remoteUrl == null) {
+                            try {
+                                val storageRef = storage.reference.child("users/${syncUid}/beers/${beer.syncId}.jpg")
+                                val uri = android.net.Uri.parse(beer.photoUri)
+                                storageRef.putFile(uri).await()
+                                if (authRepository.currentUser.value?.uid != syncUid) return@withContext
+                                remoteUrl = "users/${syncUid}/beers/${beer.syncId}.jpg"
+                            } catch (e: CancellationException) { throw e }
+                            catch (e: Exception) {
+                                android.util.Log.e("SyncDebug", "Error uploading photo", e)
+                                photoUploadFailed = true
+                            }
+                        }
+
                         val map = hashMapOf(
-                            "userId" to user.uid,
+                            "userId" to syncUid,
                             "type" to beer.type.name,
                             "timestamp" to beer.timestamp,
                             "latitude" to beer.latitude,
@@ -205,7 +244,7 @@ class BeerRepository(private val beerDao: BeerDao, private val context: Context,
                                 beerDao.markAsSynced(beer.id, remoteUrl, syncUid)
                             }
                         } catch (e: CancellationException) { throw e }
-                    catch (e: Exception) {
+                        catch (e: Exception) {
                             android.util.Log.e("SyncDebug", "Error al actualizar en Firestore", e)
                         }
                     }
