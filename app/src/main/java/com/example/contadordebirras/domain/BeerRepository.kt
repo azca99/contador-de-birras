@@ -160,26 +160,31 @@ class BeerRepository(private val beerDao: BeerDao, private val context: Context,
                     if (beer.syncStatus == SyncStatus.DELETED) {
                         try {
                             var firestoreSuccess = false
+                            var ownershipMismatch = false
                             try {
-                                firestore.runTransaction { transaction ->
+                                val transactionResult = firestore.runTransaction { transaction ->
                                     val docRef = firestore.collection("beers").document(beer.syncId)
                                     val doc = transaction.get(docRef)
                                     if (doc.exists()) {
                                         if (doc.getString("userId") == syncUid) {
                                             transaction.delete(docRef)
+                                            "DELETED"
                                         } else {
-                                            throw com.google.firebase.firestore.FirebaseFirestoreException("UserId mismatch", com.google.firebase.firestore.FirebaseFirestoreException.Code.ABORTED)
+                                            "OWNERSHIP_MISMATCH"
                                         }
+                                    } else {
+                                        "ALREADY_ABSENT"
                                     }
-                                    null
                                 }.await()
-                                firestoreSuccess = true
-                            } catch (e: Exception) {
-                                if (e is com.google.firebase.firestore.FirebaseFirestoreException && e.code == com.google.firebase.firestore.FirebaseFirestoreException.Code.ABORTED) {
+                                
+                                if (transactionResult == "OWNERSHIP_MISMATCH") {
+                                    ownershipMismatch = true
                                     android.util.Log.e("SyncDebug", "UserId mismatch en doc de Firestore para ${beer.syncId}")
                                 } else {
-                                    throw e
+                                    firestoreSuccess = true
                                 }
+                            } catch (e: Exception) {
+                                throw e
                             }
                             
                             if (authRepository.currentUser.value?.uid != syncUid) return@withContext

@@ -28,9 +28,6 @@ import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
-import org.junit.After
-import org.junit.Before
-import org.junit.Test
 import org.junit.Assert.*
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -58,6 +55,9 @@ class BeerRepositorySyncTest {
         
         mockkStatic(FirebaseFirestore::class)
         mockkStatic(FirebaseStorage::class)
+        mockkStatic(android.util.Log::class)
+        every { android.util.Log.e(any(), any()) } returns 0
+        every { android.util.Log.e(any(), any(), any()) } returns 0
         every { FirebaseFirestore.getInstance() } returns firestore
         every { FirebaseStorage.getInstance() } returns storage
 
