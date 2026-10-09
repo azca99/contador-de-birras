@@ -39,14 +39,15 @@ class BeerSyncWorkerTest {
     fun setup() {
         Dispatchers.setMain(UnconfinedTestDispatcher())
         context = ApplicationProvider.getApplicationContext()
+        beerDatabase = androidx.room.Room.inMemoryDatabaseBuilder(context, BeerDatabase::class.java).allowMainThreadQueries().build()
         beerDao = mockk(relaxed = true)
-        beerDatabase = mockk(relaxed = true)
         auth = mockk(relaxed = true)
         user = mockk(relaxed = true)
 
         mockkStatic(BeerDatabase::class)
-        every { BeerDatabase.getDatabase(any()) } returns beerDatabase
+        beerDatabase = spyk(beerDatabase)
         every { beerDatabase.beerDao() } returns beerDao
+        every { BeerDatabase.getDatabase(any()) } returns beerDatabase
 
         mockkStatic(FirebaseAuth::class)
         every { FirebaseAuth.getInstance() } returns auth
@@ -55,6 +56,7 @@ class BeerSyncWorkerTest {
 
     @After
     fun tearDown() {
+        beerDatabase.close()
         Dispatchers.resetMain()
         unmockkAll()
     }

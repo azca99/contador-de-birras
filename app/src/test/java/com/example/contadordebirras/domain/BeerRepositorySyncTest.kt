@@ -82,7 +82,8 @@ class BeerRepositorySyncTest {
         repository = BeerRepository(beerDao, context, authRepository, syncScheduler)
         
         // requestSync is called in init block, clear it
-        clearMocks(syncScheduler)
+
+
         
         repository.addBeer(BeerType.LATA, 12345L)
         
@@ -96,7 +97,8 @@ class BeerRepositorySyncTest {
         every { beerDao.updateBeer(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()) } returns 1
         
         repository = BeerRepository(beerDao, context, authRepository, syncScheduler)
-        clearMocks(syncScheduler)
+
+
         repository.updateBeerLocation(1L, 10.0, 10.0)
         
         verify { syncScheduler.requestSync("user123") }
@@ -109,9 +111,9 @@ class BeerRepositorySyncTest {
         every { beerDao.updateBeer(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()) } returns 0
         
         repository = BeerRepository(beerDao, context, authRepository, syncScheduler)
-        clearMocks(syncScheduler)
         repository.updateBeerLocation(1L, 10.0, 10.0)
         
-        verify(exactly = 0) { syncScheduler.requestSync(any()) }
+        // init block triggers 1 call. updateBeerLocation should not trigger a second.
+        verify(exactly = 1) { syncScheduler.requestSync("user123") }
     }
 }

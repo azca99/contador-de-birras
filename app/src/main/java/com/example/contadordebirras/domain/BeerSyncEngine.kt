@@ -139,7 +139,7 @@ class BeerSyncEngine(
 
         if (transactionResult == "OWNERSHIP_MISMATCH") {
             Log.e("BeerSyncEngine", "UserId mismatch en doc de Firestore para ${beer.syncId}")
-            return true // Stop syncing it, treat as success locally to avoid deleting storage
+            return false
         }
         
         var storageSuccess = false
