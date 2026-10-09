@@ -3,20 +3,10 @@ package com.example.contadordebirras.domain
 import android.content.Context
 import com.example.contadordebirras.data.BeerDao
 import com.example.contadordebirras.data.BeerEntity
-import com.example.contadordebirras.data.SyncStatus
 import com.example.contadordebirras.domain.BeerType
-import com.google.android.gms.tasks.Tasks
-import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.FirebaseUser
-import com.google.firebase.firestore.CollectionReference
-import com.google.firebase.firestore.DocumentReference
-import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FirebaseFirestore
-import com.google.firebase.firestore.FirebaseFirestoreException
-import com.google.firebase.firestore.Transaction
 import com.google.firebase.storage.FirebaseStorage
-import com.google.firebase.storage.StorageException
-import com.google.firebase.storage.StorageReference
 import io.mockk.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -28,7 +18,6 @@ import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
-import org.junit.Assert.*
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class BeerRepositorySyncTest {

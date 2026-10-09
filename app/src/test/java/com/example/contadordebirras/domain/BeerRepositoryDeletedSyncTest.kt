@@ -5,7 +5,6 @@ import com.example.contadordebirras.data.BeerDao
 import com.example.contadordebirras.data.BeerEntity
 import com.example.contadordebirras.data.SyncStatus
 import com.google.android.gms.tasks.Tasks
-import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.firestore.*
 import com.google.firebase.storage.FirebaseStorage
@@ -22,7 +21,6 @@ import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
-import org.junit.Assert.*
 import com.example.contadordebirras.domain.BeerType
 
 @OptIn(ExperimentalCoroutinesApi::class)

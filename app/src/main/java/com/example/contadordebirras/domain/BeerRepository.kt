@@ -160,7 +160,6 @@ class BeerRepository(private val beerDao: BeerDao, private val context: Context,
                     if (beer.syncStatus == SyncStatus.DELETED) {
                         try {
                             var firestoreSuccess = false
-                            var ownershipMismatch = false
                             try {
                                 val transactionResult = firestore.runTransaction { transaction ->
                                     val docRef = firestore.collection("beers").document(beer.syncId)
@@ -178,7 +177,6 @@ class BeerRepository(private val beerDao: BeerDao, private val context: Context,
                                 }.await()
                                 
                                 if (transactionResult == "OWNERSHIP_MISMATCH") {
-                                    ownershipMismatch = true
                                     android.util.Log.e("SyncDebug", "UserId mismatch en doc de Firestore para ${beer.syncId}")
                                 } else {
                                     firestoreSuccess = true
