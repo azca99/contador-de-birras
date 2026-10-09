@@ -31,6 +31,8 @@ class BeerRepositorySyncTest {
     private lateinit var repository: BeerRepository
     private val currentUserFlow = MutableStateFlow<FirebaseUser?>(null)
 
+    private lateinit var syncScheduler: BeerSyncScheduler
+
     @Before
     fun setup() {
         Dispatchers.setMain(UnconfinedTestDispatcher())
@@ -39,6 +41,7 @@ class BeerRepositorySyncTest {
         context = mockk(relaxed = true)
         firestore = mockk(relaxed = true)
         storage = mockk(relaxed = true)
+        syncScheduler = mockk(relaxed = true)
 
         every { authRepository.currentUser } returns currentUserFlow
         
@@ -65,22 +68,25 @@ class BeerRepositorySyncTest {
     fun `addBeer successful insert triggers syncRequest`() = runTest {
         every { beerDao.insertBeer(any()) } returns 1L
         
-        repository = spyk(BeerRepository(beerDao, context, authRepository))
+        repository = BeerRepository(beerDao, context, authRepository, syncScheduler)
         
         repository.addBeer(BeerType.LATA, 12345L)
         
-        verify { repository.requestSync() }
+        verify(atLeast = 1) { syncScheduler.requestSync("user123") }
     }
 
     @Test
     fun `addBeer failed insert does not trigger syncRequest`() = runTest {
         every { beerDao.insertBeer(any()) } returns 0L
         
-        repository = spyk(BeerRepository(beerDao, context, authRepository))
+        repository = BeerRepository(beerDao, context, authRepository, syncScheduler)
+        
+        // requestSync is called in init block, clear it
+        clearMocks(syncScheduler)
         
         repository.addBeer(BeerType.LATA, 12345L)
         
-        verify(exactly = 0) { repository.requestSync() }
+        verify(exactly = 0) { syncScheduler.requestSync(any()) }
     }
 
     @Test
@@ -89,10 +95,11 @@ class BeerRepositorySyncTest {
         every { beerDao.getBeerById(1, "user123") } returns beer
         every { beerDao.updateBeer(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()) } returns 1
         
-        repository = spyk(BeerRepository(beerDao, context, authRepository))
+        repository = BeerRepository(beerDao, context, authRepository, syncScheduler)
+        clearMocks(syncScheduler)
         repository.updateBeerLocation(1L, 10.0, 10.0)
         
-        verify { repository.requestSync() }
+        verify { syncScheduler.requestSync("user123") }
     }
 
     @Test
@@ -101,9 +108,10 @@ class BeerRepositorySyncTest {
         every { beerDao.getBeerById(1, "user123") } returns beer
         every { beerDao.updateBeer(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()) } returns 0
         
-        repository = spyk(BeerRepository(beerDao, context, authRepository))
+        repository = BeerRepository(beerDao, context, authRepository, syncScheduler)
+        clearMocks(syncScheduler)
         repository.updateBeerLocation(1L, 10.0, 10.0)
         
-        verify(exactly = 0) { repository.requestSync() }
+        verify(exactly = 0) { syncScheduler.requestSync(any()) }
     }
 }

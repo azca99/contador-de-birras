@@ -30,12 +30,6 @@ import kotlinx.coroutines.tasks.await
 class MainActivity : ComponentActivity() {
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
-
-    FirebaseApp.initializeApp(this)
-    val firebaseAppCheck = FirebaseAppCheck.getInstance()
-    firebaseAppCheck.installAppCheckProviderFactory(
-        if (BuildConfig.DEBUG) DebugAppCheckProviderFactory.getInstance() else PlayIntegrityAppCheckProviderFactory.getInstance()
-    )
     
     Thread.setDefaultUncaughtExceptionHandler { _, e ->
         try {
@@ -47,7 +41,8 @@ class MainActivity : ComponentActivity() {
 
     val authRepository = AuthRepository(this)
     val beerDatabase = BeerDatabase.getDatabase(this)
-    val beerRepository = BeerRepository(beerDatabase.beerDao(), this, authRepository)
+    val syncScheduler = com.example.contadordebirras.worker.WorkManagerBeerSyncScheduler(this)
+    val beerRepository = BeerRepository(beerDatabase.beerDao(), this, authRepository, syncScheduler)
     
     val activeUidFlow = authRepository.currentUser.map { it?.uid }
     val userRepository = UserRepository(this.dataStore, activeUidFlow)

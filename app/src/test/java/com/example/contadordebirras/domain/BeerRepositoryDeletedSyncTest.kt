@@ -38,7 +38,6 @@ class BeerRepositoryDeletedSyncTest {
     private lateinit var transaction: Transaction
     private lateinit var documentSnapshot: DocumentSnapshot
 
-    private lateinit var repository: BeerRepository
     private val currentUserFlow = MutableStateFlow<FirebaseUser?>(null)
 
     @Before
@@ -93,8 +92,6 @@ class BeerRepositoryDeletedSyncTest {
         val query = mockk<Query>(relaxed = true)
         every { collection.whereEqualTo(any<String>(), any()) } returns query
         every { query.get(Source.SERVER) } returns Tasks.forResult(qs)
-
-        repository = BeerRepository(beerDao, context, authRepository)
     }
 
     @After
@@ -112,7 +109,8 @@ class BeerRepositoryDeletedSyncTest {
         every { documentSnapshot.getString("userId") } returns "user123"
         every { childRef.delete() } returns Tasks.forResult<Void>(null)
         
-        repository.syncWithCloud()
+        val engine = BeerSyncEngine(beerDao, "user123")
+        engine.sync("user123")
         
         // Ensure photo upload was never called because it's deleted
         verify(exactly = 0) { childRef.putFile(any()) }
@@ -129,7 +127,8 @@ class BeerRepositoryDeletedSyncTest {
         every { documentSnapshot.exists() } returns false
         every { childRef.delete() } returns Tasks.forResult<Void>(null)
         
-        repository.syncWithCloud()
+        val engine = BeerSyncEngine(beerDao, "user123")
+        engine.sync("user123")
         
         verify(exactly = 0) { transaction.delete(documentReference) } // Did not try to delete because it doesn't exist
         verify { childRef.delete() } // Proceeded to storage
@@ -149,7 +148,8 @@ class BeerRepositoryDeletedSyncTest {
         every { notFoundException.errorCode } returns StorageException.ERROR_OBJECT_NOT_FOUND
         every { childRef.delete() } returns Tasks.forException(notFoundException)
         
-        repository.syncWithCloud()
+        val engine = BeerSyncEngine(beerDao, "user123")
+        engine.sync("user123")
         
         verify { childRef.delete() }
         verify { beerDao.hardDeleteBySyncId("sync1", "user123") } // Hard deleted because 404 is success
@@ -165,7 +165,8 @@ class BeerRepositoryDeletedSyncTest {
         
         every { transaction.get(documentReference) } throws Exception("Network error")
         
-        repository.syncWithCloud()
+        val engine = BeerSyncEngine(beerDao, "user123")
+        engine.sync("user123")
         
         verify(exactly = 0) { childRef.delete() }
         verify(exactly = 0) { beerDao.hardDeleteBySyncId(any(), any()) }
@@ -179,7 +180,8 @@ class BeerRepositoryDeletedSyncTest {
         every { documentSnapshot.exists() } returns true
         every { documentSnapshot.getString("userId") } returns "otroUser"
         
-        repository.syncWithCloud()
+        val engine = BeerSyncEngine(beerDao, "user123")
+        engine.sync("user123")
         
         verify(exactly = 0) { transaction.delete(documentReference) }
         verify(exactly = 0) { childRef.delete() }
@@ -194,7 +196,8 @@ class BeerRepositoryDeletedSyncTest {
         every { documentSnapshot.exists() } returns false
         every { childRef.delete() } returns Tasks.forException<Void>(Exception("Real storage error"))
         
-        repository.syncWithCloud()
+        val engine = BeerSyncEngine(beerDao, "user123")
+        engine.sync("user123")
         
         verify(exactly = 0) { transaction.delete(documentReference) }
         verify { childRef.delete() }
@@ -209,7 +212,8 @@ class BeerRepositoryDeletedSyncTest {
         every { documentSnapshot.exists() } returns false
         every { childRef.delete() } returns Tasks.forResult<Void>(null)
         
-        repository.syncWithCloud()
+        val engine = BeerSyncEngine(beerDao, "user123")
+        engine.sync("user123")
         
         verify(exactly = 0) { transaction.delete(documentReference) }
         verify { childRef.delete() }

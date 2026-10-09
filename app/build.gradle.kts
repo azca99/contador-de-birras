@@ -68,6 +68,8 @@ dependencies {
   // Arch Components
   implementation(libs.androidx.lifecycle.runtime.compose)
   implementation(libs.androidx.lifecycle.viewmodel.compose)
+  implementation(libs.work.runtime.ktx)
+
 
   // Compose
   implementation(libs.androidx.compose.ui)
@@ -84,6 +86,10 @@ dependencies {
   testImplementation(libs.junit)
     testImplementation("io.mockk:mockk:1.13.8")
   testImplementation(libs.kotlinx.coroutines.test)
+  testImplementation(libs.work.testing)
+  testImplementation(libs.robolectric)
+  testImplementation(libs.androidx.test.core)
+
 
   // Instrumented tests: jUnit rules and runners
   androidTestImplementation(libs.androidx.test.core)
