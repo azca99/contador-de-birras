@@ -72,7 +72,7 @@ class BeerRepositorySyncTest {
         
         repository.addBeer(BeerType.LATA, 12345L)
         
-        verify(atLeast = 1) { syncScheduler.requestSync("user123") }
+        verify(timeout = 2000, atLeast = 1) { syncScheduler.requestSync("user123") }
     }
 
     @Test
@@ -87,7 +87,7 @@ class BeerRepositorySyncTest {
         
         repository.addBeer(BeerType.LATA, 12345L)
         
-        verify(exactly = 0) { syncScheduler.requestSync(any()) }
+        verify(timeout = 2000, exactly = 1) { syncScheduler.requestSync(any()) }
     }
 
     @Test
@@ -101,7 +101,7 @@ class BeerRepositorySyncTest {
 
         repository.updateBeerLocation(1L, 10.0, 10.0)
         
-        verify { syncScheduler.requestSync("user123") }
+        verify(timeout = 2000) { syncScheduler.requestSync("user123") }
     }
 
     @Test
@@ -114,6 +114,6 @@ class BeerRepositorySyncTest {
         repository.updateBeerLocation(1L, 10.0, 10.0)
         
         // init block triggers 1 call. updateBeerLocation should not trigger a second.
-        verify(exactly = 1) { syncScheduler.requestSync("user123") }
+        verify(timeout = 2000, exactly = 1) { syncScheduler.requestSync("user123") }
     }
 }

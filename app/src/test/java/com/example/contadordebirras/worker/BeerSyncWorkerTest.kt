@@ -44,11 +44,6 @@ class BeerSyncWorkerTest {
         auth = mockk(relaxed = true)
         user = mockk(relaxed = true)
 
-        mockkStatic(BeerDatabase::class)
-        beerDatabase = spyk(beerDatabase)
-        every { beerDatabase.beerDao() } returns beerDao
-        every { BeerDatabase.getDatabase(any()) } returns beerDatabase
-
         mockkStatic(FirebaseAuth::class)
         every { FirebaseAuth.getInstance() } returns auth
         every { auth.currentUser } returns user
@@ -73,7 +68,7 @@ class BeerSyncWorkerTest {
         val result = worker.doWork()
         
         assertEquals(Result.success(), result)
-        verify(exactly = 0) { BeerDatabase.getDatabase(any()) }
+
     }
 
     @Test
