@@ -21,14 +21,13 @@ import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Before
 import org.junit.Test
+import org.junit.Assert.assertEquals
 import com.example.contadordebirras.domain.BeerType
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class BeerRepositoryDeletedSyncTest {
 
     private lateinit var beerDao: BeerDao
-    private lateinit var authRepository: AuthRepository
-    private lateinit var context: Context
     private lateinit var firestore: FirebaseFirestore
     private lateinit var storage: FirebaseStorage
     private lateinit var collection: CollectionReference
@@ -38,24 +37,19 @@ class BeerRepositoryDeletedSyncTest {
     private lateinit var transaction: Transaction
     private lateinit var documentSnapshot: DocumentSnapshot
 
-    private val currentUserFlow = MutableStateFlow<FirebaseUser?>(null)
-
     @Before
     fun setup() {
         Dispatchers.setMain(UnconfinedTestDispatcher())
         beerDao = mockk(relaxed = true)
-        authRepository = mockk(relaxed = true)
-        context = mockk(relaxed = true)
         firestore = mockk(relaxed = true)
         storage = mockk(relaxed = true)
+
         collection = mockk(relaxed = true)
         documentReference = mockk(relaxed = true)
         storageRef = mockk(relaxed = true)
         childRef = mockk(relaxed = true)
         transaction = mockk(relaxed = true)
         documentSnapshot = mockk(relaxed = true)
-
-        every { authRepository.currentUser } returns currentUserFlow
 
         mockkStatic(FirebaseFirestore::class)
         mockkStatic(FirebaseStorage::class)
@@ -64,10 +58,6 @@ class BeerRepositoryDeletedSyncTest {
         every { android.util.Log.e(any(), any(), any()) } returns 0
         every { FirebaseFirestore.getInstance() } returns firestore
         every { FirebaseStorage.getInstance() } returns storage
-
-        val user = mockk<FirebaseUser>(relaxed = true)
-        every { user.uid } returns "user123"
-        currentUserFlow.value = user
 
         every { firestore.collection("beers") } returns collection
         every { collection.document(any()) } returns documentReference
@@ -86,7 +76,6 @@ class BeerRepositoryDeletedSyncTest {
             }
         }
         
-        // Mock pull to just return empty snapshot to avoid crashes in second part of sync
         val qs = mockk<QuerySnapshot>(relaxed = true)
         every { qs.documents } returns emptyList()
         val query = mockk<Query>(relaxed = true)
@@ -109,10 +98,10 @@ class BeerRepositoryDeletedSyncTest {
         every { documentSnapshot.getString("userId") } returns "user123"
         every { childRef.delete() } returns Tasks.forResult<Void>(null)
         
-        val engine = BeerSyncEngine(beerDao, "user123")
-        engine.sync("user123")
+        val engine = BeerSyncEngine(beerDao, "user123") { "user123" }
+        val result = engine.sync()
         
-        // Ensure photo upload was never called because it's deleted
+        assertEquals(SyncEngineResult.SUCCESS, result)
         verify(exactly = 0) { childRef.putFile(any()) }
         verify { transaction.delete(documentReference) }
         verify { childRef.delete() }
@@ -127,32 +116,31 @@ class BeerRepositoryDeletedSyncTest {
         every { documentSnapshot.exists() } returns false
         every { childRef.delete() } returns Tasks.forResult<Void>(null)
         
-        val engine = BeerSyncEngine(beerDao, "user123")
-        engine.sync("user123")
+        val engine = BeerSyncEngine(beerDao, "user123") { "user123" }
+        val result = engine.sync()
         
-        verify(exactly = 0) { transaction.delete(documentReference) } // Did not try to delete because it doesn't exist
-        verify { childRef.delete() } // Proceeded to storage
-        verify { beerDao.hardDeleteBySyncId("sync1", "user123") } // Hard deleted
+        assertEquals(SyncEngineResult.SUCCESS, result)
+        verify(exactly = 0) { transaction.delete(documentReference) }
+        verify { childRef.delete() }
+        verify { beerDao.hardDeleteBySyncId("sync1", "user123") }
     }
 
     @Test
     fun `deleted sync - storage not found is treated as success`() = runTest {
         val beer = BeerEntity(id = 1, type = BeerType.LATA, timestamp = 0L, syncId = "sync1", syncStatus = SyncStatus.DELETED, ownerUid = "user123")
         every { beerDao.getPendingSyncBeers("user123") } returns listOf(beer)
-        
         every { documentSnapshot.exists() } returns false
         
-        
-        // We can mock the specific exception
         val notFoundException = mockk<StorageException>()
         every { notFoundException.errorCode } returns StorageException.ERROR_OBJECT_NOT_FOUND
         every { childRef.delete() } returns Tasks.forException(notFoundException)
         
-        val engine = BeerSyncEngine(beerDao, "user123")
-        engine.sync("user123")
+        val engine = BeerSyncEngine(beerDao, "user123") { "user123" }
+        val result = engine.sync()
         
+        assertEquals(SyncEngineResult.SUCCESS, result)
         verify { childRef.delete() }
-        verify { beerDao.hardDeleteBySyncId("sync1", "user123") } // Hard deleted because 404 is success
+        verify { beerDao.hardDeleteBySyncId("sync1", "user123") }
     }
 
     @Test
@@ -165,24 +153,26 @@ class BeerRepositoryDeletedSyncTest {
         
         every { transaction.get(documentReference) } throws Exception("Network error")
         
-        val engine = BeerSyncEngine(beerDao, "user123")
-        engine.sync("user123")
+        val engine = BeerSyncEngine(beerDao, "user123") { "user123" }
+        val result = engine.sync()
         
+        assertEquals(SyncEngineResult.RETRY, result)
         verify(exactly = 0) { childRef.delete() }
         verify(exactly = 0) { beerDao.hardDeleteBySyncId(any(), any()) }
     }
     
     @Test
-    fun `deleted sync - firestore mismatch user keeps it DELETED without storage delete`() = runTest {
+    fun `deleted sync - firestore mismatch user keeps it DELETED and returns PERMANENT_FAILURE`() = runTest {
         val beer = BeerEntity(id = 1, type = BeerType.LATA, timestamp = 0L, syncId = "sync1", syncStatus = SyncStatus.DELETED, ownerUid = "user123")
         every { beerDao.getPendingSyncBeers("user123") } returns listOf(beer)
         
         every { documentSnapshot.exists() } returns true
         every { documentSnapshot.getString("userId") } returns "otroUser"
         
-        val engine = BeerSyncEngine(beerDao, "user123")
-        engine.sync("user123")
+        val engine = BeerSyncEngine(beerDao, "user123") { "user123" }
+        val result = engine.sync()
         
+        assertEquals(SyncEngineResult.PERMANENT_FAILURE, result)
         verify(exactly = 0) { transaction.delete(documentReference) }
         verify(exactly = 0) { childRef.delete() }
         verify(exactly = 0) { beerDao.hardDeleteBySyncId(any(), any()) }
@@ -196,27 +186,12 @@ class BeerRepositoryDeletedSyncTest {
         every { documentSnapshot.exists() } returns false
         every { childRef.delete() } returns Tasks.forException<Void>(Exception("Real storage error"))
         
-        val engine = BeerSyncEngine(beerDao, "user123")
-        engine.sync("user123")
+        val engine = BeerSyncEngine(beerDao, "user123") { "user123" }
+        val result = engine.sync()
         
+        assertEquals(SyncEngineResult.RETRY, result)
         verify(exactly = 0) { transaction.delete(documentReference) }
         verify { childRef.delete() }
         verify(exactly = 0) { beerDao.hardDeleteBySyncId("sync1", "user123") }
-    }
-
-    @Test
-    fun `deleted sync - retry idempotente firestore absent but storage exists and deletes ok allows hard delete`() = runTest {
-        val beer = BeerEntity(id = 1, type = BeerType.LATA, timestamp = 0L, syncId = "sync1", syncStatus = SyncStatus.DELETED, ownerUid = "user123")
-        every { beerDao.getPendingSyncBeers("user123") } returns listOf(beer)
-        
-        every { documentSnapshot.exists() } returns false
-        every { childRef.delete() } returns Tasks.forResult<Void>(null)
-        
-        val engine = BeerSyncEngine(beerDao, "user123")
-        engine.sync("user123")
-        
-        verify(exactly = 0) { transaction.delete(documentReference) }
-        verify { childRef.delete() }
-        verify { beerDao.hardDeleteBySyncId("sync1", "user123") }
     }
 }

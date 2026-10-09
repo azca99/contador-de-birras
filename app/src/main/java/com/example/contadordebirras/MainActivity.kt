@@ -18,10 +18,6 @@ import com.example.contadordebirras.domain.FriendsRepository
 import com.example.contadordebirras.navigation.AppNavigation
 import com.example.contadordebirras.theme.ContadorDeBirrasTheme
 import com.example.contadordebirras.ui.AppViewModelFactory
-import com.google.firebase.FirebaseApp
-import com.google.firebase.appcheck.FirebaseAppCheck
-import com.google.firebase.appcheck.debug.DebugAppCheckProviderFactory
-import com.google.firebase.appcheck.playintegrity.PlayIntegrityAppCheckProviderFactory
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch

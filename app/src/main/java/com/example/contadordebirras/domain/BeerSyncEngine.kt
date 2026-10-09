@@ -8,9 +8,10 @@ import com.google.firebase.firestore.Source
 import com.google.firebase.storage.FirebaseStorage
 import com.google.firebase.storage.StorageException
 import kotlinx.coroutines.tasks.await
-import java.io.File
 import kotlin.coroutines.cancellation.CancellationException
 import android.util.Log
+
+class AuthChangedException : Exception()
 
 enum class SyncEngineResult {
     SUCCESS,
@@ -19,21 +20,28 @@ enum class SyncEngineResult {
     PERMANENT_FAILURE
 }
 
+enum class DeleteSyncResult {
+    SUCCESS,
+    OWNERSHIP_MISMATCH
+}
+
 class BeerSyncEngine(
     private val beerDao: BeerDao,
-    private val expectedUid: String
+    private val expectedUid: String,
+    private val currentUidProvider: () -> String?
 ) {
-    suspend fun sync(currentUid: String?): SyncEngineResult {
-        if (currentUid != expectedUid) {
+    private fun isExpectedUserActive(): Boolean = currentUidProvider() == expectedUid
+
+    suspend fun sync(): SyncEngineResult {
+        if (!isExpectedUserActive()) {
             return SyncEngineResult.AUTH_CHANGED
         }
         
         return try {
             val pendingBeers = beerDao.getPendingSyncBeers(expectedUid)
+            
             for (beer in pendingBeers) {
-                if (currentUid != expectedUid) {
-                    return SyncEngineResult.AUTH_CHANGED
-                }
+                if (!isExpectedUserActive()) return SyncEngineResult.AUTH_CHANGED
                 
                 try {
                     when (beer.syncStatus) {
@@ -41,8 +49,11 @@ class BeerSyncEngine(
                             pushPendingBeer(beer)
                         }
                         SyncStatus.DELETED -> {
-                            val success = pushDeletedBeer(beer)
-                            if (success) {
+                            val deleteResult = pushDeletedBeer(beer)
+                            if (deleteResult == DeleteSyncResult.OWNERSHIP_MISMATCH) {
+                                return SyncEngineResult.PERMANENT_FAILURE
+                            } else if (deleteResult == DeleteSyncResult.SUCCESS) {
+                                if (!isExpectedUserActive()) return SyncEngineResult.AUTH_CHANGED
                                 beerDao.hardDeleteBySyncId(beer.syncId, expectedUid)
                             }
                         }
@@ -50,17 +61,22 @@ class BeerSyncEngine(
                     }
                 } catch (e: CancellationException) {
                     throw e
+                } catch (e: AuthChangedException) {
+                    return SyncEngineResult.AUTH_CHANGED
                 } catch (e: Exception) {
                     Log.e("BeerSyncEngine", "Error syncing beer ${beer.id}: ${e.message}", e)
                     return SyncEngineResult.RETRY
                 }
             }
             
+            if (!isExpectedUserActive()) return SyncEngineResult.AUTH_CHANGED
             pullRemoteBeers()
             
             SyncEngineResult.SUCCESS
         } catch (e: CancellationException) {
             throw e
+        } catch (e: AuthChangedException) {
+            return SyncEngineResult.AUTH_CHANGED
         } catch (e: Exception) {
             Log.e("BeerSyncEngine", "Fatal sync error: ${e.message}", e)
             SyncEngineResult.RETRY
@@ -68,6 +84,7 @@ class BeerSyncEngine(
     }
     
     private suspend fun pushPendingBeer(beer: BeerEntity) {
+        if (!isExpectedUserActive()) throw AuthChangedException()
         val firestore = FirebaseFirestore.getInstance()
         val storage = FirebaseStorage.getInstance()
         
@@ -78,6 +95,7 @@ class BeerSyncEngine(
                 val storageRef = storage.reference.child("users/${expectedUid}/beers/${beer.syncId}.jpg")
                 val uri = android.net.Uri.parse(beer.photoUri)
                 storageRef.putFile(uri).await()
+                if (!isExpectedUserActive()) throw AuthChangedException()
                 remoteUrl = "users/${expectedUid}/beers/${beer.syncId}.jpg"
             } catch (e: CancellationException) { throw e }
             catch (e: Exception) {
@@ -100,15 +118,16 @@ class BeerSyncEngine(
         )
 
         firestore.collection("beers").document(beer.syncId).set(map).await()
+        if (!isExpectedUserActive()) throw AuthChangedException()
         if (!photoUploadFailed) {
             beerDao.markAsSynced(beer.id, remoteUrl, expectedUid)
         } else {
-            // throw to trigger retry for the photo upload if it failed
             throw Exception("Photo upload failed for ${beer.syncId}")
         }
     }
     
-    private suspend fun pushDeletedBeer(beer: BeerEntity): Boolean {
+    private suspend fun pushDeletedBeer(beer: BeerEntity): DeleteSyncResult {
+        if (!isExpectedUserActive()) throw AuthChangedException()
         val firestore = FirebaseFirestore.getInstance()
         val storage = FirebaseStorage.getInstance()
         
@@ -134,18 +153,21 @@ class BeerSyncEngine(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            throw e // Let it fail, it will be caught and trigger RETRY
+            throw e 
         }
 
+        if (!isExpectedUserActive()) throw AuthChangedException()
+        
         if (transactionResult == "OWNERSHIP_MISMATCH") {
             Log.e("BeerSyncEngine", "UserId mismatch en doc de Firestore para ${beer.syncId}")
-            return false
+            return DeleteSyncResult.OWNERSHIP_MISMATCH
         }
         
         var storageSuccess = false
         try {
             val storageRef = storage.reference.child("users/${expectedUid}/beers/${beer.syncId}.jpg")
             storageRef.delete().await()
+            if (!isExpectedUserActive()) throw AuthChangedException()
             storageSuccess = true
         } catch (e: StorageException) {
             if (e.errorCode == StorageException.ERROR_OBJECT_NOT_FOUND) {
@@ -159,13 +181,15 @@ class BeerSyncEngine(
             throw e
         }
         
-        return storageSuccess
+        return DeleteSyncResult.SUCCESS
     }
     
     private suspend fun pullRemoteBeers() {
+        if (!isExpectedUserActive()) throw AuthChangedException()
         val firestore = FirebaseFirestore.getInstance()
         
         val snapshot = firestore.collection("beers").whereEqualTo("userId", expectedUid).get(Source.SERVER).await()
+        if (!isExpectedUserActive()) throw AuthChangedException()
         val remoteIds = mutableSetOf<String>()
 
         for (doc in snapshot.documents) {
@@ -191,6 +215,7 @@ class BeerSyncEngine(
             val decision = SyncResolver.resolvePullConflict(localBeer, updatedAt)
 
             if (decision == SyncResolver.SyncDecision.INSERT_LOCAL) {
+                if (!isExpectedUserActive()) throw AuthChangedException()
                 val newBeer = BeerEntity(
                     type = type, timestamp = timestamp, latitude = lat, longitude = lng,
                     comment = comment, locationName = locName, remotePhotoUrl = remotePhotoUrl,
@@ -199,6 +224,7 @@ class BeerSyncEngine(
                 )
                 beerDao.insertBeer(newBeer)
             } else if (decision == SyncResolver.SyncDecision.UPDATE_LOCAL) {
+                if (!isExpectedUserActive()) throw AuthChangedException()
                 val updatedBeer = localBeer!!.copy(
                     type = type, timestamp = timestamp, latitude = lat, longitude = lng,
                     comment = comment, locationName = locName, remotePhotoUrl = remotePhotoUrl,
@@ -219,6 +245,7 @@ class BeerSyncEngine(
 
         val localSyncedIds = beerDao.getAllSyncedIds(expectedUid)
         val toDelete = SyncResolver.resolveDeletions(localSyncedIds, Result.success(remoteIds))
+        if (!isExpectedUserActive()) throw AuthChangedException()
         for (id in toDelete) {
             beerDao.hardDeleteBySyncId(id, expectedUid)
         }

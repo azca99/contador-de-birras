@@ -89,10 +89,8 @@ class BeerSyncWorkerTest {
     fun `doWork calls engine and returns success when engine returns SUCCESS`() = runTest {
         every { user.uid } returns "user_A"
         
-        // Mocking the engine constructor inside the worker is hard without a factory,
-        // but we can mock the engine class itself since we use mockk.
         mockkConstructor(BeerSyncEngine::class)
-        coEvery { anyConstructed<BeerSyncEngine>().sync(any()) } returns SyncEngineResult.SUCCESS
+        coEvery { anyConstructed<BeerSyncEngine>().sync() } returns SyncEngineResult.SUCCESS
         
         val inputData = Data.Builder().putString(BeerSyncWorker.KEY_EXPECTED_UID, "user_A").build()
         val worker = TestListenableWorkerBuilder<BeerSyncWorker>(context)
@@ -102,14 +100,31 @@ class BeerSyncWorkerTest {
         val result = worker.doWork()
         
         assertEquals(Result.success(), result)
-        coVerify { anyConstructed<BeerSyncEngine>().sync("user_A") }
+        coVerify { anyConstructed<BeerSyncEngine>().sync() }
+    }
+    
+    @Test
+    fun `doWork returns success when engine returns AUTH_CHANGED`() = runTest {
+        every { user.uid } returns "user_A"
+        
+        mockkConstructor(BeerSyncEngine::class)
+        coEvery { anyConstructed<BeerSyncEngine>().sync() } returns SyncEngineResult.AUTH_CHANGED
+        
+        val inputData = Data.Builder().putString(BeerSyncWorker.KEY_EXPECTED_UID, "user_A").build()
+        val worker = TestListenableWorkerBuilder<BeerSyncWorker>(context)
+            .setInputData(inputData)
+            .build()
+            
+        val result = worker.doWork()
+        
+        assertEquals(Result.success(), result)
     }
 
     @Test
     fun `doWork calls engine and returns retry when engine returns RETRY`() = runTest {
         every { user.uid } returns "user_A"
         mockkConstructor(BeerSyncEngine::class)
-        coEvery { anyConstructed<BeerSyncEngine>().sync(any()) } returns SyncEngineResult.RETRY
+        coEvery { anyConstructed<BeerSyncEngine>().sync() } returns SyncEngineResult.RETRY
         
         val inputData = Data.Builder().putString(BeerSyncWorker.KEY_EXPECTED_UID, "user_A").build()
         val worker = TestListenableWorkerBuilder<BeerSyncWorker>(context)
@@ -126,7 +141,7 @@ class BeerSyncWorkerTest {
     fun `doWork returns failure when engine returns RETRY but max retries reached`() = runTest {
         every { user.uid } returns "user_A"
         mockkConstructor(BeerSyncEngine::class)
-        coEvery { anyConstructed<BeerSyncEngine>().sync(any()) } returns SyncEngineResult.RETRY
+        coEvery { anyConstructed<BeerSyncEngine>().sync() } returns SyncEngineResult.RETRY
         
         val inputData = Data.Builder().putString(BeerSyncWorker.KEY_EXPECTED_UID, "user_A").build()
         val worker = TestListenableWorkerBuilder<BeerSyncWorker>(context)
@@ -143,7 +158,7 @@ class BeerSyncWorkerTest {
     fun `doWork returns failure when engine returns PERMANENT_FAILURE`() = runTest {
         every { user.uid } returns "user_A"
         mockkConstructor(BeerSyncEngine::class)
-        coEvery { anyConstructed<BeerSyncEngine>().sync(any()) } returns SyncEngineResult.PERMANENT_FAILURE
+        coEvery { anyConstructed<BeerSyncEngine>().sync() } returns SyncEngineResult.PERMANENT_FAILURE
         
         val inputData = Data.Builder().putString(BeerSyncWorker.KEY_EXPECTED_UID, "user_A").build()
         val worker = TestListenableWorkerBuilder<BeerSyncWorker>(context)

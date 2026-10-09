@@ -29,10 +29,11 @@ class BeerSyncWorker(
         }
         
         val beerDao = BeerDatabase.getDatabase(applicationContext).beerDao()
-        val engine = BeerSyncEngine(beerDao, expectedUid)
+        val auth = FirebaseAuth.getInstance()
+        val engine = BeerSyncEngine(beerDao, expectedUid) { auth.currentUser?.uid }
         
         return try {
-            val result = engine.sync(currentUid)
+            val result = engine.sync()
             when (result) {
                 SyncEngineResult.SUCCESS -> Result.success()
                 SyncEngineResult.AUTH_CHANGED -> Result.success() // Same as above, just stop
