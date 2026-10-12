@@ -1,11 +1,9 @@
 package com.example.contadordebirras.domain
 
-import android.content.Context
 import com.example.contadordebirras.data.BeerDao
 import com.example.contadordebirras.data.BeerEntity
 import com.example.contadordebirras.data.SyncStatus
 import com.google.android.gms.tasks.Tasks
-import com.google.firebase.auth.FirebaseUser
 import com.google.firebase.firestore.*
 import com.google.firebase.storage.FirebaseStorage
 import com.google.firebase.storage.StorageException
@@ -13,7 +11,6 @@ import com.google.firebase.storage.StorageReference
 import io.mockk.*
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest

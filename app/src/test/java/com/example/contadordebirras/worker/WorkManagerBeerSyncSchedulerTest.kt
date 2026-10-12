@@ -7,7 +7,6 @@ import org.junit.After
 import org.junit.Before
 import org.junit.Test
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertTrue
 
 @org.junit.runner.RunWith(org.robolectric.RobolectricTestRunner::class)
 class WorkManagerBeerSyncSchedulerTest {
@@ -59,6 +58,9 @@ class WorkManagerBeerSyncSchedulerTest {
         // Assert backoff policy
         assertEquals(BackoffPolicy.EXPONENTIAL, workSpec.backoffPolicy)
         assertEquals(30_000L, workSpec.backoffDelayDuration) // 30 seconds
+        
+        // Assert worker class
+        assertEquals(BeerSyncWorker::class.java.name, workSpec.workerClassName)
     }
     
     @Test
@@ -87,5 +89,8 @@ class WorkManagerBeerSyncSchedulerTest {
         
         // Interval is 6 hours (21600000 ms)
         assertEquals(21600000L, workSpec.intervalDuration)
+        
+        // Assert worker class
+        assertEquals(BeerSyncWorker::class.java.name, workSpec.workerClassName)
     }
 }

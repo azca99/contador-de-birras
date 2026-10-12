@@ -30,6 +30,8 @@ class BeerSyncEngine(
     private val expectedUid: String,
     private val currentUidProvider: () -> String?
 ) {
+    var onBeforeFirestoreSet: (() -> Unit)? = null
+
     private fun isExpectedUserActive(): Boolean = currentUidProvider() == expectedUid
 
     suspend fun sync(): SyncEngineResult {
@@ -97,8 +99,11 @@ class BeerSyncEngine(
                 storageRef.putFile(uri).await()
                 if (!isExpectedUserActive()) throw AuthChangedException()
                 remoteUrl = "users/${expectedUid}/beers/${beer.syncId}.jpg"
-            } catch (e: CancellationException) { throw e }
-            catch (e: Exception) {
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: AuthChangedException) {
+                throw e
+            } catch (e: Exception) {
                 Log.e("BeerSyncEngine", "Error uploading photo", e)
                 photoUploadFailed = true
             }
@@ -117,6 +122,8 @@ class BeerSyncEngine(
             "updatedAt" to beer.updatedAt
         )
 
+        onBeforeFirestoreSet?.invoke()
+        if (!isExpectedUserActive()) throw AuthChangedException()
         firestore.collection("beers").document(beer.syncId).set(map).await()
         if (!isExpectedUserActive()) throw AuthChangedException()
         if (!photoUploadFailed) {
@@ -247,6 +254,8 @@ class BeerSyncEngine(
         val toDelete = SyncResolver.resolveDeletions(localSyncedIds, Result.success(remoteIds))
         if (!isExpectedUserActive()) throw AuthChangedException()
         for (id in toDelete) {
+            if (!isExpectedUserActive())
+                throw AuthChangedException()
             beerDao.hardDeleteBySyncId(id, expectedUid)
         }
     }

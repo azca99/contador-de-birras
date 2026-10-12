@@ -5,11 +5,9 @@ import android.location.Geocoder
 import com.example.contadordebirras.data.BeerDao
 import com.example.contadordebirras.data.BeerEntity
 import com.example.contadordebirras.data.SyncStatus
-import com.google.firebase.auth.FirebaseAuth
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch

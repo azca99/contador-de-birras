@@ -125,7 +125,6 @@ dependencies {
   implementation(libs.firebase.appcheck.playintegrity)
   debugImplementation(libs.firebase.appcheck.debug)
   implementation(libs.play.services.auth)
-  implementation(libs.work.runtime.ktx)
   implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.7.3")
 }
 
