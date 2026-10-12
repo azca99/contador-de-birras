@@ -7,7 +7,7 @@ import androidx.room.RoomDatabase
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
 
-@Database(entities = [BeerEntity::class, com.example.contadordebirras.data.achievements.AchievementEntity::class], version = 8, exportSchema = true)
+@Database(entities = [BeerEntity::class, com.example.contadordebirras.data.achievements.AchievementEntity::class], version = 9, exportSchema = true)
 abstract class BeerDatabase : RoomDatabase() {
     abstract fun beerDao(): BeerDao
     abstract fun achievementDao(): com.example.contadordebirras.data.achievements.AchievementDao
@@ -70,6 +70,16 @@ abstract class BeerDatabase : RoomDatabase() {
             }
         }
 
+        val MIGRATION_8_9 = object : Migration(8, 9) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE beers ADD COLUMN remoteRevision INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE beers ADD COLUMN baseRevision INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE beers ADD COLUMN dirtyFields TEXT")
+                db.execSQL("ALTER TABLE beers ADD COLUMN lastMutationId TEXT")
+                db.execSQL("ALTER TABLE beers ADD COLUMN deletedAt INTEGER")
+            }
+        }
+
         fun getDatabase(context: Context): BeerDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -77,7 +87,7 @@ abstract class BeerDatabase : RoomDatabase() {
                     BeerDatabase::class.java,
                     "beer_database"
                 )
-                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9)
                 .build()
                 INSTANCE = instance
                 instance

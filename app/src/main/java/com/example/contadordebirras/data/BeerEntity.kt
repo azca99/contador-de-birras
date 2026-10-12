@@ -21,7 +21,18 @@ data class BeerEntity(
     val remotePhotoUrl: String? = null,
     val updatedAt: Long = System.currentTimeMillis(),
     val photoSource: String? = null,
-    val ownerUid: String = "guest_local"
+    val ownerUid: String = "guest_local",
+    // Metadata para el protocolo de sincronización multidispositivo (Fase C1)
+    // remoteRevision: última revision remota conocida
+    val remoteRevision: Long = 0L,
+    // baseRevision: revision remota sobre la que comenzó el conjunto actual de cambios locales
+    val baseRevision: Long = 0L,
+    // dirtyFields: representación de los campos modificados localmente (en C1 permanece null y no se interpreta)
+    val dirtyFields: String? = null,
+    // lastMutationId: UUID de mutación futura para idempotencia (en C1 permanece null)
+    val lastMutationId: String? = null,
+    // deletedAt: timestamp local auxiliar del borrado pendiente futuro (en C1 permanece null)
+    val deletedAt: Long? = null
 ) {
     fun hasPhoto(): Boolean {
         return !photoUri.isNullOrBlank() || !remotePhotoUrl.isNullOrBlank()
