@@ -29,8 +29,57 @@ interface BeerDao {
     @Query("UPDATE beers SET syncStatus = 'DELETED' WHERE id = :id AND ownerUid = :ownerUid")
     fun softDeleteBeer(id: Int, ownerUid: String): Int
 
-    @Query("UPDATE beers SET syncStatus = 'SYNCED', remotePhotoUrl = :remoteUrl WHERE id = :id AND syncStatus != 'DELETED' AND ownerUid = :ownerUid")
+    @Query("""
+        UPDATE beers SET 
+            syncStatus = 'SYNCED', 
+            remotePhotoUrl = :remoteUrl,
+            baseRevision = remoteRevision,
+            dirtyFields = NULL,
+            lastMutationId = NULL,
+            deletedAt = NULL
+        WHERE id = :id AND syncStatus != 'DELETED' AND ownerUid = :ownerUid
+    """)
     fun markAsSynced(id: Int, remoteUrl: String?, ownerUid: String): Int
+
+    @Query("""
+        UPDATE beers SET 
+            type = :type, timestamp = :timestamp, latitude = :latitude, longitude = :longitude, 
+            photoUri = :photoUri, comment = :comment, locationName = :locationName, 
+            syncStatus = 'PENDING', remotePhotoUrl = :remotePhotoUrl, updatedAt = :updatedAt, 
+            photoSource = :photoSource, baseRevision = :baseRevision, dirtyFields = :dirtyFields, 
+            lastMutationId = :lastMutationId, deletedAt = NULL 
+        WHERE id = :id AND ownerUid = :ownerUid AND syncStatus != 'DELETED'
+    """)
+    fun updateBeerLocalMutation(
+        id: Int, type: BeerType, timestamp: Long, latitude: Double?, longitude: Double?,
+        photoUri: String?, comment: String?, locationName: String?, remotePhotoUrl: String?,
+        updatedAt: Long, photoSource: String?, ownerUid: String,
+        baseRevision: Long, dirtyFields: String?, lastMutationId: String
+    ): Int
+
+    @Query("""
+        UPDATE beers SET 
+            latitude = :latitude, longitude = :longitude, locationName = :locationName, 
+            syncStatus = 'PENDING', updatedAt = :updatedAt, baseRevision = :baseRevision, 
+            dirtyFields = :dirtyFields, lastMutationId = :lastMutationId, deletedAt = NULL 
+        WHERE id = :id AND ownerUid = :ownerUid AND syncStatus != 'DELETED'
+    """)
+    fun updateBeerLocationLocalMutation(
+        id: Int, latitude: Double, longitude: Double, locationName: String?,
+        updatedAt: Long, ownerUid: String,
+        baseRevision: Long, dirtyFields: String?, lastMutationId: String
+    ): Int
+
+    @Query("""
+        UPDATE beers SET 
+            syncStatus = 'DELETED', updatedAt = :updatedAt, deletedAt = :deletedAt, 
+            baseRevision = :baseRevision, dirtyFields = NULL, lastMutationId = :lastMutationId 
+        WHERE id = :id AND ownerUid = :ownerUid AND syncStatus != 'DELETED'
+    """)
+    fun softDeleteBeerLocalMutation(
+        id: Int, updatedAt: Long, deletedAt: Long, ownerUid: String,
+        baseRevision: Long, lastMutationId: String
+    ): Int
 
     @Query("UPDATE beers SET syncStatus = 'DELETED' WHERE id = (SELECT id FROM beers WHERE syncStatus != 'DELETED' AND ownerUid = :ownerUid ORDER BY timestamp DESC LIMIT 1) AND ownerUid = :ownerUid")
     fun deleteLastBeer(ownerUid: String): Int

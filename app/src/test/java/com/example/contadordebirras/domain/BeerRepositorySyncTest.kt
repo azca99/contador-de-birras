@@ -85,11 +85,11 @@ class BeerRepositorySyncTest {
     fun `updateBeer triggers syncRequest`() = runTest {
         initRepositoryAndClearMocks()
         
-        val beer = BeerEntity(id = 1, type = BeerType.LATA, timestamp = 0L, ownerUid = "user123")
+        val beer = BeerEntity(id = 1, type = BeerType.LATA, timestamp = 0L, comment = "old", ownerUid = "user123")
         every { beerDao.getBeerById(1, "user123") } returns beer
-        every { beerDao.updateBeer(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()) } returns 1
+        every { beerDao.updateBeerLocalMutation(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()) } returns 1
         
-        repository.updateBeer(beer)
+        repository.updateBeer(beer.copy(comment = "new"))
         
         verify(exactly = 1) { syncScheduler.requestSync("user123") }
     }
@@ -100,6 +100,7 @@ class BeerRepositorySyncTest {
         
         val beer = BeerEntity(id = 1, type = BeerType.LATA, timestamp = 0L, ownerUid = "user123")
         every { beerDao.getBeerById(1, "user123") } returns beer
+        every { beerDao.softDeleteBeerLocalMutation(any(), any(), any(), any(), any(), any()) } returns 1
         
         repository.deleteBeer(beer)
         
@@ -110,9 +111,9 @@ class BeerRepositorySyncTest {
     fun `updateBeerLocation with rows updated triggers syncRequest`() = runTest {
         initRepositoryAndClearMocks()
         
-        val beer = BeerEntity(id = 1, type = BeerType.LATA, timestamp = 0L, ownerUid = "user123")
+        val beer = BeerEntity(id = 1, type = BeerType.LATA, timestamp = 0L, ownerUid = "user123", latitude = 0.0, longitude = 0.0)
         every { beerDao.getBeerById(1, "user123") } returns beer
-        every { beerDao.updateBeer(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()) } returns 1
+        every { beerDao.updateBeerLocationLocalMutation(any(), any(), any(), any(), any(), any(), any(), any(), any()) } returns 1
         
         repository.updateBeerLocation(1L, 10.0, 10.0)
         
@@ -123,9 +124,9 @@ class BeerRepositorySyncTest {
     fun `updateBeerLocation with zero rows updated does not trigger syncRequest`() = runTest {
         initRepositoryAndClearMocks()
         
-        val beer = BeerEntity(id = 1, type = BeerType.LATA, timestamp = 0L, ownerUid = "user123")
+        val beer = BeerEntity(id = 1, type = BeerType.LATA, timestamp = 0L, ownerUid = "user123", latitude = 0.0, longitude = 0.0)
         every { beerDao.getBeerById(1, "user123") } returns beer
-        every { beerDao.updateBeer(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()) } returns 0
+        every { beerDao.updateBeerLocationLocalMutation(any(), any(), any(), any(), any(), any(), any(), any(), any()) } returns 0
         
         repository.updateBeerLocation(1L, 10.0, 10.0)
         
