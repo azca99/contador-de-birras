@@ -99,7 +99,7 @@ class BeerRepositoryMutationTest {
     }
 
     @Test
-    fun `updateBeer on SYNCED entity sets baseRevision to remoteRevision and encodes only changed fields`() = runTest {
+    fun `updateBeerDetails on SYNCED entity sets baseRevision to remoteRevision and encodes only changed fields`() = runTest {
         val repo = createRepositoryAndClearMocks()
         currentTime = 6000L
         nextMutationId = "mut-edit-1"
@@ -129,18 +129,11 @@ class BeerRepositoryMutationTest {
         val baseRevSlot = slot<Long>()
         val dirtyFieldsSlot = slot<String?>()
         every {
-            beerDao.updateBeerLocalMutation(
+            beerDao.updateBeerDetailsLocalMutation(
                 id = 42,
                 type = BeerType.LATA,
-                timestamp = 1000L,
-                latitude = 40.0,
-                longitude = -3.0,
-                photoUri = "photo.jpg",
                 comment = "Updated comment",
-                locationName = "Madrid",
-                remotePhotoUrl = "https://storage/pic.jpg",
                 updatedAt = 6000L,
-                photoSource = "gallery",
                 ownerUid = "user123",
                 baseRevision = capture(baseRevSlot),
                 dirtyFields = captureNullable(dirtyFieldsSlot),
@@ -148,8 +141,7 @@ class BeerRepositoryMutationTest {
             )
         } returns 1
 
-        val modifiedBeer = syncedBeer.copy(comment = "Updated comment")
-        repo.updateBeer(modifiedBeer)
+        repo.updateBeerDetails(42L, BeerType.LATA, "Updated comment")
 
         assertEquals(5L, baseRevSlot.captured)
         assertEquals("COMMENT", dirtyFieldsSlot.captured)
@@ -158,7 +150,7 @@ class BeerRepositoryMutationTest {
     }
 
     @Test
-    fun `updateBeer on PENDING entity preserves baseRevision and merges dirtyFields`() = runTest {
+    fun `updateBeerDetails on PENDING entity preserves baseRevision and merges dirtyFields`() = runTest {
         val repo = createRepositoryAndClearMocks()
         currentTime = 7000L
         nextMutationId = "mut-edit-2"
@@ -187,18 +179,11 @@ class BeerRepositoryMutationTest {
         val baseRevSlot = slot<Long>()
         val dirtyFieldsSlot = slot<String?>()
         every {
-            beerDao.updateBeerLocalMutation(
+            beerDao.updateBeerDetailsLocalMutation(
                 id = 42,
                 type = BeerType.JARRA,
-                timestamp = 1000L,
-                latitude = 40.0,
-                longitude = -3.0,
-                photoUri = "photo.jpg",
                 comment = "Updated comment",
-                locationName = "Madrid",
-                remotePhotoUrl = "https://storage/pic.jpg",
                 updatedAt = 7000L,
-                photoSource = "gallery",
                 ownerUid = "user123",
                 baseRevision = capture(baseRevSlot),
                 dirtyFields = captureNullable(dirtyFieldsSlot),
@@ -206,8 +191,7 @@ class BeerRepositoryMutationTest {
             )
         } returns 1
 
-        val modifiedBeer = pendingBeer.copy(type = BeerType.JARRA)
-        repo.updateBeer(modifiedBeer)
+        repo.updateBeerDetails(42L, BeerType.JARRA, "Updated comment")
 
         assertEquals(3L, baseRevSlot.captured)
         assertEquals("COMMENT,TYPE", dirtyFieldsSlot.captured)
@@ -215,7 +199,7 @@ class BeerRepositoryMutationTest {
     }
 
     @Test
-    fun `updateBeer with identical data is a clean no-op`() = runTest {
+    fun `updateBeerDetails with identical data is a clean no-op`() = runTest {
         var mutationIdCallCount = 0
         val repo = createRepositoryAndClearMocks(
             customMutationIdProvider = {
@@ -246,10 +230,10 @@ class BeerRepositoryMutationTest {
         every { beerDao.getBeerById(42, "user123") } returns syncedBeer
 
         // Try updating with identical data
-        repo.updateBeer(syncedBeer)
+        repo.updateBeerDetails(42L, syncedBeer.type, syncedBeer.comment)
 
         assertEquals(0, mutationIdCallCount)
-        verify(exactly = 0) { beerDao.updateBeerLocalMutation(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()) }
+        verify(exactly = 0) { beerDao.updateBeerDetailsLocalMutation(any(), any(), any(), any(), any(), any(), any(), any()) }
         verify(exactly = 0) { syncScheduler.requestSync(any()) }
     }
 
@@ -439,7 +423,7 @@ class BeerRepositoryMutationTest {
     }
 
     @Test
-    fun `updateBeer same field twice does not duplicate dirty field, preserves baseRevision, and gets new mutationId`() = runTest {
+    fun `updateBeerDetails same field twice does not duplicate dirty field, preserves baseRevision, and gets new mutationId`() = runTest {
         val repo = createRepositoryAndClearMocks()
         currentTime = 10000L
         nextMutationId = "mut-comment-2"
@@ -469,18 +453,11 @@ class BeerRepositoryMutationTest {
         val dirtyFieldsSlot = slot<String?>()
         val mutationIdSlot = slot<String>()
         every {
-            beerDao.updateBeerLocalMutation(
+            beerDao.updateBeerDetailsLocalMutation(
                 id = 42,
                 type = BeerType.LATA,
-                timestamp = 1000L,
-                latitude = 40.0,
-                longitude = -3.0,
-                photoUri = "photo.jpg",
                 comment = "Second edit",
-                locationName = "Madrid",
-                remotePhotoUrl = "https://storage/pic.jpg",
                 updatedAt = 10000L,
-                photoSource = "gallery",
                 ownerUid = "user123",
                 baseRevision = capture(baseRevSlot),
                 dirtyFields = captureNullable(dirtyFieldsSlot),
@@ -488,8 +465,7 @@ class BeerRepositoryMutationTest {
             )
         } returns 1
 
-        val modifiedBeer = pendingBeer.copy(comment = "Second edit")
-        repo.updateBeer(modifiedBeer)
+        repo.updateBeerDetails(42L, BeerType.LATA, "Second edit")
 
         assertEquals(3L, baseRevSlot.captured)
         assertEquals("COMMENT", dirtyFieldsSlot.captured)
@@ -498,48 +474,43 @@ class BeerRepositoryMutationTest {
     }
 
     @Test
-    fun `updateBeer multi-field update marks only changed fields without location or timestamp`() = runTest {
+    fun `updateBeerDetails preserves location when UI had stale location snapshot`() = runTest {
         val repo = createRepositoryAndClearMocks()
-        currentTime = 11000L
-        nextMutationId = "mut-multi-1"
+        currentTime = 12000L
+        nextMutationId = "mut-stale-loc"
 
-        val syncedBeer = BeerEntity(
-            id = 50,
+        // Estado ACTUAL Room:
+        // type = LATA, comment = "old", latitude = 40.0, longitude = -3.0, locationName = "Madrid"
+        val roomBeer = BeerEntity(
+            id = 100,
             type = BeerType.LATA,
-            timestamp = 2000L,
-            latitude = 40.4168,
-            longitude = -3.7038,
+            timestamp = 5000L,
+            latitude = 40.0,
+            longitude = -3.0,
             locationName = "Madrid",
-            comment = "Initial note",
-            photoUri = "old_photo.jpg",
-            remotePhotoUrl = "https://storage/old.jpg",
-            photoSource = "camera",
+            comment = "old",
+            photoUri = null,
+            remotePhotoUrl = null,
+            photoSource = null,
             syncStatus = SyncStatus.SYNCED,
-            remoteRevision = 7L,
-            baseRevision = 7L,
+            remoteRevision = 4L,
+            baseRevision = 4L,
             dirtyFields = null,
             lastMutationId = null,
             deletedAt = null,
             ownerUid = "user123"
         )
-        every { beerDao.getBeerById(50, "user123") } returns syncedBeer
+        every { beerDao.getBeerById(100, "user123") } returns roomBeer
 
         val baseRevSlot = slot<Long>()
         val dirtyFieldsSlot = slot<String?>()
         val mutationIdSlot = slot<String>()
         every {
-            beerDao.updateBeerLocalMutation(
-                id = 50,
-                type = BeerType.JARRA,
-                timestamp = 2000L, // unchanged
-                latitude = 40.4168, // unchanged
-                longitude = -3.7038, // unchanged
-                photoUri = "new_photo.jpg", // changed
-                comment = "New note", // changed
-                locationName = "Madrid", // unchanged
-                remotePhotoUrl = "https://storage/old.jpg",
-                updatedAt = 11000L,
-                photoSource = "camera",
+            beerDao.updateBeerDetailsLocalMutation(
+                id = 100,
+                type = BeerType.LATA,
+                comment = "new",
+                updatedAt = 12000L,
                 ownerUid = "user123",
                 baseRevision = capture(baseRevSlot),
                 dirtyFields = captureNullable(dirtyFieldsSlot),
@@ -547,16 +518,158 @@ class BeerRepositoryMutationTest {
             )
         } returns 1
 
-        val modifiedBeer = syncedBeer.copy(
-            type = BeerType.JARRA,
-            comment = "New note",
-            photoUri = "new_photo.jpg"
-        )
-        repo.updateBeer(modifiedBeer)
+        repo.updateBeerDetails(100L, BeerType.LATA, "new")
 
-        assertEquals(7L, baseRevSlot.captured)
-        assertEquals("COMMENT,PHOTO,TYPE", dirtyFieldsSlot.captured)
-        assertEquals("mut-multi-1", mutationIdSlot.captured)
+        // Esperado: dirtyFields = COMMENT (NO LOCATION)
+        assertEquals(4L, baseRevSlot.captured)
+        assertEquals("COMMENT", dirtyFieldsSlot.captured)
+        assertEquals("mut-stale-loc", mutationIdSlot.captured)
         verify(exactly = 1) { syncScheduler.requestSync("user123") }
+        verify(exactly = 0) { beerDao.updateBeerLocationLocalMutation(any(), any(), any(), any(), any(), any(), any(), any(), any()) }
+    }
+
+    @Test
+    fun `updateBeerDetails preserves photo when UI had stale photo snapshot`() = runTest {
+        val repo = createRepositoryAndClearMocks()
+        currentTime = 13000L
+        nextMutationId = "mut-stale-photo"
+
+        // Estado ACTUAL Room:
+        // remotePhotoUrl = "users/u/beers/x.jpg", photoUri = "content://local", photoSource = "CAMERA"
+        val roomBeer = BeerEntity(
+            id = 200,
+            type = BeerType.LATA,
+            timestamp = 5000L,
+            latitude = 40.0,
+            longitude = -3.0,
+            locationName = "Madrid",
+            comment = "some comment",
+            photoUri = "content://local",
+            remotePhotoUrl = "users/u/beers/x.jpg",
+            photoSource = "CAMERA",
+            syncStatus = SyncStatus.SYNCED,
+            remoteRevision = 5L,
+            baseRevision = 5L,
+            dirtyFields = null,
+            lastMutationId = null,
+            deletedAt = null,
+            ownerUid = "user123"
+        )
+        every { beerDao.getBeerById(200, "user123") } returns roomBeer
+
+        val baseRevSlot = slot<Long>()
+        val dirtyFieldsSlot = slot<String?>()
+        val mutationIdSlot = slot<String>()
+        every {
+            beerDao.updateBeerDetailsLocalMutation(
+                id = 200,
+                type = BeerType.JARRA,
+                comment = "some comment",
+                updatedAt = 13000L,
+                ownerUid = "user123",
+                baseRevision = capture(baseRevSlot),
+                dirtyFields = captureNullable(dirtyFieldsSlot),
+                lastMutationId = capture(mutationIdSlot)
+            )
+        } returns 1
+
+        repo.updateBeerDetails(200L, BeerType.JARRA, "some comment")
+
+        // Esperado: dirtyFields = TYPE (NO PHOTO)
+        assertEquals(5L, baseRevSlot.captured)
+        assertEquals("TYPE", dirtyFieldsSlot.captured)
+        assertEquals("mut-stale-photo", mutationIdSlot.captured)
+        verify(exactly = 1) { syncScheduler.requestSync("user123") }
+    }
+
+    @Test
+    fun `updateBeerDetails multi-field update marks only TYPE and COMMENT in canonical order`() = runTest {
+        val repo = createRepositoryAndClearMocks()
+        currentTime = 14000L
+        nextMutationId = "mut-multi-details"
+
+        val roomBeer = BeerEntity(
+            id = 300,
+            type = BeerType.LATA,
+            timestamp = 5000L,
+            latitude = 40.0,
+            longitude = -3.0,
+            locationName = "Madrid",
+            comment = "old comment",
+            photoUri = "photo.jpg",
+            remotePhotoUrl = "users/u/beers/x.jpg",
+            photoSource = "CAMERA",
+            syncStatus = SyncStatus.SYNCED,
+            remoteRevision = 2L,
+            baseRevision = 2L,
+            dirtyFields = null,
+            lastMutationId = null,
+            deletedAt = null,
+            ownerUid = "user123"
+        )
+        every { beerDao.getBeerById(300, "user123") } returns roomBeer
+
+        val baseRevSlot = slot<Long>()
+        val dirtyFieldsSlot = slot<String?>()
+        val mutationIdSlot = slot<String>()
+        every {
+            beerDao.updateBeerDetailsLocalMutation(
+                id = 300,
+                type = BeerType.JARRA,
+                comment = "new comment",
+                updatedAt = 14000L,
+                ownerUid = "user123",
+                baseRevision = capture(baseRevSlot),
+                dirtyFields = captureNullable(dirtyFieldsSlot),
+                lastMutationId = capture(mutationIdSlot)
+            )
+        } returns 1
+
+        repo.updateBeerDetails(300L, BeerType.JARRA, "new comment")
+
+        // Esperado exactamente: dirtyFields = COMMENT,TYPE en orden canónico
+        // NO LOCATION, PHOTO, TIMESTAMP
+        assertEquals(2L, baseRevSlot.captured)
+        assertEquals("COMMENT,TYPE", dirtyFieldsSlot.captured)
+        assertEquals("mut-multi-details", mutationIdSlot.captured)
+        verify(exactly = 1) { syncScheduler.requestSync("user123") }
+    }
+
+    @Test
+    fun `updateBeerDetails with identical type and comment results in 0 writes 0 mutationId and 0 sync`() = runTest {
+        var mutationIdCallCount = 0
+        val repo = createRepositoryAndClearMocks(
+            customMutationIdProvider = {
+                mutationIdCallCount++
+                "unexpected-mut"
+            }
+        )
+
+        val roomBeer = BeerEntity(
+            id = 400,
+            type = BeerType.LATA,
+            timestamp = 5000L,
+            latitude = 40.0,
+            longitude = -3.0,
+            locationName = "Madrid",
+            comment = "same comment",
+            photoUri = "photo.jpg",
+            remotePhotoUrl = "users/u/beers/x.jpg",
+            photoSource = "CAMERA",
+            syncStatus = SyncStatus.SYNCED,
+            remoteRevision = 2L,
+            baseRevision = 2L,
+            dirtyFields = null,
+            lastMutationId = null,
+            deletedAt = null,
+            ownerUid = "user123"
+        )
+        every { beerDao.getBeerById(400, "user123") } returns roomBeer
+
+        repo.updateBeerDetails(400L, BeerType.LATA, "same comment")
+
+        assertEquals(0, mutationIdCallCount)
+        verify(exactly = 0) { beerDao.updateBeerDetailsLocalMutation(any(), any(), any(), any(), any(), any(), any(), any()) }
+        verify(exactly = 0) { syncScheduler.requestSync(any()) }
     }
 }

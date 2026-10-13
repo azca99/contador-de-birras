@@ -11,8 +11,10 @@ import com.example.contadordebirras.domain.SyncEngineResult
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.auth.FirebaseUser
 import io.mockk.*
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.resetMain
 import kotlinx.coroutines.test.runTest
@@ -168,5 +170,109 @@ class BeerSyncWorkerTest {
         val result = worker.doWork()
         
         assertEquals(Result.failure(), result)
+    }
+
+    @Test
+    fun `two workers are serialized by syncExecutionMutex`() = runTest {
+        every { user.uid } returns "user_A"
+
+        val w1Entered = CompletableDeferred<Unit>()
+        val w1Release = CompletableDeferred<Unit>()
+        val w2Entered = CompletableDeferred<Unit>()
+        var syncCount = 0
+
+        mockkConstructor(BeerSyncEngine::class)
+        coEvery { anyConstructed<BeerSyncEngine>().sync() } coAnswers {
+            syncCount++
+            if (syncCount == 1) {
+                w1Entered.complete(Unit)
+                w1Release.await()
+                SyncEngineResult.SUCCESS
+            } else {
+                w2Entered.complete(Unit)
+                SyncEngineResult.SUCCESS
+            }
+        }
+
+        val inputData = Data.Builder().putString(BeerSyncWorker.KEY_EXPECTED_UID, "user_A").build()
+        val worker1 = TestListenableWorkerBuilder<BeerSyncWorker>(context).setInputData(inputData).build()
+        val worker2 = TestListenableWorkerBuilder<BeerSyncWorker>(context).setInputData(inputData).build()
+
+        var result1: Result? = null
+        var result2: Result? = null
+
+        val job1 = launch(Dispatchers.Default) {
+            result1 = worker1.doWork()
+        }
+
+        w1Entered.await()
+        assertEquals(1, syncCount)
+
+        val job2 = launch(Dispatchers.Default) {
+            result2 = worker2.doWork()
+        }
+
+        // Verify that while worker1 holds the mutex, worker2 cannot enter sync()
+        assertEquals(false, w2Entered.isCompleted)
+        assertEquals(1, syncCount)
+
+        // Release worker1
+        w1Release.complete(Unit)
+        job1.join()
+        assertEquals(Result.success(), result1)
+
+        // Worker 2 can now enter sync()
+        w2Entered.await()
+        job2.join()
+        assertEquals(Result.success(), result2)
+        assertEquals(2, syncCount)
+        coVerify(exactly = 2) { anyConstructed<BeerSyncEngine>().sync() }
+    }
+
+    @Test
+    fun `auth change while waiting for mutex skips engine execution and returns success`() = runTest {
+        every { user.uid } returns "user_A"
+
+        val w1Entered = CompletableDeferred<Unit>()
+        val w1Release = CompletableDeferred<Unit>()
+
+        mockkConstructor(BeerSyncEngine::class)
+        coEvery { anyConstructed<BeerSyncEngine>().sync() } coAnswers {
+            w1Entered.complete(Unit)
+            w1Release.await()
+            SyncEngineResult.SUCCESS
+        }
+
+        val inputData = Data.Builder().putString(BeerSyncWorker.KEY_EXPECTED_UID, "user_A").build()
+        val worker1 = TestListenableWorkerBuilder<BeerSyncWorker>(context).setInputData(inputData).build()
+        val worker2 = TestListenableWorkerBuilder<BeerSyncWorker>(context).setInputData(inputData).build()
+
+        var result1: Result? = null
+        var result2: Result? = null
+
+        val job1 = launch(Dispatchers.Default) {
+            result1 = worker1.doWork()
+        }
+
+        w1Entered.await()
+
+        val job2 = launch(Dispatchers.Default) {
+            result2 = worker2.doWork()
+        }
+
+        // While worker2 is waiting on the mutex, auth changes: userA -> userB
+        val userB = mockk<FirebaseUser>(relaxed = true)
+        every { userB.uid } returns "user_B"
+        every { auth.currentUser } returns userB
+
+        // Release worker1
+        w1Release.complete(Unit)
+        job1.join()
+        assertEquals(Result.success(), result1)
+
+        // Worker2 obtains the mutex, revalidates auth, sees user_B != user_A, returns success without executing engine
+        job2.join()
+        assertEquals(Result.success(), result2)
+        coVerify(exactly = 1) { anyConstructed<BeerSyncEngine>().sync() }
     }
 }

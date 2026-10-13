@@ -121,14 +121,28 @@ class BeerIsolationTest {
         val id = beerDao.insertBeer(beer).toInt()
 
         // B tries to delete A's beer -> should fail (return 0 rows affected)
-        val rowsAffected = beerDao.softDeleteBeer(id, "userB")
+        val rowsAffected = beerDao.softDeleteBeerLocalMutation(
+            id = id,
+            updatedAt = 1000L,
+            deletedAt = 1000L,
+            ownerUid = "userB",
+            baseRevision = 0L,
+            lastMutationId = "mut-B"
+        )
         assertEquals(0, rowsAffected)
 
         val check1 = beerDao.getBeerById(id, "userA")
         assertEquals(SyncStatus.PENDING, check1?.syncStatus)
 
         // A deletes A's beer -> should succeed
-        val rowsAffected2 = beerDao.softDeleteBeer(id, "userA")
+        val rowsAffected2 = beerDao.softDeleteBeerLocalMutation(
+            id = id,
+            updatedAt = 1000L,
+            deletedAt = 1000L,
+            ownerUid = "userA",
+            baseRevision = 0L,
+            lastMutationId = "mut-A"
+        )
         assertEquals(1, rowsAffected2)
 
         val check2 = beerDao.getBeerById(id, "userA")
@@ -136,32 +150,44 @@ class BeerIsolationTest {
     }
 
     @Test
-    fun testIsolation_hardDeleteBySyncId() = runBlocking {
-        val beer = createBeer("userA")
-        beerDao.insertBeer(beer)
+    fun testIsolation_hardDelete() = runBlocking {
+        val beer1 = createBeer("userA").copy(syncStatus = SyncStatus.DELETED)
+        beerDao.insertBeer(beer1)
 
-        // B tries to hard delete A's beer
-        val rows = beerDao.hardDeleteBySyncId(beer.syncId, "userB")
-        assertEquals(0, rows)
+        // B tries to hard delete A's deleted beer
+        val rowsDeletedB = beerDao.hardDeleteDeletedBySyncId(beer1.syncId, "userB")
+        assertEquals(0, rowsDeletedB)
 
-        // A hard deletes A's beer
-        val rows2 = beerDao.hardDeleteBySyncId(beer.syncId, "userA")
-        assertEquals(1, rows2)
+        // A hard deletes A's deleted beer
+        val rowsDeletedA = beerDao.hardDeleteDeletedBySyncId(beer1.syncId, "userA")
+        assertEquals(1, rowsDeletedA)
+
+        val beer2 = createBeer("userA").copy(syncStatus = SyncStatus.SYNCED)
+        beerDao.insertBeer(beer2)
+
+        // B tries to hard delete A's synced beer
+        val rowsSyncedB = beerDao.hardDeleteSyncedBySyncId(beer2.syncId, "userB")
+        assertEquals(0, rowsSyncedB)
+
+        // A hard deletes A's synced beer
+        val rowsSyncedA = beerDao.hardDeleteSyncedBySyncId(beer2.syncId, "userA")
+        assertEquals(1, rowsSyncedA)
     }
+
     @Test
-    fun testIsolation_updateBeer() = runBlocking {
-        val beer = createBeer("userA")
+    fun testIsolation_applyRemoteUpdateIfSynced() = runBlocking {
+        val beer = createBeer("userA").copy(syncStatus = SyncStatus.SYNCED)
         val id = beerDao.insertBeer(beer).toInt()
 
         // B tries to update A's beer
-        val rows = beerDao.updateBeer(
-            id, BeerType.BOTELLIN, beer.timestamp, null, null, null, null, null, SyncStatus.PENDING, null, 0, null, "userB"
+        val rows = beerDao.applyRemoteUpdateIfSynced(
+            id, BeerType.BOTELLIN, beer.timestamp, null, null, null, null, null, null, 0L, null, "userB"
         )
         assertEquals(0, rows)
 
         // A updates A's beer
-        val rows2 = beerDao.updateBeer(
-            id, BeerType.BOTELLIN, beer.timestamp, null, null, null, null, null, SyncStatus.PENDING, null, 0, null, "userA"
+        val rows2 = beerDao.applyRemoteUpdateIfSynced(
+            id, BeerType.BOTELLIN, beer.timestamp, null, null, null, null, null, null, 0L, null, "userA"
         )
         assertEquals(1, rows2)
     }

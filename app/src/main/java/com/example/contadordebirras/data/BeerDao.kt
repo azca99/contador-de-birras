@@ -13,21 +13,18 @@ interface BeerDao {
     fun insertBeer(beer: BeerEntity): Long
 
     @Query("""
-        UPDATE beers SET 
-            type = :type, timestamp = :timestamp, latitude = :latitude, longitude = :longitude, 
-            photoUri = :photoUri, comment = :comment, locationName = :locationName, 
-            syncStatus = :syncStatus, remotePhotoUrl = :remotePhotoUrl, updatedAt = :updatedAt, 
-            photoSource = :photoSource 
-        WHERE id = :id AND ownerUid = :ownerUid
+        UPDATE beers SET
+            type = :type, comment = :comment,
+            syncStatus = 'PENDING', updatedAt = :updatedAt, baseRevision = :baseRevision,
+            dirtyFields = :dirtyFields, lastMutationId = :lastMutationId, deletedAt = NULL
+        WHERE id = :id AND ownerUid = :ownerUid AND syncStatus != 'DELETED'
     """)
-    fun updateBeer(
-        id: Int, type: BeerType, timestamp: Long, latitude: Double?, longitude: Double?,
-        photoUri: String?, comment: String?, locationName: String?, syncStatus: String,
-        remotePhotoUrl: String?, updatedAt: Long, photoSource: String?, ownerUid: String
+    fun updateBeerDetailsLocalMutation(
+        id: Int, type: BeerType, comment: String?,
+        updatedAt: Long, ownerUid: String,
+        baseRevision: Long, dirtyFields: String?, lastMutationId: String
     ): Int
 
-    @Query("UPDATE beers SET syncStatus = 'DELETED' WHERE id = :id AND ownerUid = :ownerUid")
-    fun softDeleteBeer(id: Int, ownerUid: String): Int
 
     @Query("""
         UPDATE beers SET
@@ -124,8 +121,6 @@ interface BeerDao {
     @Query("DELETE FROM beers WHERE syncId = :syncId AND ownerUid = :ownerUid AND syncStatus = 'SYNCED'")
     fun hardDeleteSyncedBySyncId(syncId: String, ownerUid: String): Int
 
-    @Query("DELETE FROM beers WHERE syncId = :syncId AND ownerUid = :ownerUid")
-    fun hardDeleteBySyncId(syncId: String, ownerUid: String): Int
 
     @Query("SELECT * FROM beers WHERE id = :id AND ownerUid = :ownerUid LIMIT 1")
     fun getBeerById(id: Int, ownerUid: String): BeerEntity?

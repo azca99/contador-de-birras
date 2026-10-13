@@ -458,4 +458,73 @@ class BeerDaoMutationTest {
         assertEquals(1, rowsDeleted)
         assertNull(beerDao.getBeerBySyncId("sync_del_A", "userA"))
     }
+
+    @Test
+    fun testUpdateBeerDetailsLocalMutation_preservesOtherFieldsAndModifiesOnlyTarget() = runBlocking {
+        val beerA = BeerEntity(
+            type = BeerType.LATA,
+            timestamp = 1000L,
+            latitude = 40.0,
+            longitude = -3.0,
+            locationName = "Madrid",
+            photoUri = "content://photo",
+            remotePhotoUrl = "users/a/photo.jpg",
+            photoSource = "CAMERA",
+            comment = "Initial",
+            syncStatus = SyncStatus.SYNCED,
+            remoteRevision = 5L,
+            baseRevision = 5L,
+            dirtyFields = null,
+            ownerUid = "userA"
+        )
+        val idA = beerDao.insertBeer(beerA).toInt()
+
+        // Wrong owner cannot update
+        val rowsWrongOwner = beerDao.updateBeerDetailsLocalMutation(
+            id = idA,
+            type = BeerType.JARRA,
+            comment = "Hack",
+            updatedAt = 6000L,
+            ownerUid = "userB",
+            baseRevision = 5L,
+            dirtyFields = "COMMENT,TYPE",
+            lastMutationId = "mut-hack"
+        )
+        assertEquals(0, rowsWrongOwner)
+
+        // Valid owner updates details
+        val rowsValid = beerDao.updateBeerDetailsLocalMutation(
+            id = idA,
+            type = BeerType.BOTELLIN,
+            comment = "Updated comment",
+            updatedAt = 7000L,
+            ownerUid = "userA",
+            baseRevision = 5L,
+            dirtyFields = "COMMENT,TYPE",
+            lastMutationId = "mut-123"
+        )
+        assertEquals(1, rowsValid)
+
+        val updated = beerDao.getBeerById(idA, "userA")
+        assertNotNull(updated)
+        // Modified fields
+        assertEquals(BeerType.BOTELLIN, updated?.type)
+        assertEquals("Updated comment", updated?.comment)
+        assertEquals(SyncStatus.PENDING, updated?.syncStatus)
+        assertEquals(7000L, updated?.updatedAt)
+        assertEquals(5L, updated?.baseRevision)
+        assertEquals("COMMENT,TYPE", updated?.dirtyFields)
+        assertEquals("mut-123", updated?.lastMutationId)
+        assertNull(updated?.deletedAt)
+
+        // Preserved fields - completely untouched
+        assertEquals(1000L, updated?.timestamp)
+        assertEquals(40.0, updated?.latitude)
+        assertEquals(-3.0, updated?.longitude)
+        assertEquals("Madrid", updated?.locationName)
+        assertEquals("content://photo", updated?.photoUri)
+        assertEquals("users/a/photo.jpg", updated?.remotePhotoUrl)
+        assertEquals("CAMERA", updated?.photoSource)
+        assertEquals(5L, updated?.remoteRevision)
+    }
 }

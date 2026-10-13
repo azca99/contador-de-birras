@@ -82,14 +82,14 @@ class BeerRepositorySyncTest {
     }
     
     @Test
-    fun `updateBeer triggers syncRequest`() = runTest {
+    fun `updateBeerDetails triggers syncRequest`() = runTest {
         initRepositoryAndClearMocks()
         
         val beer = BeerEntity(id = 1, type = BeerType.LATA, timestamp = 0L, comment = "old", ownerUid = "user123")
         every { beerDao.getBeerById(1, "user123") } returns beer
-        every { beerDao.updateBeerLocalMutation(any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any(), any()) } returns 1
+        every { beerDao.updateBeerDetailsLocalMutation(any(), any(), any(), any(), any(), any(), any(), any()) } returns 1
         
-        repository.updateBeer(beer.copy(comment = "new"))
+        repository.updateBeerDetails(1, BeerType.LATA, "new")
         
         verify(exactly = 1) { syncScheduler.requestSync("user123") }
     }

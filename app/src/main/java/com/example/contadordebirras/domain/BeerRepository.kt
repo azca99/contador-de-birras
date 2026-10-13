@@ -174,30 +174,19 @@ class BeerRepository(
         }
     }
 
-    suspend fun updateBeer(beer: BeerEntity) {
+    suspend fun updateBeerDetails(beerId: Long, type: BeerType, comment: String?) {
         withContext(Dispatchers.IO) {
             val updated = localMutationMutex.withLock {
                 val ownerUid = currentOwnerUid()
-                if (beer.ownerUid != ownerUid) return@withLock false
-
-                val current = beerDao.getBeerById(beer.id, ownerUid) ?: return@withLock false
+                val current = beerDao.getBeerById(beerId.toInt(), ownerUid) ?: return@withLock false
                 if (current.syncStatus == SyncStatus.DELETED) return@withLock false
 
                 val changedFields = mutableSetOf<BeerDirtyField>()
-                if (current.type != beer.type) {
+                if (current.type != type) {
                     changedFields.add(BeerDirtyField.TYPE)
                 }
-                if (current.timestamp != beer.timestamp) {
-                    changedFields.add(BeerDirtyField.TIMESTAMP)
-                }
-                if (current.latitude != beer.latitude || current.longitude != beer.longitude || current.locationName != beer.locationName) {
-                    changedFields.add(BeerDirtyField.LOCATION)
-                }
-                if (current.comment != beer.comment) {
+                if (current.comment != comment) {
                     changedFields.add(BeerDirtyField.COMMENT)
-                }
-                if (current.photoUri != beer.photoUri || current.photoSource != beer.photoSource || current.remotePhotoUrl != beer.remotePhotoUrl) {
-                    changedFields.add(BeerDirtyField.PHOTO)
                 }
 
                 if (changedFields.isEmpty()) {
@@ -213,18 +202,11 @@ class BeerRepository(
                 val mutationId = mutationIdProvider()
                 val now = nowProvider()
 
-                val updatedRows = beerDao.updateBeerLocalMutation(
+                val updatedRows = beerDao.updateBeerDetailsLocalMutation(
                     id = current.id,
-                    type = beer.type,
-                    timestamp = beer.timestamp,
-                    latitude = beer.latitude,
-                    longitude = beer.longitude,
-                    photoUri = beer.photoUri,
-                    comment = beer.comment,
-                    locationName = beer.locationName,
-                    remotePhotoUrl = beer.remotePhotoUrl,
+                    type = type,
+                    comment = comment,
                     updatedAt = now,
-                    photoSource = beer.photoSource,
                     ownerUid = ownerUid,
                     baseRevision = baseRevision,
                     dirtyFields = dirtyFields,
@@ -237,5 +219,10 @@ class BeerRepository(
             }
         }
     }
+
+    suspend fun updateBeerDetails(beerId: Int, type: BeerType, comment: String?) {
+        updateBeerDetails(beerId.toLong(), type, comment)
+    }
+
 
 }
