@@ -437,4 +437,126 @@ class BeerRepositoryMutationTest {
         verify(exactly = 0) { beerDao.softDeleteBeerLocalMutation(any(), any(), any(), any(), any(), any()) }
         verify(exactly = 0) { syncScheduler.requestSync(any()) }
     }
+
+    @Test
+    fun `updateBeer same field twice does not duplicate dirty field, preserves baseRevision, and gets new mutationId`() = runTest {
+        val repo = createRepositoryAndClearMocks()
+        currentTime = 10000L
+        nextMutationId = "mut-comment-2"
+
+        val pendingBeer = BeerEntity(
+            id = 42,
+            type = BeerType.LATA,
+            timestamp = 1000L,
+            latitude = 40.0,
+            longitude = -3.0,
+            locationName = "Madrid",
+            comment = "First edit",
+            photoUri = "photo.jpg",
+            remotePhotoUrl = "https://storage/pic.jpg",
+            photoSource = "gallery",
+            syncStatus = SyncStatus.PENDING,
+            remoteRevision = 5L,
+            baseRevision = 3L,
+            dirtyFields = "COMMENT",
+            lastMutationId = "mut-comment-1",
+            deletedAt = null,
+            ownerUid = "user123"
+        )
+        every { beerDao.getBeerById(42, "user123") } returns pendingBeer
+
+        val baseRevSlot = slot<Long>()
+        val dirtyFieldsSlot = slot<String?>()
+        val mutationIdSlot = slot<String>()
+        every {
+            beerDao.updateBeerLocalMutation(
+                id = 42,
+                type = BeerType.LATA,
+                timestamp = 1000L,
+                latitude = 40.0,
+                longitude = -3.0,
+                photoUri = "photo.jpg",
+                comment = "Second edit",
+                locationName = "Madrid",
+                remotePhotoUrl = "https://storage/pic.jpg",
+                updatedAt = 10000L,
+                photoSource = "gallery",
+                ownerUid = "user123",
+                baseRevision = capture(baseRevSlot),
+                dirtyFields = captureNullable(dirtyFieldsSlot),
+                lastMutationId = capture(mutationIdSlot)
+            )
+        } returns 1
+
+        val modifiedBeer = pendingBeer.copy(comment = "Second edit")
+        repo.updateBeer(modifiedBeer)
+
+        assertEquals(3L, baseRevSlot.captured)
+        assertEquals("COMMENT", dirtyFieldsSlot.captured)
+        assertEquals("mut-comment-2", mutationIdSlot.captured)
+        verify(exactly = 1) { syncScheduler.requestSync("user123") }
+    }
+
+    @Test
+    fun `updateBeer multi-field update marks only changed fields without location or timestamp`() = runTest {
+        val repo = createRepositoryAndClearMocks()
+        currentTime = 11000L
+        nextMutationId = "mut-multi-1"
+
+        val syncedBeer = BeerEntity(
+            id = 50,
+            type = BeerType.LATA,
+            timestamp = 2000L,
+            latitude = 40.4168,
+            longitude = -3.7038,
+            locationName = "Madrid",
+            comment = "Initial note",
+            photoUri = "old_photo.jpg",
+            remotePhotoUrl = "https://storage/old.jpg",
+            photoSource = "camera",
+            syncStatus = SyncStatus.SYNCED,
+            remoteRevision = 7L,
+            baseRevision = 7L,
+            dirtyFields = null,
+            lastMutationId = null,
+            deletedAt = null,
+            ownerUid = "user123"
+        )
+        every { beerDao.getBeerById(50, "user123") } returns syncedBeer
+
+        val baseRevSlot = slot<Long>()
+        val dirtyFieldsSlot = slot<String?>()
+        val mutationIdSlot = slot<String>()
+        every {
+            beerDao.updateBeerLocalMutation(
+                id = 50,
+                type = BeerType.JARRA,
+                timestamp = 2000L, // unchanged
+                latitude = 40.4168, // unchanged
+                longitude = -3.7038, // unchanged
+                photoUri = "new_photo.jpg", // changed
+                comment = "New note", // changed
+                locationName = "Madrid", // unchanged
+                remotePhotoUrl = "https://storage/old.jpg",
+                updatedAt = 11000L,
+                photoSource = "camera",
+                ownerUid = "user123",
+                baseRevision = capture(baseRevSlot),
+                dirtyFields = captureNullable(dirtyFieldsSlot),
+                lastMutationId = capture(mutationIdSlot)
+            )
+        } returns 1
+
+        val modifiedBeer = syncedBeer.copy(
+            type = BeerType.JARRA,
+            comment = "New note",
+            photoUri = "new_photo.jpg"
+        )
+        repo.updateBeer(modifiedBeer)
+
+        assertEquals(7L, baseRevSlot.captured)
+        assertEquals("COMMENT,PHOTO,TYPE", dirtyFieldsSlot.captured)
+        assertEquals("mut-multi-1", mutationIdSlot.captured)
+        verify(exactly = 1) { syncScheduler.requestSync("user123") }
+    }
 }

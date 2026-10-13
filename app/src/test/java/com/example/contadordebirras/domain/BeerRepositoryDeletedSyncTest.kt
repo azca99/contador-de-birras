@@ -102,7 +102,7 @@ class BeerRepositoryDeletedSyncTest {
         verify(exactly = 0) { childRef.putFile(any()) }
         verify { transaction.delete(documentReference) }
         verify { childRef.delete() }
-        verify { beerDao.hardDeleteBySyncId("sync1", "user123") }
+        verify { beerDao.hardDeleteDeletedBySyncId("sync1", "user123") }
     }
 
     @Test
@@ -119,7 +119,7 @@ class BeerRepositoryDeletedSyncTest {
         assertEquals(SyncEngineResult.SUCCESS, result)
         verify(exactly = 0) { transaction.delete(documentReference) }
         verify { childRef.delete() }
-        verify { beerDao.hardDeleteBySyncId("sync1", "user123") }
+        verify { beerDao.hardDeleteDeletedBySyncId("sync1", "user123") }
     }
 
     @Test
@@ -137,7 +137,7 @@ class BeerRepositoryDeletedSyncTest {
         
         assertEquals(SyncEngineResult.SUCCESS, result)
         verify { childRef.delete() }
-        verify { beerDao.hardDeleteBySyncId("sync1", "user123") }
+        verify { beerDao.hardDeleteDeletedBySyncId("sync1", "user123") }
     }
 
     @Test
@@ -155,7 +155,7 @@ class BeerRepositoryDeletedSyncTest {
         
         assertEquals(SyncEngineResult.RETRY, result)
         verify(exactly = 0) { childRef.delete() }
-        verify(exactly = 0) { beerDao.hardDeleteBySyncId(any(), any()) }
+        verify(exactly = 0) { beerDao.hardDeleteDeletedBySyncId(any(), any()) }
     }
     
     @Test
@@ -172,7 +172,7 @@ class BeerRepositoryDeletedSyncTest {
         assertEquals(SyncEngineResult.PERMANENT_FAILURE, result)
         verify(exactly = 0) { transaction.delete(documentReference) }
         verify(exactly = 0) { childRef.delete() }
-        verify(exactly = 0) { beerDao.hardDeleteBySyncId(any(), any()) }
+        verify(exactly = 0) { beerDao.hardDeleteDeletedBySyncId(any(), any()) }
     }
 
     @Test
@@ -189,6 +189,6 @@ class BeerRepositoryDeletedSyncTest {
         assertEquals(SyncEngineResult.RETRY, result)
         verify(exactly = 0) { transaction.delete(documentReference) }
         verify { childRef.delete() }
-        verify(exactly = 0) { beerDao.hardDeleteBySyncId("sync1", "user123") }
+        verify(exactly = 0) { beerDao.hardDeleteDeletedBySyncId("sync1", "user123") }
     }
 }

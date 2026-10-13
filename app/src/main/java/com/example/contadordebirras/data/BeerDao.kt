@@ -30,16 +30,36 @@ interface BeerDao {
     fun softDeleteBeer(id: Int, ownerUid: String): Int
 
     @Query("""
-        UPDATE beers SET 
-            syncStatus = 'SYNCED', 
+        UPDATE beers SET
+            syncStatus = 'SYNCED',
             remotePhotoUrl = :remoteUrl,
             baseRevision = remoteRevision,
             dirtyFields = NULL,
             lastMutationId = NULL,
             deletedAt = NULL
-        WHERE id = :id AND syncStatus != 'DELETED' AND ownerUid = :ownerUid
+        WHERE id = :id
+          AND ownerUid = :ownerUid
+          AND syncStatus = 'PENDING'
+          AND (
+              (lastMutationId IS NULL AND :expectedMutationId IS NULL)
+              OR lastMutationId = :expectedMutationId
+          )
     """)
-    fun markAsSynced(id: Int, remoteUrl: String?, ownerUid: String): Int
+    fun markAsSyncedIfMutationMatches(id: Int, remoteUrl: String?, ownerUid: String, expectedMutationId: String?): Int
+
+    @Query("""
+        UPDATE beers SET
+            type = :type, timestamp = :timestamp, latitude = :latitude, longitude = :longitude,
+            photoUri = :photoUri, comment = :comment, locationName = :locationName,
+            remotePhotoUrl = :remotePhotoUrl, updatedAt = :updatedAt,
+            photoSource = :photoSource
+        WHERE id = :id AND ownerUid = :ownerUid AND syncStatus = 'SYNCED'
+    """)
+    fun applyRemoteUpdateIfSynced(
+        id: Int, type: BeerType, timestamp: Long, latitude: Double?, longitude: Double?,
+        photoUri: String?, comment: String?, locationName: String?,
+        remotePhotoUrl: String?, updatedAt: Long, photoSource: String?, ownerUid: String
+    ): Int
 
     @Query("""
         UPDATE beers SET 
@@ -97,6 +117,12 @@ interface BeerDao {
     fun getPendingSyncBeers(ownerUid: String): List<BeerEntity>
     @Query("SELECT * FROM beers WHERE syncId = :syncId AND ownerUid = :ownerUid LIMIT 1")
     fun getBeerBySyncId(syncId: String, ownerUid: String): BeerEntity?
+
+    @Query("DELETE FROM beers WHERE syncId = :syncId AND ownerUid = :ownerUid AND syncStatus = 'DELETED'")
+    fun hardDeleteDeletedBySyncId(syncId: String, ownerUid: String): Int
+
+    @Query("DELETE FROM beers WHERE syncId = :syncId AND ownerUid = :ownerUid AND syncStatus = 'SYNCED'")
+    fun hardDeleteSyncedBySyncId(syncId: String, ownerUid: String): Int
 
     @Query("DELETE FROM beers WHERE syncId = :syncId AND ownerUid = :ownerUid")
     fun hardDeleteBySyncId(syncId: String, ownerUid: String): Int

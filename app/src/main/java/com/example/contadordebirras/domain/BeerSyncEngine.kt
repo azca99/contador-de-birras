@@ -56,7 +56,7 @@ class BeerSyncEngine(
                                 return SyncEngineResult.PERMANENT_FAILURE
                             } else if (deleteResult == DeleteSyncResult.SUCCESS) {
                                 if (!isExpectedUserActive()) return SyncEngineResult.AUTH_CHANGED
-                                beerDao.hardDeleteBySyncId(beer.syncId, expectedUid)
+                                beerDao.hardDeleteDeletedBySyncId(beer.syncId, expectedUid)
                             }
                         }
                         else -> {}
@@ -127,7 +127,7 @@ class BeerSyncEngine(
         firestore.collection("beers").document(beer.syncId).set(map).await()
         if (!isExpectedUserActive()) throw AuthChangedException()
         if (!photoUploadFailed) {
-            beerDao.markAsSynced(beer.id, remoteUrl, expectedUid)
+            beerDao.markAsSyncedIfMutationMatches(beer.id, remoteUrl, expectedUid, beer.lastMutationId)
         } else {
             throw Exception("Photo upload failed for ${beer.syncId}")
         }
@@ -238,11 +238,11 @@ class BeerSyncEngine(
                     photoSource = photoSource, updatedAt = updatedAt
                 )
                 if (updatedBeer.ownerUid == expectedUid) {
-                    beerDao.updateBeer(
+                    beerDao.applyRemoteUpdateIfSynced(
                         id = updatedBeer.id, type = updatedBeer.type, timestamp = updatedBeer.timestamp,
                         latitude = updatedBeer.latitude, longitude = updatedBeer.longitude,
                         photoUri = updatedBeer.photoUri, comment = updatedBeer.comment,
-                        locationName = updatedBeer.locationName, syncStatus = updatedBeer.syncStatus,
+                        locationName = updatedBeer.locationName,
                         remotePhotoUrl = updatedBeer.remotePhotoUrl, updatedAt = updatedBeer.updatedAt,
                         photoSource = updatedBeer.photoSource, ownerUid = expectedUid
                     )
@@ -256,7 +256,7 @@ class BeerSyncEngine(
         for (id in toDelete) {
             if (!isExpectedUserActive())
                 throw AuthChangedException()
-            beerDao.hardDeleteBySyncId(id, expectedUid)
+            beerDao.hardDeleteSyncedBySyncId(id, expectedUid)
         }
     }
 }

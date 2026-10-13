@@ -47,6 +47,7 @@ class BeerSyncEngineTest {
         every { qs.documents } returns emptyList()
         every { firestore.collection(any()) } returns collection
         every { collection.document(any()) } returns documentReference
+        every { documentReference.set(any()) } returns Tasks.forResult(null)
         every { collection.whereEqualTo(any<String>(), any()) } returns query
         every { query.get(Source.SERVER) } returns Tasks.forResult(qs)
         every { FirebaseFirestore.getInstance() } returns firestore
@@ -88,8 +89,8 @@ class BeerSyncEngineTest {
         
         val result = engine.sync()
         assertEquals(SyncEngineResult.AUTH_CHANGED, result)
-        // Ensure no markAsSynced was called
-        coVerify(exactly = 0) { beerDao.markAsSynced(any(), any(), any()) }
+        // Ensure no markAsSyncedIfMutationMatches was called
+        coVerify(exactly = 0) { beerDao.markAsSyncedIfMutationMatches(any(), any(), any(), any()) }
     }
 
     @Test
@@ -126,7 +127,7 @@ class BeerSyncEngineTest {
         
         assertEquals(SyncEngineResult.AUTH_CHANGED, result)
         verify(exactly = 0) { documentReference.set(any()) }
-        coVerify(exactly = 0) { beerDao.markAsSynced(any(), any(), any()) }
+        coVerify(exactly = 0) { beerDao.markAsSyncedIfMutationMatches(any(), any(), any(), any()) }
     }
 
     @Test
@@ -156,7 +157,7 @@ class BeerSyncEngineTest {
         
         assertEquals(SyncEngineResult.AUTH_CHANGED, result)
         verify(exactly = 0) { documentReference.set(any()) }
-        coVerify(exactly = 0) { beerDao.markAsSynced(any(), any(), any()) }
+        coVerify(exactly = 0) { beerDao.markAsSyncedIfMutationMatches(any(), any(), any(), any()) }
     }
 
     @Test
@@ -198,7 +199,7 @@ class BeerSyncEngineTest {
         assertEquals(SyncEngineResult.AUTH_CHANGED, result)
         verify { transaction.delete(documentReference) }
         verify { childRef.delete() }
-        coVerify(exactly = 0) { beerDao.hardDeleteBySyncId(any(), any()) }
+        coVerify(exactly = 0) { beerDao.hardDeleteDeletedBySyncId(any(), any()) }
     }
 
     @Test
@@ -208,7 +209,7 @@ class BeerSyncEngineTest {
         coEvery { beerDao.getPendingSyncBeers("user_A") } returns emptyList()
         coEvery { beerDao.getAllSyncedIds("user_A") } returns listOf("del_1", "del_2")
         
-        coEvery { beerDao.hardDeleteBySyncId("del_1", "user_A") } answers {
+        coEvery { beerDao.hardDeleteSyncedBySyncId("del_1", "user_A") } answers {
             currentUid = "user_B"
             1
         }
@@ -216,8 +217,8 @@ class BeerSyncEngineTest {
         val result = engine.sync()
         
         assertEquals(SyncEngineResult.AUTH_CHANGED, result)
-        coVerify(exactly = 1) { beerDao.hardDeleteBySyncId("del_1", "user_A") }
-        coVerify(exactly = 0) { beerDao.hardDeleteBySyncId("del_2", any()) }
+        coVerify(exactly = 1) { beerDao.hardDeleteSyncedBySyncId("del_1", "user_A") }
+        coVerify(exactly = 0) { beerDao.hardDeleteSyncedBySyncId("del_2", any()) }
     }
 
     @Test
@@ -235,6 +236,33 @@ class BeerSyncEngineTest {
         
         val result = engine.sync()
         assertEquals(SyncEngineResult.AUTH_CHANGED, result)
-        coVerify(exactly = 0) { beerDao.hardDeleteBySyncId(any(), any()) }
+        coVerify(exactly = 0) { beerDao.hardDeleteSyncedBySyncId(any(), any()) }
+    }
+
+    @Test
+    fun `pushPendingBeer succeeds remotely but does not fail sync if local mutation became stale M2`() = runTest {
+        val engine = BeerSyncEngine(beerDao, "user_A") { currentUid }
+
+        val mockBeer = BeerEntity(
+            id = 1,
+            type = BeerType.LATA,
+            timestamp = 1000L,
+            latitude = 0.0,
+            longitude = 0.0,
+            syncId = "sync_concurrent",
+            syncStatus = SyncStatus.PENDING,
+            photoUri = null,
+            lastMutationId = "M1",
+            ownerUid = "user_A"
+        )
+        coEvery { beerDao.getPendingSyncBeers("user_A") } returns listOf(mockBeer)
+        // Mark as synced returns 0 because local row advanced to M2
+        coEvery { beerDao.markAsSyncedIfMutationMatches(1, null, "user_A", "M1") } returns 0
+
+        val result = engine.sync()
+
+        assertEquals(SyncEngineResult.SUCCESS, result)
+        verify(exactly = 1) { documentReference.set(any()) }
+        coVerify(exactly = 1) { beerDao.markAsSyncedIfMutationMatches(1, null, "user_A", "M1") }
     }
 }

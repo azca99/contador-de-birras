@@ -14,6 +14,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.util.Locale
 import java.util.UUID
 
@@ -25,6 +27,7 @@ class BeerRepository(
     private val nowProvider: () -> Long = { System.currentTimeMillis() },
     private val mutationIdProvider: () -> String = { UUID.randomUUID().toString() }
 ) {
+    private val localMutationMutex = Mutex()
     
     private fun currentOwnerUid(): String = authRepository.currentUser.value?.uid ?: "guest_local"
 
@@ -101,39 +104,42 @@ class BeerRepository(
                 }
             } catch (e: Exception) {}
             
-            val ownerUid = currentOwnerUid()
-            val current = beerDao.getBeerById(beerId.toInt(), ownerUid) ?: return@withContext
-            if (current.syncStatus == SyncStatus.DELETED) return@withContext
+            val updated = localMutationMutex.withLock {
+                val ownerUid = currentOwnerUid()
+                val current = beerDao.getBeerById(beerId.toInt(), ownerUid) ?: return@withLock false
+                if (current.syncStatus == SyncStatus.DELETED) return@withLock false
 
-            val locationChanged = current.latitude != latitude ||
-                    current.longitude != longitude ||
-                    current.locationName != locationName
-            if (!locationChanged) {
-                return@withContext
+                val locationChanged = current.latitude != latitude ||
+                        current.longitude != longitude ||
+                        current.locationName != locationName
+                if (!locationChanged) {
+                    return@withLock false
+                }
+
+                val changedFields = setOf(BeerDirtyField.LOCATION)
+                val baseRevision = if (current.syncStatus == SyncStatus.PENDING) current.baseRevision else current.remoteRevision
+                val dirtyFields = if (current.syncStatus == SyncStatus.PENDING) {
+                    BeerDirtyFieldsCodec.merge(current.dirtyFields, changedFields)
+                } else {
+                    BeerDirtyFieldsCodec.encode(changedFields)
+                }
+                val mutationId = mutationIdProvider()
+                val now = nowProvider()
+
+                val updatedRows = beerDao.updateBeerLocationLocalMutation(
+                    id = current.id,
+                    latitude = latitude,
+                    longitude = longitude,
+                    locationName = locationName,
+                    updatedAt = now,
+                    ownerUid = ownerUid,
+                    baseRevision = baseRevision,
+                    dirtyFields = dirtyFields,
+                    lastMutationId = mutationId
+                )
+                updatedRows > 0
             }
-
-            val changedFields = setOf(BeerDirtyField.LOCATION)
-            val baseRevision = if (current.syncStatus == SyncStatus.PENDING) current.baseRevision else current.remoteRevision
-            val dirtyFields = if (current.syncStatus == SyncStatus.PENDING) {
-                BeerDirtyFieldsCodec.merge(current.dirtyFields, changedFields)
-            } else {
-                BeerDirtyFieldsCodec.encode(changedFields)
-            }
-            val mutationId = mutationIdProvider()
-            val now = nowProvider()
-
-            val updatedRows = beerDao.updateBeerLocationLocalMutation(
-                id = current.id,
-                latitude = latitude,
-                longitude = longitude,
-                locationName = locationName,
-                updatedAt = now,
-                ownerUid = ownerUid,
-                baseRevision = baseRevision,
-                dirtyFields = dirtyFields,
-                lastMutationId = mutationId
-            )
-            if (updatedRows > 0) {
+            if (updated) {
                 requestSync()
             }
         }
@@ -141,25 +147,28 @@ class BeerRepository(
 
     suspend fun deleteBeer(beer: BeerEntity) {
         withContext(Dispatchers.IO) {
-            val ownerUid = currentOwnerUid()
-            if (beer.ownerUid != ownerUid) return@withContext
+            val updated = localMutationMutex.withLock {
+                val ownerUid = currentOwnerUid()
+                if (beer.ownerUid != ownerUid) return@withLock false
 
-            val current = beerDao.getBeerById(beer.id, ownerUid) ?: return@withContext
-            if (current.syncStatus == SyncStatus.DELETED) return@withContext
+                val current = beerDao.getBeerById(beer.id, ownerUid) ?: return@withLock false
+                if (current.syncStatus == SyncStatus.DELETED) return@withLock false
 
-            val baseRevision = if (current.syncStatus == SyncStatus.PENDING) current.baseRevision else current.remoteRevision
-            val now = nowProvider()
-            val mutationId = mutationIdProvider()
+                val baseRevision = if (current.syncStatus == SyncStatus.PENDING) current.baseRevision else current.remoteRevision
+                val now = nowProvider()
+                val mutationId = mutationIdProvider()
 
-            val updatedRows = beerDao.softDeleteBeerLocalMutation(
-                id = current.id,
-                updatedAt = now,
-                deletedAt = now,
-                ownerUid = ownerUid,
-                baseRevision = baseRevision,
-                lastMutationId = mutationId
-            )
-            if (updatedRows > 0) {
+                val updatedRows = beerDao.softDeleteBeerLocalMutation(
+                    id = current.id,
+                    updatedAt = now,
+                    deletedAt = now,
+                    ownerUid = ownerUid,
+                    baseRevision = baseRevision,
+                    lastMutationId = mutationId
+                )
+                updatedRows > 0
+            }
+            if (updated) {
                 requestSync()
             }
         }
@@ -167,60 +176,63 @@ class BeerRepository(
 
     suspend fun updateBeer(beer: BeerEntity) {
         withContext(Dispatchers.IO) {
-            val ownerUid = currentOwnerUid()
-            if (beer.ownerUid != ownerUid) return@withContext
+            val updated = localMutationMutex.withLock {
+                val ownerUid = currentOwnerUid()
+                if (beer.ownerUid != ownerUid) return@withLock false
 
-            val current = beerDao.getBeerById(beer.id, ownerUid) ?: return@withContext
-            if (current.syncStatus == SyncStatus.DELETED) return@withContext
+                val current = beerDao.getBeerById(beer.id, ownerUid) ?: return@withLock false
+                if (current.syncStatus == SyncStatus.DELETED) return@withLock false
 
-            val changedFields = mutableSetOf<BeerDirtyField>()
-            if (current.type != beer.type) {
-                changedFields.add(BeerDirtyField.TYPE)
-            }
-            if (current.timestamp != beer.timestamp) {
-                changedFields.add(BeerDirtyField.TIMESTAMP)
-            }
-            if (current.latitude != beer.latitude || current.longitude != beer.longitude || current.locationName != beer.locationName) {
-                changedFields.add(BeerDirtyField.LOCATION)
-            }
-            if (current.comment != beer.comment) {
-                changedFields.add(BeerDirtyField.COMMENT)
-            }
-            if (current.photoUri != beer.photoUri || current.photoSource != beer.photoSource || current.remotePhotoUrl != beer.remotePhotoUrl) {
-                changedFields.add(BeerDirtyField.PHOTO)
-            }
+                val changedFields = mutableSetOf<BeerDirtyField>()
+                if (current.type != beer.type) {
+                    changedFields.add(BeerDirtyField.TYPE)
+                }
+                if (current.timestamp != beer.timestamp) {
+                    changedFields.add(BeerDirtyField.TIMESTAMP)
+                }
+                if (current.latitude != beer.latitude || current.longitude != beer.longitude || current.locationName != beer.locationName) {
+                    changedFields.add(BeerDirtyField.LOCATION)
+                }
+                if (current.comment != beer.comment) {
+                    changedFields.add(BeerDirtyField.COMMENT)
+                }
+                if (current.photoUri != beer.photoUri || current.photoSource != beer.photoSource || current.remotePhotoUrl != beer.remotePhotoUrl) {
+                    changedFields.add(BeerDirtyField.PHOTO)
+                }
 
-            if (changedFields.isEmpty()) {
-                return@withContext
-            }
+                if (changedFields.isEmpty()) {
+                    return@withLock false
+                }
 
-            val baseRevision = if (current.syncStatus == SyncStatus.PENDING) current.baseRevision else current.remoteRevision
-            val dirtyFields = if (current.syncStatus == SyncStatus.PENDING) {
-                BeerDirtyFieldsCodec.merge(current.dirtyFields, changedFields)
-            } else {
-                BeerDirtyFieldsCodec.encode(changedFields)
-            }
-            val mutationId = mutationIdProvider()
-            val now = nowProvider()
+                val baseRevision = if (current.syncStatus == SyncStatus.PENDING) current.baseRevision else current.remoteRevision
+                val dirtyFields = if (current.syncStatus == SyncStatus.PENDING) {
+                    BeerDirtyFieldsCodec.merge(current.dirtyFields, changedFields)
+                } else {
+                    BeerDirtyFieldsCodec.encode(changedFields)
+                }
+                val mutationId = mutationIdProvider()
+                val now = nowProvider()
 
-            val updatedRows = beerDao.updateBeerLocalMutation(
-                id = current.id,
-                type = beer.type,
-                timestamp = beer.timestamp,
-                latitude = beer.latitude,
-                longitude = beer.longitude,
-                photoUri = beer.photoUri,
-                comment = beer.comment,
-                locationName = beer.locationName,
-                remotePhotoUrl = beer.remotePhotoUrl,
-                updatedAt = now,
-                photoSource = beer.photoSource,
-                ownerUid = ownerUid,
-                baseRevision = baseRevision,
-                dirtyFields = dirtyFields,
-                lastMutationId = mutationId
-            )
-            if (updatedRows > 0) {
+                val updatedRows = beerDao.updateBeerLocalMutation(
+                    id = current.id,
+                    type = beer.type,
+                    timestamp = beer.timestamp,
+                    latitude = beer.latitude,
+                    longitude = beer.longitude,
+                    photoUri = beer.photoUri,
+                    comment = beer.comment,
+                    locationName = beer.locationName,
+                    remotePhotoUrl = beer.remotePhotoUrl,
+                    updatedAt = now,
+                    photoSource = beer.photoSource,
+                    ownerUid = ownerUid,
+                    baseRevision = baseRevision,
+                    dirtyFields = dirtyFields,
+                    lastMutationId = mutationId
+                )
+                updatedRows > 0
+            }
+            if (updated) {
                 requestSync()
             }
         }

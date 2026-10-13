@@ -172,11 +172,11 @@ class BeerIsolationTest {
         val id = beerDao.insertBeer(beer).toInt()
 
         // B tries to mark A's beer as synced
-        val rows = beerDao.markAsSynced(id, "url", "userB")
+        val rows = beerDao.markAsSyncedIfMutationMatches(id, "url", "userB", beer.lastMutationId)
         assertEquals(0, rows)
 
         // A marks A's beer as synced
-        val rows2 = beerDao.markAsSynced(id, "url", "userA")
+        val rows2 = beerDao.markAsSyncedIfMutationMatches(id, "url", "userA", beer.lastMutationId)
         assertEquals(1, rows2)
     }
 
