@@ -8,6 +8,12 @@ import com.example.contadordebirras.data.SyncStatus
  * LOCAL_ONLY_REVISION (-1): Entidad creada localmente y nunca confirmada en remoto.
  * LEGACY_REMOTE_REVISION (0): Documento legacy remoto que aún no tiene campo de revisión.
  * FIRST_PROTOCOL_REVISION (1): Primera revisión para documentos gestionados por el nuevo protocolo.
+ *
+ * DEUDA TÉCNICA (Integración posterior / Fase C4):
+ * Actualmente `BeerRepository.addBeer()` inicializa filas locales nuevas con remoteRevision = 0L y baseRevision = 0L.
+ * En la fase de integración remota (C4), `BeerRepository.addBeer()` deberá actualizarse para usar
+ * LOCAL_ONLY_REVISION (-1L) tanto para remoteRevision como para baseRevision.
+ * En esta fase (C3A), BeerRepository permanece 100% intacto.
  */
 const val LOCAL_ONLY_REVISION = -1L
 const val LEGACY_REMOTE_REVISION = 0L
@@ -127,6 +133,16 @@ object SyncProtocolPushPlanner {
                 "Local remoteRevision cannot be less than $LOCAL_ONLY_REVISION: ${local.remoteRevision}"
             )
         }
+        if (local.baseRevision > local.remoteRevision) {
+            return PushPlan.InvalidMetadata(
+                "Local baseRevision (${local.baseRevision}) cannot exceed local remoteRevision (${local.remoteRevision})"
+            )
+        }
+        if ((local.remoteRevision == LOCAL_ONLY_REVISION) != (local.baseRevision == LOCAL_ONLY_REVISION)) {
+            return PushPlan.InvalidMetadata(
+                "Incoherent local revisions: remoteRevision=${local.remoteRevision} and baseRevision=${local.baseRevision} cannot mix $LOCAL_ONLY_REVISION with known revisions"
+            )
+        }
         if (local.syncStatus != SyncStatus.PENDING && local.syncStatus != SyncStatus.DELETED) {
             return PushPlan.InvalidMetadata(
                 "Unsupported syncStatus for push: '${local.syncStatus}'. Only PENDING and DELETED can be pushed."
@@ -143,6 +159,11 @@ object SyncProtocolPushPlanner {
             if (remote.revision < LEGACY_REMOTE_REVISION) {
                 return PushPlan.InvalidMetadata(
                     "Remote revision cannot be negative: ${remote.revision}"
+                )
+            }
+            if (local.remoteRevision >= LEGACY_REMOTE_REVISION && remote.revision < local.remoteRevision) {
+                return PushPlan.InvalidMetadata(
+                    "Remote revision (${remote.revision}) cannot be less than local remoteRevision (${local.remoteRevision})"
                 )
             }
             for ((field, rev) in remote.fieldRevisions) {
@@ -164,7 +185,14 @@ object SyncProtocolPushPlanner {
             return PushPlan.AlreadyApplied
         }
 
-        // 4. Remoto es Tombstone
+        // 4. Invariante: entidad local-only no puede encontrar un documento remoto con distinta mutación
+        if (remote != null && local.remoteRevision == LOCAL_ONLY_REVISION) {
+            return PushPlan.InvalidMetadata(
+                "Incoherent state: local entity has remoteRevision=$LOCAL_ONLY_REVISION but remote document already exists with revision ${remote.revision}"
+            )
+        }
+
+        // 5. Remoto es Tombstone
         if (remote != null && remote.isDeleted) {
             return if (local.syncStatus == SyncStatus.DELETED) {
                 PushPlan.DeleteAlreadySatisfied
@@ -173,18 +201,24 @@ object SyncProtocolPushPlanner {
             }
         }
 
-        // 5. Remoto ausente (remote == null)
+        // 6. Remoto ausente (remote == null)
         if (remote == null) {
             if (local.syncStatus == SyncStatus.DELETED) {
                 return PushPlan.DeleteAlreadySatisfied
             }
             // local.syncStatus == PENDING
             return if (local.remoteRevision == LOCAL_ONLY_REVISION && local.baseRevision == LOCAL_ONLY_REVISION) {
-                PushPlan.CreateActive(
-                    nextRevision = FIRST_PROTOCOL_REVISION,
-                    fieldsToWrite = local.dirtyFields
-                )
-            } else if (local.remoteRevision >= LEGACY_REMOTE_REVISION || local.baseRevision >= LEGACY_REMOTE_REVISION) {
+                if (local.dirtyFields != BeerDirtyFieldsCodec.ALL_FIELDS) {
+                    PushPlan.InvalidMetadata(
+                        "Cannot create active entity with incomplete dirty fields: expected ${BeerDirtyFieldsCodec.ALL_FIELDS}, got ${local.dirtyFields}"
+                    )
+                } else {
+                    PushPlan.CreateActive(
+                        nextRevision = FIRST_PROTOCOL_REVISION,
+                        fieldsToWrite = BeerDirtyFieldsCodec.ALL_FIELDS
+                    )
+                }
+            } else if (local.remoteRevision >= LEGACY_REMOTE_REVISION && local.baseRevision >= LEGACY_REMOTE_REVISION) {
                 PushPlan.RemoteAbsentForKnownEntity
             } else {
                 PushPlan.InvalidMetadata(
@@ -193,7 +227,7 @@ object SyncProtocolPushPlanner {
             }
         }
 
-        // 6. Remoto activo: comprobar desbordamiento de revisión antes de incrementar
+        // 7. Remoto activo: comprobar desbordamiento de revisión antes de incrementar
         if (remote.revision == Long.MAX_VALUE) {
             // Si local está DELETED o PENDING con campos seguros, requeriría incrementar revision
             if (local.syncStatus == SyncStatus.DELETED) {
@@ -218,12 +252,12 @@ object SyncProtocolPushPlanner {
 
         val nextRevision = remote.revision + 1L
 
-        // 7. Local DELETED sobre remoto activo -> DELETE WINS
+        // 8. Local DELETED sobre remoto activo -> DELETE WINS
         if (local.syncStatus == SyncStatus.DELETED) {
             return PushPlan.WriteTombstone(nextRevision = nextRevision)
         }
 
-        // 8. Local PENDING sobre remoto activo -> Evaluación de conflictos por campo
+        // 9. Local PENDING sobre remoto activo -> Evaluación de conflictos por campo
         val conflictingFields = local.dirtyFields.filter { field ->
             val remoteFieldRev = remote.fieldRevisions[field] ?: LEGACY_REMOTE_REVISION
             remoteFieldRev > local.baseRevision

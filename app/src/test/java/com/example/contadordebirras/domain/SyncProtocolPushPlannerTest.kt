@@ -9,11 +9,11 @@ import org.junit.Test
 class SyncProtocolPushPlannerTest {
 
     // ==================================================
-    // 1. CREACIÓN NUEVA
+    // 1. CREACIÓN NUEVA (CREATE ACTIVE)
     // ==================================================
 
     @Test
-    fun `planPush creates active document when remote is null and entity is purely local`() {
+    fun `planPush creates active document when remote is null and entity has ALL_FIELDS dirty`() {
         val local = LocalMutationContext(
             syncStatus = SyncStatus.PENDING,
             remoteRevision = LOCAL_ONLY_REVISION,
@@ -33,12 +33,29 @@ class SyncProtocolPushPlannerTest {
         )
     }
 
+    @Test
+    fun `planPush rejects creation with InvalidMetadata when dirtyFields are incomplete`() {
+        val local = LocalMutationContext(
+            syncStatus = SyncStatus.PENDING,
+            remoteRevision = LOCAL_ONLY_REVISION,
+            baseRevision = LOCAL_ONLY_REVISION,
+            dirtyFields = setOf(BeerDirtyField.COMMENT, BeerDirtyField.TYPE),
+            lastMutationId = "M1"
+        )
+
+        val plan = SyncProtocolPushPlanner.planPush(local, remote = null)
+
+        assertTrue(plan is PushPlan.InvalidMetadata)
+        val reason = (plan as PushPlan.InvalidMetadata).reason
+        assertTrue(reason.contains("incomplete dirty fields"))
+    }
+
     // ==================================================
-    // 2. REMOTE AUSENTE CON ENTIDAD CONOCIDA
+    // 2. REMOTE AUSENTE CON ENTIDAD CONOCIDA (ANTI-RESURRECCIÓN)
     // ==================================================
 
     @Test
-    fun `planPush rejects creation when remote is null but entity has known remoteRevision`() {
+    fun `planPush returns RemoteAbsentForKnownEntity when remote is null for entity with positive revisions`() {
         val local = LocalMutationContext(
             syncStatus = SyncStatus.PENDING,
             remoteRevision = 4L,
@@ -53,13 +70,13 @@ class SyncProtocolPushPlannerTest {
     }
 
     @Test
-    fun `planPush rejects creation when remote is null but entity has known baseRevision`() {
+    fun `planPush returns RemoteAbsentForKnownEntity when remote is null for legacy 0 0 entity`() {
         val local = LocalMutationContext(
             syncStatus = SyncStatus.PENDING,
-            remoteRevision = LOCAL_ONLY_REVISION,
-            baseRevision = 2L,
-            dirtyFields = setOf(BeerDirtyField.LOCATION),
-            lastMutationId = "M1"
+            remoteRevision = 0L,
+            baseRevision = 0L,
+            dirtyFields = setOf(BeerDirtyField.COMMENT),
+            lastMutationId = "M_LEGACY_ABSENT"
         )
 
         val plan = SyncProtocolPushPlanner.planPush(local, remote = null)
@@ -68,7 +85,106 @@ class SyncProtocolPushPlannerTest {
     }
 
     // ==================================================
-    // 3. LEGACY REMOTO
+    // 3. INVARIANTES DE REVISIONES LOCALES Y REMOTAS
+    // ==================================================
+
+    @Test
+    fun `planPush returns InvalidMetadata when baseRevision is greater than remoteRevision`() {
+        val local = LocalMutationContext(
+            syncStatus = SyncStatus.PENDING,
+            remoteRevision = 2L,
+            baseRevision = 3L,
+            dirtyFields = setOf(BeerDirtyField.COMMENT),
+            lastMutationId = "M1"
+        )
+
+        val plan = SyncProtocolPushPlanner.planPush(local, remote = null)
+
+        assertTrue(plan is PushPlan.InvalidMetadata)
+        val reason = (plan as PushPlan.InvalidMetadata).reason
+        assertTrue(reason.contains("cannot exceed local remoteRevision"))
+    }
+
+    @Test
+    fun `planPush returns InvalidMetadata when local mixes -1 and known revision (remote -1, base 0)`() {
+        val local = LocalMutationContext(
+            syncStatus = SyncStatus.PENDING,
+            remoteRevision = LOCAL_ONLY_REVISION,
+            baseRevision = 0L,
+            dirtyFields = setOf(BeerDirtyField.COMMENT),
+            lastMutationId = "M1"
+        )
+
+        val plan = SyncProtocolPushPlanner.planPush(local, remote = null)
+
+        assertTrue(plan is PushPlan.InvalidMetadata)
+    }
+
+    @Test
+    fun `planPush returns InvalidMetadata when local mixes -1 and known revision (remote 2, base -1)`() {
+        val local = LocalMutationContext(
+            syncStatus = SyncStatus.PENDING,
+            remoteRevision = 2L,
+            baseRevision = LOCAL_ONLY_REVISION,
+            dirtyFields = setOf(BeerDirtyField.COMMENT),
+            lastMutationId = "M1"
+        )
+
+        val plan = SyncProtocolPushPlanner.planPush(local, remote = null)
+
+        assertTrue(plan is PushPlan.InvalidMetadata)
+        val reason = (plan as PushPlan.InvalidMetadata).reason
+        assertTrue(reason.contains("Incoherent local revisions"))
+    }
+
+    @Test
+    fun `planPush returns InvalidMetadata when remote revision is less than local remoteRevision`() {
+        val local = LocalMutationContext(
+            syncStatus = SyncStatus.PENDING,
+            remoteRevision = 5L,
+            baseRevision = 5L,
+            dirtyFields = setOf(BeerDirtyField.COMMENT),
+            lastMutationId = "M1"
+        )
+        val remote = RemoteBeerSyncMetadata(
+            revision = 3L,
+            isDeleted = false,
+            lastMutationId = "OTHER",
+            fieldRevisions = mapOf(BeerDirtyField.COMMENT to 3L)
+        )
+
+        val plan = SyncProtocolPushPlanner.planPush(local, remote)
+
+        assertTrue(plan is PushPlan.InvalidMetadata)
+        val reason = (plan as PushPlan.InvalidMetadata).reason
+        assertTrue(reason.contains("cannot be less than local remoteRevision"))
+    }
+
+    @Test
+    fun `planPush returns InvalidMetadata when local is local-only but remote exists with different mutationId`() {
+        val local = LocalMutationContext(
+            syncStatus = SyncStatus.PENDING,
+            remoteRevision = LOCAL_ONLY_REVISION,
+            baseRevision = LOCAL_ONLY_REVISION,
+            dirtyFields = BeerDirtyFieldsCodec.ALL_FIELDS,
+            lastMutationId = "M_LOCAL_NEW"
+        )
+        val remote = RemoteBeerSyncMetadata(
+            revision = 1L,
+            isDeleted = false,
+            lastMutationId = "M_REMOTE_OTHER",
+            fieldRevisions = emptyMap()
+        )
+
+        val plan = SyncProtocolPushPlanner.planPush(local, remote)
+
+        assertTrue(plan is PushPlan.InvalidMetadata)
+        val reason = (plan as PushPlan.InvalidMetadata).reason
+        assertTrue(reason.contains("already exists with revision"))
+    }
+
+    // ==================================================
+    // 4. LEGACY REMOTO
     // ==================================================
 
     @Test
@@ -100,7 +216,7 @@ class SyncProtocolPushPlannerTest {
     }
 
     // ==================================================
-    // 4. CAMBIOS ORTOGONALES
+    // 5. CAMBIOS ORTOGONALES
     // ==================================================
 
     @Test
@@ -135,7 +251,7 @@ class SyncProtocolPushPlannerTest {
     }
 
     // ==================================================
-    // 5. MISMO CAMPO (REMOTE WINS)
+    // 6. MISMO CAMPO (REMOTE WINS)
     // ==================================================
 
     @Test
@@ -167,7 +283,7 @@ class SyncProtocolPushPlannerTest {
     }
 
     // ==================================================
-    // 6. CONFLICTO MIXTO
+    // 7. CONFLICTO MIXTO
     // ==================================================
 
     @Test
@@ -202,7 +318,7 @@ class SyncProtocolPushPlannerTest {
     }
 
     // ==================================================
-    // 7. VARIOS CAMBIOS REMOTOS
+    // 8. VARIOS CAMBIOS REMOTOS
     // ==================================================
 
     @Test
@@ -239,7 +355,7 @@ class SyncProtocolPushPlannerTest {
     }
 
     // ==================================================
-    // 8. REMOTE TOMBSTONE
+    // 9. REMOTE TOMBSTONE
     // ==================================================
 
     @Test
@@ -264,7 +380,7 @@ class SyncProtocolPushPlannerTest {
     }
 
     // ==================================================
-    // 9. DELETE SOBRE ACTIVO (DELETE WINS)
+    // 10. DELETE SOBRE ACTIVO (DELETE WINS)
     // ==================================================
 
     @Test
@@ -316,7 +432,7 @@ class SyncProtocolPushPlannerTest {
     }
 
     // ==================================================
-    // 10. DELETE SOBRE TOMBSTONE O REMOTE AUSENTE
+    // 11. DELETE SOBRE TOMBSTONE O REMOTE AUSENTE
     // ==================================================
 
     @Test
@@ -341,7 +457,7 @@ class SyncProtocolPushPlannerTest {
     }
 
     @Test
-    fun `planPush returns DeleteAlreadySatisfied when remote is null`() {
+    fun `planPush returns DeleteAlreadySatisfied when remote is null for local-only entity`() {
         val local = LocalMutationContext(
             syncStatus = SyncStatus.DELETED,
             remoteRevision = LOCAL_ONLY_REVISION,
@@ -355,8 +471,23 @@ class SyncProtocolPushPlannerTest {
         assertEquals(PushPlan.DeleteAlreadySatisfied, plan)
     }
 
+    @Test
+    fun `planPush returns DeleteAlreadySatisfied when remote is null for previously known entity`() {
+        val local = LocalMutationContext(
+            syncStatus = SyncStatus.DELETED,
+            remoteRevision = 3L,
+            baseRevision = 3L,
+            dirtyFields = emptySet(),
+            lastMutationId = "M_LOCAL_DEL"
+        )
+
+        val plan = SyncProtocolPushPlanner.planPush(local, remote = null)
+
+        assertEquals(PushPlan.DeleteAlreadySatisfied, plan)
+    }
+
     // ==================================================
-    // 11. IDEMPOTENCIA
+    // 12. IDEMPOTENCIA
     // ==================================================
 
     @Test
@@ -381,7 +512,7 @@ class SyncProtocolPushPlannerTest {
     }
 
     @Test
-    fun `planPush returns AlreadyApplied when tombstone remote has matching lastMutationId`() {
+    fun `planPush returns AlreadyApplied when tombstone remote has matching lastMutationId with local DELETED`() {
         val local = LocalMutationContext(
             syncStatus = SyncStatus.DELETED,
             remoteRevision = 5L,
@@ -394,6 +525,48 @@ class SyncProtocolPushPlannerTest {
             isDeleted = true,
             lastMutationId = "ABC",
             fieldRevisions = emptyMap()
+        )
+
+        val plan = SyncProtocolPushPlanner.planPush(local, remote)
+
+        assertEquals(PushPlan.AlreadyApplied, plan)
+    }
+
+    @Test
+    fun `planPush returns AlreadyApplied when tombstone remote has matching lastMutationId with local PENDING`() {
+        val local = LocalMutationContext(
+            syncStatus = SyncStatus.PENDING,
+            remoteRevision = 5L,
+            baseRevision = 5L,
+            dirtyFields = setOf(BeerDirtyField.COMMENT),
+            lastMutationId = "ABC"
+        )
+        val remote = RemoteBeerSyncMetadata(
+            revision = 6L,
+            isDeleted = true,
+            lastMutationId = "ABC",
+            fieldRevisions = emptyMap()
+        )
+
+        val plan = SyncProtocolPushPlanner.planPush(local, remote)
+
+        assertEquals(PushPlan.AlreadyApplied, plan)
+    }
+
+    @Test
+    fun `planPush returns AlreadyApplied on idempotent retry of local-only creation`() {
+        val local = LocalMutationContext(
+            syncStatus = SyncStatus.PENDING,
+            remoteRevision = LOCAL_ONLY_REVISION,
+            baseRevision = LOCAL_ONLY_REVISION,
+            dirtyFields = BeerDirtyFieldsCodec.ALL_FIELDS,
+            lastMutationId = "M_NEW"
+        )
+        val remote = RemoteBeerSyncMetadata(
+            revision = 1L,
+            isDeleted = false,
+            lastMutationId = "M_NEW",
+            fieldRevisions = mapOf(BeerDirtyField.TYPE to 1L)
         )
 
         val plan = SyncProtocolPushPlanner.planPush(local, remote)
@@ -423,7 +596,7 @@ class SyncProtocolPushPlannerTest {
     }
 
     // ==================================================
-    // 12. TESTS DE METADATA INVÁLIDA
+    // 13. TESTS DE METADATA INVÁLIDA
     // ==================================================
 
     @Test
@@ -541,6 +714,30 @@ class SyncProtocolPushPlannerTest {
     }
 
     @Test
+    fun `planPush returns RemoteWinsOnly on Long MAX_VALUE when no safe fields exist to write`() {
+        val local = LocalMutationContext(
+            syncStatus = SyncStatus.PENDING,
+            remoteRevision = 5L,
+            baseRevision = 5L,
+            dirtyFields = setOf(BeerDirtyField.COMMENT),
+            lastMutationId = "M1"
+        )
+        val remote = RemoteBeerSyncMetadata(
+            revision = Long.MAX_VALUE,
+            isDeleted = false,
+            lastMutationId = "OTHER",
+            fieldRevisions = mapOf(BeerDirtyField.COMMENT to Long.MAX_VALUE)
+        )
+
+        val plan = SyncProtocolPushPlanner.planPush(local, remote)
+
+        assertEquals(
+            PushPlan.RemoteWinsOnly(remoteWinsFields = setOf(BeerDirtyField.COMMENT)),
+            plan
+        )
+    }
+
+    @Test
     fun `planPush returns InvalidMetadata on Long MAX_VALUE when increment is required for tombstone`() {
         val local = LocalMutationContext(
             syncStatus = SyncStatus.DELETED,
@@ -598,7 +795,7 @@ class SyncProtocolPushPlannerTest {
     }
 
     // ==================================================
-    // 13. ADVANCE FIELD REVISIONS HELPER
+    // 14. ADVANCE FIELD REVISIONS HELPER
     // ==================================================
 
     @Test
