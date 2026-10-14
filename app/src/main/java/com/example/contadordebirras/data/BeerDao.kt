@@ -58,21 +58,6 @@ interface BeerDao {
         remotePhotoUrl: String?, updatedAt: Long, photoSource: String?, ownerUid: String
     ): Int
 
-    @Query("""
-        UPDATE beers SET 
-            type = :type, timestamp = :timestamp, latitude = :latitude, longitude = :longitude, 
-            photoUri = :photoUri, comment = :comment, locationName = :locationName, 
-            syncStatus = 'PENDING', remotePhotoUrl = :remotePhotoUrl, updatedAt = :updatedAt, 
-            photoSource = :photoSource, baseRevision = :baseRevision, dirtyFields = :dirtyFields, 
-            lastMutationId = :lastMutationId, deletedAt = NULL 
-        WHERE id = :id AND ownerUid = :ownerUid AND syncStatus != 'DELETED'
-    """)
-    fun updateBeerLocalMutation(
-        id: Int, type: BeerType, timestamp: Long, latitude: Double?, longitude: Double?,
-        photoUri: String?, comment: String?, locationName: String?, remotePhotoUrl: String?,
-        updatedAt: Long, photoSource: String?, ownerUid: String,
-        baseRevision: Long, dirtyFields: String?, lastMutationId: String
-    ): Int
 
     @Query("""
         UPDATE beers SET 

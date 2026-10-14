@@ -141,7 +141,7 @@ class BeerRepositoryMutationTest {
             )
         } returns 1
 
-        repo.updateBeerDetails(42L, BeerType.LATA, "Updated comment")
+        repo.updateBeerDetails(42L, BeerType.LATA, "Updated comment", typeChanged = false, commentChanged = true)
 
         assertEquals(5L, baseRevSlot.captured)
         assertEquals("COMMENT", dirtyFieldsSlot.captured)
@@ -191,7 +191,7 @@ class BeerRepositoryMutationTest {
             )
         } returns 1
 
-        repo.updateBeerDetails(42L, BeerType.JARRA, "Updated comment")
+        repo.updateBeerDetails(42L, BeerType.JARRA, "Updated comment", typeChanged = true, commentChanged = false)
 
         assertEquals(3L, baseRevSlot.captured)
         assertEquals("COMMENT,TYPE", dirtyFieldsSlot.captured)
@@ -230,7 +230,7 @@ class BeerRepositoryMutationTest {
         every { beerDao.getBeerById(42, "user123") } returns syncedBeer
 
         // Try updating with identical data
-        repo.updateBeerDetails(42L, syncedBeer.type, syncedBeer.comment)
+        repo.updateBeerDetails(42L, syncedBeer.type, syncedBeer.comment, typeChanged = true, commentChanged = true)
 
         assertEquals(0, mutationIdCallCount)
         verify(exactly = 0) { beerDao.updateBeerDetailsLocalMutation(any(), any(), any(), any(), any(), any(), any(), any()) }
@@ -465,7 +465,7 @@ class BeerRepositoryMutationTest {
             )
         } returns 1
 
-        repo.updateBeerDetails(42L, BeerType.LATA, "Second edit")
+        repo.updateBeerDetails(42L, BeerType.LATA, "Second edit", typeChanged = false, commentChanged = true)
 
         assertEquals(3L, baseRevSlot.captured)
         assertEquals("COMMENT", dirtyFieldsSlot.captured)
@@ -518,7 +518,7 @@ class BeerRepositoryMutationTest {
             )
         } returns 1
 
-        repo.updateBeerDetails(100L, BeerType.LATA, "new")
+        repo.updateBeerDetails(100L, BeerType.LATA, "new", typeChanged = false, commentChanged = true)
 
         // Esperado: dirtyFields = COMMENT (NO LOCATION)
         assertEquals(4L, baseRevSlot.captured)
@@ -573,7 +573,7 @@ class BeerRepositoryMutationTest {
             )
         } returns 1
 
-        repo.updateBeerDetails(200L, BeerType.JARRA, "some comment")
+        repo.updateBeerDetails(200L, BeerType.JARRA, "some comment", typeChanged = true, commentChanged = false)
 
         // Esperado: dirtyFields = TYPE (NO PHOTO)
         assertEquals(5L, baseRevSlot.captured)
@@ -625,7 +625,7 @@ class BeerRepositoryMutationTest {
             )
         } returns 1
 
-        repo.updateBeerDetails(300L, BeerType.JARRA, "new comment")
+        repo.updateBeerDetails(300L, BeerType.JARRA, "new comment", typeChanged = true, commentChanged = true)
 
         // Esperado exactamente: dirtyFields = COMMENT,TYPE en orden canónico
         // NO LOCATION, PHOTO, TIMESTAMP
@@ -666,10 +666,187 @@ class BeerRepositoryMutationTest {
         )
         every { beerDao.getBeerById(400, "user123") } returns roomBeer
 
-        repo.updateBeerDetails(400L, BeerType.LATA, "same comment")
+        repo.updateBeerDetails(400L, BeerType.LATA, "same comment", typeChanged = true, commentChanged = true)
 
         assertEquals(0, mutationIdCallCount)
         verify(exactly = 0) { beerDao.updateBeerDetailsLocalMutation(any(), any(), any(), any(), any(), any(), any(), any()) }
         verify(exactly = 0) { syncScheduler.requestSync(any()) }
+    }
+
+    @Test
+    fun `updateBeerDetails preserves remote comment when user changed only type from stale snapshot`() = runTest {
+        val repo = createRepositoryAndClearMocks()
+        currentTime = 15000L
+        nextMutationId = "mut-stale-comment"
+
+        // snapshot al abrir: type = LATA, comment = "old"
+        // estado ACTUAL Room al guardar: type = LATA, comment = "remote"
+        val roomBeer = BeerEntity(
+            id = 500,
+            type = BeerType.LATA,
+            timestamp = 5000L,
+            latitude = 40.0,
+            longitude = -3.0,
+            locationName = "Madrid",
+            comment = "remote",
+            syncStatus = SyncStatus.SYNCED,
+            remoteRevision = 3L,
+            baseRevision = 3L,
+            dirtyFields = null,
+            ownerUid = "user123"
+        )
+        every { beerDao.getBeerById(500, "user123") } returns roomBeer
+
+        // usuario solo cambió TYPE: requested type = JARRA, requested comment = "old"
+        // typeChanged = true, commentChanged = false
+        val baseRevSlot = slot<Long>()
+        val dirtyFieldsSlot = slot<String?>()
+        val mutationIdSlot = slot<String>()
+        every {
+            beerDao.updateBeerDetailsLocalMutation(
+                id = 500,
+                type = BeerType.JARRA,
+                comment = "remote", // comment ACTUAL de Room conservado
+                updatedAt = 15000L,
+                ownerUid = "user123",
+                baseRevision = capture(baseRevSlot),
+                dirtyFields = captureNullable(dirtyFieldsSlot),
+                lastMutationId = capture(mutationIdSlot)
+            )
+        } returns 1
+
+        repo.updateBeerDetails(500L, BeerType.JARRA, "old", typeChanged = true, commentChanged = false)
+
+        // Esperado: type = JARRA, comment = "remote", dirtyFields = TYPE (NO COMMENT)
+        assertEquals(3L, baseRevSlot.captured)
+        assertEquals("TYPE", dirtyFieldsSlot.captured)
+        assertEquals("mut-stale-comment", mutationIdSlot.captured)
+        verify(exactly = 1) { syncScheduler.requestSync("user123") }
+    }
+
+    @Test
+    fun `updateBeerDetails preserves remote type when user changed only comment from stale snapshot`() = runTest {
+        val repo = createRepositoryAndClearMocks()
+        currentTime = 16000L
+        nextMutationId = "mut-stale-type"
+
+        // Snapshot al abrir: type = LATA, comment = "old"
+        // estado ACTUAL Room: type = JARRA, comment = "old"
+        val roomBeer = BeerEntity(
+            id = 600,
+            type = BeerType.JARRA,
+            timestamp = 5000L,
+            latitude = 40.0,
+            longitude = -3.0,
+            locationName = "Madrid",
+            comment = "old",
+            syncStatus = SyncStatus.SYNCED,
+            remoteRevision = 4L,
+            baseRevision = 4L,
+            dirtyFields = null,
+            ownerUid = "user123"
+        )
+        every { beerDao.getBeerById(600, "user123") } returns roomBeer
+
+        // usuario cambia SOLO comentario: requested type = LATA, requested comment = "new"
+        // typeChanged = false, commentChanged = true
+        val baseRevSlot = slot<Long>()
+        val dirtyFieldsSlot = slot<String?>()
+        val mutationIdSlot = slot<String>()
+        every {
+            beerDao.updateBeerDetailsLocalMutation(
+                id = 600,
+                type = BeerType.JARRA, // type ACTUAL de Room conservado
+                comment = "new",
+                updatedAt = 16000L,
+                ownerUid = "user123",
+                baseRevision = capture(baseRevSlot),
+                dirtyFields = captureNullable(dirtyFieldsSlot),
+                lastMutationId = capture(mutationIdSlot)
+            )
+        } returns 1
+
+        repo.updateBeerDetails(600L, BeerType.LATA, "new", typeChanged = false, commentChanged = true)
+
+        // Esperado: type sigue siendo JARRA, comment = "new", dirtyFields = COMMENT (NO TYPE)
+        assertEquals(4L, baseRevSlot.captured)
+        assertEquals("COMMENT", dirtyFieldsSlot.captured)
+        assertEquals("mut-stale-type", mutationIdSlot.captured)
+        verify(exactly = 1) { syncScheduler.requestSync("user123") }
+    }
+
+    @Test
+    fun `updateBeerDetails convergence before save results in clean no-op`() = runTest {
+        var mutationIdCallCount = 0
+        val repo = createRepositoryAndClearMocks(
+            customMutationIdProvider = {
+                mutationIdCallCount++
+                "unexpected-mut"
+            }
+        )
+
+        // usuario cambió comment a "new", commentChanged = true
+        // pero antes de guardar Room ya contiene comment = "new"
+        val roomBeer = BeerEntity(
+            id = 700,
+            type = BeerType.LATA,
+            timestamp = 5000L,
+            comment = "new",
+            syncStatus = SyncStatus.SYNCED,
+            remoteRevision = 5L,
+            baseRevision = 5L,
+            ownerUid = "user123"
+        )
+        every { beerDao.getBeerById(700, "user123") } returns roomBeer
+
+        repo.updateBeerDetails(700L, BeerType.LATA, "new", typeChanged = false, commentChanged = true)
+
+        // Esperado: si no hay otro cambio real: NO write, NO mutationId, NO requestSync
+        assertEquals(0, mutationIdCallCount)
+        verify(exactly = 0) { beerDao.updateBeerDetailsLocalMutation(any(), any(), any(), any(), any(), any(), any(), any()) }
+        verify(exactly = 0) { syncScheduler.requestSync(any()) }
+    }
+
+    @Test
+    fun `updateBeerDetails multi-field update marks only TYPE and COMMENT in canonical order when both changed`() = runTest {
+        val repo = createRepositoryAndClearMocks()
+        currentTime = 17000L
+        nextMutationId = "mut-multi-canonical"
+
+        val roomBeer = BeerEntity(
+            id = 800,
+            type = BeerType.LATA,
+            timestamp = 5000L,
+            comment = "old",
+            syncStatus = SyncStatus.SYNCED,
+            remoteRevision = 2L,
+            baseRevision = 2L,
+            ownerUid = "user123"
+        )
+        every { beerDao.getBeerById(800, "user123") } returns roomBeer
+
+        val baseRevSlot = slot<Long>()
+        val dirtyFieldsSlot = slot<String?>()
+        val mutationIdSlot = slot<String>()
+        every {
+            beerDao.updateBeerDetailsLocalMutation(
+                id = 800,
+                type = BeerType.JARRA,
+                comment = "fresh",
+                updatedAt = 17000L,
+                ownerUid = "user123",
+                baseRevision = capture(baseRevSlot),
+                dirtyFields = captureNullable(dirtyFieldsSlot),
+                lastMutationId = capture(mutationIdSlot)
+            )
+        } returns 1
+
+        repo.updateBeerDetails(800L, BeerType.JARRA, "fresh", typeChanged = true, commentChanged = true)
+
+        // Esperado exactamente: dirtyFields = COMMENT,TYPE en orden canónico
+        assertEquals(2L, baseRevSlot.captured)
+        assertEquals("COMMENT,TYPE", dirtyFieldsSlot.captured)
+        assertEquals("mut-multi-canonical", mutationIdSlot.captured)
+        verify(exactly = 1) { syncScheduler.requestSync("user123") }
     }
 }

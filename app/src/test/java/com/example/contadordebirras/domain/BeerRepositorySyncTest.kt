@@ -89,7 +89,7 @@ class BeerRepositorySyncTest {
         every { beerDao.getBeerById(1, "user123") } returns beer
         every { beerDao.updateBeerDetailsLocalMutation(any(), any(), any(), any(), any(), any(), any(), any()) } returns 1
         
-        repository.updateBeerDetails(1, BeerType.LATA, "new")
+        repository.updateBeerDetails(1, BeerType.LATA, "new", typeChanged = false, commentChanged = true)
         
         verify(exactly = 1) { syncScheduler.requestSync("user123") }
     }

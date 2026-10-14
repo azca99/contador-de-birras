@@ -97,9 +97,21 @@ class StatsViewModel(private val repository: BeerRepository) : ViewModel() {
         }
     }
 
-    fun updateBeerDetails(beerId: Int, type: BeerType, comment: String?) {
+    fun updateBeerDetails(
+        beerId: Int,
+        type: BeerType,
+        comment: String?,
+        typeChanged: Boolean,
+        commentChanged: Boolean
+    ) {
         viewModelScope.launch {
-            repository.updateBeerDetails(beerId, type, comment)
+            repository.updateBeerDetails(
+                beerId = beerId,
+                type = type,
+                comment = comment,
+                typeChanged = typeChanged,
+                commentChanged = commentChanged
+            )
         }
     }
 }

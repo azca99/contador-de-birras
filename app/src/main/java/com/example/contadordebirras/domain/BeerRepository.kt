@@ -174,7 +174,13 @@ class BeerRepository(
         }
     }
 
-    suspend fun updateBeerDetails(beerId: Long, type: BeerType, comment: String?) {
+    suspend fun updateBeerDetails(
+        beerId: Long,
+        type: BeerType,
+        comment: String?,
+        typeChanged: Boolean,
+        commentChanged: Boolean
+    ) {
         withContext(Dispatchers.IO) {
             val updated = localMutationMutex.withLock {
                 val ownerUid = currentOwnerUid()
@@ -182,16 +188,19 @@ class BeerRepository(
                 if (current.syncStatus == SyncStatus.DELETED) return@withLock false
 
                 val changedFields = mutableSetOf<BeerDirtyField>()
-                if (current.type != type) {
+                if (typeChanged && current.type != type) {
                     changedFields.add(BeerDirtyField.TYPE)
                 }
-                if (current.comment != comment) {
+                if (commentChanged && current.comment.orEmpty() != comment.orEmpty()) {
                     changedFields.add(BeerDirtyField.COMMENT)
                 }
 
                 if (changedFields.isEmpty()) {
                     return@withLock false
                 }
+
+                val typeToPersist = if (changedFields.contains(BeerDirtyField.TYPE)) type else current.type
+                val commentToPersist = if (changedFields.contains(BeerDirtyField.COMMENT)) comment else current.comment
 
                 val baseRevision = if (current.syncStatus == SyncStatus.PENDING) current.baseRevision else current.remoteRevision
                 val dirtyFields = if (current.syncStatus == SyncStatus.PENDING) {
@@ -204,8 +213,8 @@ class BeerRepository(
 
                 val updatedRows = beerDao.updateBeerDetailsLocalMutation(
                     id = current.id,
-                    type = type,
-                    comment = comment,
+                    type = typeToPersist,
+                    comment = commentToPersist,
                     updatedAt = now,
                     ownerUid = ownerUid,
                     baseRevision = baseRevision,
@@ -220,8 +229,14 @@ class BeerRepository(
         }
     }
 
-    suspend fun updateBeerDetails(beerId: Int, type: BeerType, comment: String?) {
-        updateBeerDetails(beerId.toLong(), type, comment)
+    suspend fun updateBeerDetails(
+        beerId: Int,
+        type: BeerType,
+        comment: String?,
+        typeChanged: Boolean,
+        commentChanged: Boolean
+    ) {
+        updateBeerDetails(beerId.toLong(), type, comment, typeChanged, commentChanged)
     }
 
 

@@ -256,7 +256,16 @@ fun HistoryScreen(viewModel: StatsViewModel, onStatsClick: () -> Unit) {
             },
             confirmButton = {
                 TextButton(onClick = {
-                    viewModel.updateBeerDetails(beerToEdit!!.id, editType, editComment)
+                    val original = beerToEdit!!
+                    val typeChanged = editType != original.type
+                    val commentChanged = editComment != original.comment.orEmpty()
+                    viewModel.updateBeerDetails(
+                        beerId = original.id,
+                        type = editType,
+                        comment = editComment,
+                        typeChanged = typeChanged,
+                        commentChanged = commentChanged
+                    )
                     showEditDialog = false
                 }) {
                     Text("Guardar")
