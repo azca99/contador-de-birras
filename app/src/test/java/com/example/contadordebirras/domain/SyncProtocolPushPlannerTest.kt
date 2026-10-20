@@ -581,7 +581,7 @@ class SyncProtocolPushPlannerTest {
     // ==================================================
 
     @Test
-    fun `planPush returns AlreadyApplied when active remote has matching lastMutationId`() {
+    fun `planPush returns AlreadyApplied when active remote has matching lastMutationId for PENDING local entity`() {
         val local = LocalMutationContext(
             syncStatus = SyncStatus.PENDING,
             remoteRevision = 5L,
@@ -599,6 +599,51 @@ class SyncProtocolPushPlannerTest {
         val plan = SyncProtocolPushPlanner.planPush(local, remote)
 
         assertEquals(PushPlan.AlreadyApplied, plan)
+    }
+
+    @Test
+    fun `planPush writes tombstone when local is DELETED even if active remote has matching lastMutationId`() {
+        // Justificación: Local DELETED + remoto ACTIVO nunca debe devolver AlreadyApplied,
+        // pues el documento remoto continúa activo en Firestore y se confirmaría falsamente un borrado inexistente.
+        // DELETE WINS: Debe emitir WriteTombstone para eliminar efectivamente el documento en Firestore.
+        val local = LocalMutationContext(
+            syncStatus = SyncStatus.DELETED,
+            remoteRevision = 5L,
+            baseRevision = 5L,
+            dirtyFields = emptySet(),
+            lastMutationId = "M_MATCHING"
+        )
+        val remote = RemoteBeerSyncMetadata(
+            revision = 5L,
+            isDeleted = false,
+            lastMutationId = "M_MATCHING",
+            fieldRevisions = emptyMap()
+        )
+
+        val plan = SyncProtocolPushPlanner.planPush(local, remote)
+
+        assertEquals(PushPlan.WriteTombstone(nextRevision = 6L), plan)
+    }
+
+    @Test
+    fun `planPush writes tombstone when local-only is DELETED even if active remote has matching lastMutationId`() {
+        val local = LocalMutationContext(
+            syncStatus = SyncStatus.DELETED,
+            remoteRevision = LOCAL_ONLY_REVISION,
+            baseRevision = LOCAL_ONLY_REVISION,
+            dirtyFields = emptySet(),
+            lastMutationId = "M_MATCHING"
+        )
+        val remote = RemoteBeerSyncMetadata(
+            revision = 1L,
+            isDeleted = false,
+            lastMutationId = "M_MATCHING",
+            fieldRevisions = emptyMap()
+        )
+
+        val plan = SyncProtocolPushPlanner.planPush(local, remote)
+
+        assertEquals(PushPlan.WriteTombstone(nextRevision = 2L), plan)
     }
 
     @Test

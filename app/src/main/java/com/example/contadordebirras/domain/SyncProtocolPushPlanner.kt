@@ -15,16 +15,26 @@ import com.example.contadordebirras.data.SyncStatus
  * LOCAL_ONLY_REVISION (-1L) tanto para remoteRevision como para baseRevision.
  * En esta fase (C3A), BeerRepository permanece 100% intacto.
  *
- * RECONCILIACIÓN EN FASE C4 (Documentación de diseño para RemotePresentForLocalOnlyNeedsReconciliation):
- * Cuando una entidad PENDING local-only (-1/-1) encuentra un documento remoto activo con un lastMutationId distinto,
- * el planner emite `PushPlan.RemotePresentForLocalOnlyNeedsReconciliation`.
- * Para resolver esto sin perder cambios, la capa C4 necesitará:
- * 1. Opción recomendada: Reconciliación mediante pull: Room adopta `remoteRevision = remote.revision` y
- *    `baseRevision = remote.revision`, preservando los `dirtyFields` acumulados localmente por la edición posterior (M2).
- *    En el siguiente intento de push, el planner tratará la mutación como un `ApplyPatch` estándar (3-way merge).
- * 2. Alternativa con tracking: Si Room persistiera el `creationMutationId` original (M1) separado del
- *    `lastMutationId` actual (M2), C4 podría certificar que el documento remoto activo fue creado por este
- *    mismo dispositivo, reconciliando la baseRevision de forma determinista y segura.
+ * DOCUMENTACIÓN DE SEGURIDAD PARA FASE C4 (RemotePresentForLocalOnlyNeedsReconciliation):
+ * `PushPlan.RemotePresentForLocalOnlyNeedsReconciliation` es un estado bloqueado de forma segura.
+ * Se emite cuando una entidad local-only (remoteRevision = -1) encuentra un documento remoto activo
+ * con un lastMutationId diferente.
+ *
+ * ADVERTENCIA DE SEGURIDAD:
+ * NO se debe adoptar directamente `remoteRevision = remote.revision` y `baseRevision = remote.revision`
+ * conservando los dirtyFields para reintentar el push ciegamente. Esa estrategia avanzaría artificialmente
+ * baseRevision hasta la última revisión remota y causaría la sobrescritura silenciosa de modificaciones
+ * concurrentes confirmadas por otro dispositivo.
+ *
+ * Para resolver este estado de forma segura en la Fase C4, será necesario:
+ * 1. Verificar la identidad y ownership de la entidad (asegurar que pertenece al mismo usuario y no es una colisión).
+ * 2. Reconocer la creación original confirmada (M1).
+ * 3. Conservar una base histórica válida (la revisión remota correspondiente a la creación original).
+ * 4. Distinguir los cambios locales posteriores a la creación (M2).
+ * 5. Evaluar fieldRevisions campo por campo sin avanzar artificialmente baseRevision hasta la última revisión remota.
+ * 6. Evitar pérdidas de cambios locales o remotos y preservar referencias a fotos locales/remotas.
+ *
+ * En esta fase (C3A), el planner se limita a emitir este estado de bloqueo seguro sin implementar la reconciliación.
  */
 const val LOCAL_ONLY_REVISION = -1L
 const val LEGACY_REMOTE_REVISION = 0L
@@ -113,10 +123,12 @@ sealed interface PushPlan {
     data object RemoteAbsentForKnownEntity : PushPlan
 
     /**
-     * Entidad local-only (remoteRevision = -1) que encuentra un documento remoto activo con un lastMutationId
-     * distinto. Ocurre legítimamente si Firestore confirmó CreateActive(M1) pero el proceso murió antes del
+     * Estado bloqueado de forma segura: una entidad local-only (remoteRevision = -1) encuentra un documento
+     * remoto activo con un lastMutationId distinto.
+     * Esto ocurre legítimamente si Firestore confirmó CreateActive(M1) pero el proceso murió antes del
      * ACK en Room, y luego el usuario editó la entidad generando M2. También puede indicar colisión de identidad.
-     * Requiere que la capa de sincronización (Fase C4) concilie los estados antes de continuar.
+     * El planner NO sobrescribe ni asume revisiones ficticias; bloquea de forma segura hasta que la
+     * capa de reconciliación de C4 procese la entidad respetando la base histórica y las fieldRevisions.
      */
     data object RemotePresentForLocalOnlyNeedsReconciliation : PushPlan
 
@@ -245,17 +257,12 @@ object SyncProtocolPushPlanner {
 
         // A partir de aquí: remote != null && !remote.isDeleted (Documento remoto ACTIVO)
 
-        // 5. Idempotencia sobre documento remoto activo:
-        // Si el mutationId coincide, la mutación local ya fue confirmada en remoto
-        // (aplica tanto para reintento de CreateActive con -1/-1 como para ApplyPatch).
-        if (local.lastMutationId != null && remote.lastMutationId == local.lastMutationId) {
-            return PushPlan.AlreadyApplied
-        }
-
-        // 6. DELETE WINS sobre documento remoto activo:
-        // Local DELETED + remoto activo debe permitir WriteTombstone incluso si local
-        // conserva -1/-1 debido a un ACK de creación perdido antes de que el usuario borrara.
-        // La protección de ownership deberá validarse en la capa transaccional.
+        // 5. DELETE WINS sobre documento remoto activo:
+        // Local DELETED + remoto activo NUNCA debe devolver AlreadyApplied, pues el documento
+        // remoto continúa activo en Firestore y se confirmaría falsamente un borrado no ejecutado.
+        // Se mantiene estrictamente DELETE WINS, emitiendo WriteTombstone (incluso si local
+        // conserva -1/-1 por un ACK de creación perdido, o si coincidiera un mutationId anómalo).
+        // La protección de ownership se delega a la capa transaccional.
         if (local.syncStatus == SyncStatus.DELETED) {
             if (remote.revision == Long.MAX_VALUE) {
                 return PushPlan.InvalidMetadata(
@@ -265,12 +272,16 @@ object SyncProtocolPushPlanner {
             return PushPlan.WriteTombstone(nextRevision = remote.revision + 1L)
         }
 
+        // 6. Idempotencia sobre documento remoto activo para mutaciones PENDING:
+        // Si el mutationId coincide, la mutación local activa ya fue confirmada previamente en remoto
+        // (aplica tanto a reintentos idempotentes de CreateActive con -1/-1 como a ApplyPatch).
+        if (local.lastMutationId != null && remote.lastMutationId == local.lastMutationId) {
+            return PushPlan.AlreadyApplied
+        }
+
         // 7. Local PENDING local-only (-1/-1) frente a documento remoto activo con distinta mutación:
-        // Puede tratarse de un Create previo propio cuyo ACK se perdió antes de una edición local M2,
-        // o de una colisión de identidad / inconsistencia.
-        // No se debe sobrescribir a ciegas ni clasificar como metadata corrupta.
-        // Se emite RemotePresentForLocalOnlyNeedsReconciliation para que la capa de sincronización
-        // concilie los estados (por ej. reconciliando baseRevision al remoto y preservando los dirtyFields de M2).
+        // Estado bloqueado de forma segura: emite RemotePresentForLocalOnlyNeedsReconciliation.
+        // No se debe sobrescribir a ciegas ni avanzar artificialmente baseRevision a remote.revision.
         if (local.remoteRevision == LOCAL_ONLY_REVISION) {
             return PushPlan.RemotePresentForLocalOnlyNeedsReconciliation
         }
