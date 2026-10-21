@@ -189,7 +189,11 @@ class SyncProtocolPullPlannerTest {
             )
         )
 
-        val plan = SyncProtocolPullPlanner.planPull(local, remote)
+        val plan = SyncProtocolPullPlanner.planPull(
+            local,
+            remote,
+            provenance = PullProvenance(origin = RemoteOrigin.EXTERNAL_CONFIRMED)
+        )
 
         assertEquals(
             PullPlan.MergeWithPending(
@@ -225,7 +229,11 @@ class SyncProtocolPullPlannerTest {
             )
         )
 
-        val plan = SyncProtocolPullPlanner.planPull(local, remote)
+        val plan = SyncProtocolPullPlanner.planPull(
+            local,
+            remote,
+            provenance = PullProvenance(origin = RemoteOrigin.EXTERNAL_CONFIRMED)
+        )
 
         assertEquals(
             PullPlan.MergeWithPending(
@@ -902,7 +910,11 @@ class SyncProtocolPullPlannerTest {
             )
         )
 
-        val plan = SyncProtocolPullPlanner.planPull(local, remote)
+        val plan = SyncProtocolPullPlanner.planPull(
+            local,
+            remote,
+            provenance = PullProvenance(origin = RemoteOrigin.EXTERNAL_CONFIRMED)
+        )
 
         assertEquals(
             PullPlan.MergeWithPending(
@@ -975,7 +987,11 @@ class SyncProtocolPullPlannerTest {
             )
         )
 
-        val plan = SyncProtocolPullPlanner.planPull(local, remote)
+        val plan = SyncProtocolPullPlanner.planPull(
+            local,
+            remote,
+            provenance = PullProvenance(origin = RemoteOrigin.EXTERNAL_CONFIRMED)
+        )
 
         // Se requiere detener la sincronización de forma segura sin sobrescribir ningún campo
         assertEquals(
@@ -1088,7 +1104,11 @@ class SyncProtocolPullPlannerTest {
             )
         )
 
-        val plan = SyncProtocolPullPlanner.planPull(local, remote)
+        val plan = SyncProtocolPullPlanner.planPull(
+            local,
+            remote,
+            provenance = PullProvenance(origin = RemoteOrigin.EXTERNAL_CONFIRMED)
+        )
 
         assertEquals(
             PullPlan.MergeWithPending(
@@ -1097,6 +1117,221 @@ class SyncProtocolPullPlannerTest {
                 localPendingFieldsToPreserve = emptySet(),
                 newRemoteRevision = 6L,
                 newBaseRevision = 6L // Avanza a 6L porque localPendingFieldsToPreserve está vacío
+            ),
+            plan
+        )
+    }
+
+    // ==================================================
+    // 15. PROTECCIÓN ANTE CONFLICTOS DE ORIGEN/ORDEN INDETERMINADO Y ACKS PERDIDOS
+    // ==================================================
+
+    @Test
+    fun `planPull protects local subsequent edit M2 when remote reflects confirmed M1 whose ACK was lost`() {
+        // ESCENARIO OBLIGATORIO:
+        // 1. Local en revisión 5 (base 5)
+        // 2. Usuario editó COMMENT (mutación M1)
+        // 3. Firestore confirmó M1 en revisión 6 con lastMutationId = M1
+        // 4. Se perdió el ACK antes de actualizar Room
+        // 5. Usuario vuelve a editar COMMENT generando mutación M2
+        // 6. Room mantiene: PENDING, remoteRevision 5, baseRevision 5, dirty={COMMENT}, lastMutationId=M2
+        val local = LocalMutationContext(
+            syncStatus = SyncStatus.PENDING,
+            remoteRevision = 5L,
+            baseRevision = 5L,
+            dirtyFields = setOf(BeerDirtyField.COMMENT),
+            lastMutationId = "M2"
+        )
+        // 7. Firestore devuelve: revision 6, fieldRevisions={COMMENT:6}, lastMutationId=M1
+        val remote = RemoteBeerSyncMetadata(
+            revision = 6L,
+            isDeleted = false,
+            lastMutationId = "M1",
+            fieldRevisions = mapOf(BeerDirtyField.COMMENT to 6L)
+        )
+        // Con evidencia de que M1 fue una mutación previa del propio dispositivo
+        val provenance = PullProvenance(pastLocalMutationIds = setOf("M1"))
+
+        val plan = SyncProtocolPullPlanner.planPull(local, remote, provenance)
+
+        // RESULTADO REQUERIDO: Nunca descartar M2 automáticamente. Requerir reconciliación preservando M2.
+        assertEquals(
+            PullPlan.PendingConflictNeedsReconciliation(
+                conflictingFields = setOf(BeerDirtyField.COMMENT),
+                localPendingFields = setOf(BeerDirtyField.COMMENT),
+                remoteRevision = 6L,
+                localRemoteRevision = 5L,
+                localBaseRevision = 5L,
+                remoteLastMutationId = "M1",
+                localLastMutationId = "M2",
+                isKnownLostAck = true
+            ),
+            plan
+        )
+    }
+
+    @Test
+    fun `planPull halts safely with PendingConflictNeedsReconciliation when same field is edited remotely by another device without provenance evidence`() {
+        // Mismo campo editado remotamente por otro dispositivo, sin evidencia de procedencia (origin = INDETERMINATE)
+        val local = LocalMutationContext(
+            syncStatus = SyncStatus.PENDING,
+            remoteRevision = 5L,
+            baseRevision = 5L,
+            dirtyFields = setOf(BeerDirtyField.COMMENT),
+            lastMutationId = "M_DEVICE_A"
+        )
+        val remote = RemoteBeerSyncMetadata(
+            revision = 6L,
+            isDeleted = false,
+            lastMutationId = "M_DEVICE_B",
+            fieldRevisions = mapOf(BeerDirtyField.COMMENT to 6L)
+        )
+
+        val plan = SyncProtocolPullPlanner.planPull(local, remote)
+
+        // Sin evidencia suficiente, se preserva el cambio local M_DEVICE_A y se bloquea el descarte
+        assertEquals(
+            PullPlan.PendingConflictNeedsReconciliation(
+                conflictingFields = setOf(BeerDirtyField.COMMENT),
+                localPendingFields = setOf(BeerDirtyField.COMMENT),
+                remoteRevision = 6L,
+                localRemoteRevision = 5L,
+                localBaseRevision = 5L,
+                remoteLastMutationId = "M_DEVICE_B",
+                localLastMutationId = "M_DEVICE_A",
+                isKnownLostAck = false
+            ),
+            plan
+        )
+    }
+
+    @Test
+    fun `planPull applies REMOTE CONFIRMED WINS when explicit verifiable provenance evidence is present`() {
+        // Caso con evidencia explícita de origen externo posterior
+        val local = LocalMutationContext(
+            syncStatus = SyncStatus.PENDING,
+            remoteRevision = 5L,
+            baseRevision = 5L,
+            dirtyFields = setOf(BeerDirtyField.COMMENT),
+            lastMutationId = "M_LOCAL"
+        )
+        val remote = RemoteBeerSyncMetadata(
+            revision = 6L,
+            isDeleted = false,
+            lastMutationId = "M_EXTERNAL",
+            fieldRevisions = mapOf(BeerDirtyField.COMMENT to 6L)
+        )
+        val provenance = PullProvenance(origin = RemoteOrigin.EXTERNAL_CONFIRMED)
+
+        val plan = SyncProtocolPullPlanner.planPull(local, remote, provenance)
+
+        assertEquals(
+            PullPlan.MergeWithPending(
+                remoteFieldsToApply = setOf(BeerDirtyField.COMMENT),
+                remoteWinsConflictFields = setOf(BeerDirtyField.COMMENT),
+                localPendingFieldsToPreserve = emptySet(),
+                newRemoteRevision = 6L,
+                newBaseRevision = 6L
+            ),
+            plan
+        )
+    }
+
+    @Test
+    fun `planPull returns UpdateLocalSynced when remote lastMutationId matches active local mutationId (exact idempotent pull)`() {
+        // Local PENDING con M1 que aún no recibió ACK, pero usuario NO ha hecho cambios posteriores
+        val local = LocalMutationContext(
+            syncStatus = SyncStatus.PENDING,
+            remoteRevision = 5L,
+            baseRevision = 5L,
+            dirtyFields = setOf(BeerDirtyField.COMMENT),
+            lastMutationId = "M1"
+        )
+        val remote = RemoteBeerSyncMetadata(
+            revision = 6L,
+            isDeleted = false,
+            lastMutationId = "M1",
+            fieldRevisions = mapOf(BeerDirtyField.COMMENT to 6L)
+        )
+
+        val plan = SyncProtocolPullPlanner.planPull(local, remote)
+
+        assertEquals(
+            PullPlan.UpdateLocalSynced(
+                newRemoteRevision = 6L,
+                fieldsToApply = emptySet()
+            ),
+            plan
+        )
+    }
+
+    @Test
+    fun `planPull applies orthogonal remote changes while preserving local pending edits without conflict`() {
+        val local = LocalMutationContext(
+            syncStatus = SyncStatus.PENDING,
+            remoteRevision = 5L,
+            baseRevision = 5L,
+            dirtyFields = setOf(BeerDirtyField.COMMENT),
+            lastMutationId = "M_LOCAL"
+        )
+        val remote = RemoteBeerSyncMetadata(
+            revision = 6L,
+            isDeleted = false,
+            lastMutationId = "M_REMOTE",
+            fieldRevisions = mapOf(
+                BeerDirtyField.LOCATION to 6L,
+                BeerDirtyField.COMMENT to 5L
+            )
+        )
+
+        val plan = SyncProtocolPullPlanner.planPull(local, remote)
+
+        assertEquals(
+            PullPlan.MergeWithPending(
+                remoteFieldsToApply = setOf(BeerDirtyField.LOCATION),
+                remoteWinsConflictFields = emptySet(),
+                localPendingFieldsToPreserve = setOf(BeerDirtyField.COMMENT),
+                newRemoteRevision = 6L,
+                newBaseRevision = 5L
+            ),
+            plan
+        )
+    }
+
+    @Test
+    fun `planPull halts safely on mixed case with indeterminate conflict and orthogonal change without modifying any fields`() {
+        // Local dirty: COMMENT con M2
+        // Remote: COMMENT = 6 (conflicto indeterminado con M1), LOCATION = 6 (ortogonal)
+        val local = LocalMutationContext(
+            syncStatus = SyncStatus.PENDING,
+            remoteRevision = 5L,
+            baseRevision = 5L,
+            dirtyFields = setOf(BeerDirtyField.COMMENT),
+            lastMutationId = "M2"
+        )
+        val remote = RemoteBeerSyncMetadata(
+            revision = 6L,
+            isDeleted = false,
+            lastMutationId = "M1",
+            fieldRevisions = mapOf(
+                BeerDirtyField.COMMENT to 6L,
+                BeerDirtyField.LOCATION to 6L
+            )
+        )
+
+        val plan = SyncProtocolPullPlanner.planPull(local, remote)
+
+        // Regla estricta: ninguna modificación parcial mientras haya reconciliación bloqueada
+        assertEquals(
+            PullPlan.PendingConflictNeedsReconciliation(
+                conflictingFields = setOf(BeerDirtyField.COMMENT),
+                localPendingFields = setOf(BeerDirtyField.COMMENT),
+                remoteRevision = 6L,
+                localRemoteRevision = 5L,
+                localBaseRevision = 5L,
+                remoteLastMutationId = "M1",
+                localLastMutationId = "M2",
+                isKnownLostAck = false
             ),
             plan
         )

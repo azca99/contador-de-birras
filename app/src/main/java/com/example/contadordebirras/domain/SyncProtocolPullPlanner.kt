@@ -20,6 +20,46 @@ enum class RemoteReadScope {
 }
 
 /**
+ * Origen o procedencia verificable de una mutación remota en operaciones PULL.
+ */
+enum class RemoteOrigin {
+    /**
+     * Origen indeterminado: no se dispone de evidencia para certificar si el cambio remoto
+     * proviene de otro dispositivo o si es un ACK perdido de una mutación anterior del propio dispositivo.
+     */
+    INDETERMINATE,
+
+    /**
+     * Origen externo confirmado: existe evidencia verificable de que el cambio remoto fue originado
+     * por otro dispositivo o cliente independiente y confirmado con posterioridad a la base local,
+     * autorizando la aplicación segura de la política REMOTE CONFIRMED WINS.
+     */
+    EXTERNAL_CONFIRMED,
+
+    /**
+     * Mutación local anterior confirmada cuyo ACK se perdió: se ha identificado que el documento
+     * remoto corresponde a una mutación previa del propio dispositivo, sustituida localmente por
+     * una edición posterior aún no sincronizada.
+     */
+    LOCAL_LOST_ACK
+}
+
+/**
+ * Contexto de procedencia e historial para operaciones PULL del protocolo multidispositivo (Fase C3B).
+ *
+ * Permite distinguir si un cambio remoto con lastMutationId desconocido corresponde a un ACK perdido
+ * de una mutación anterior del propio dispositivo o a una modificación externa confirmada.
+ *
+ * @property pastLocalMutationIds Conjunto de mutationIds generados localmente por este dispositivo
+ * en mutaciones anteriores que ya no son el lastMutationId activo en Room.
+ * @property origin Indicación explícita sobre la procedencia del cambio remoto.
+ */
+data class PullProvenance(
+    val pastLocalMutationIds: Set<String> = emptySet(),
+    val origin: RemoteOrigin = RemoteOrigin.INDETERMINATE
+)
+
+/**
  * Estado remoto puro para operaciones PULL del protocolo multidispositivo (Fase C3B).
  */
 sealed interface RemotePullState {
@@ -166,6 +206,53 @@ sealed interface PullPlan {
     ) : PullPlan
 
     /**
+     * Estado seguro de reconciliación ante conflicto de origen u orden indeterminado:
+     * Un campo dirty local presenta una modificación remota (remoteFieldRev > local.baseRevision),
+     * pero la metadata actual o la evidencia disponible no certifica que el cambio remoto sea
+     * posterior a la mutación local.
+     *
+     * CASOS DE APLICACIÓN:
+     * 1. ACK perdido de mutación anterior (M1): el dispositivo envió M1 a Firestore, el servidor lo confirmó,
+     *    pero el ACK se perdió. Mientras tanto, el usuario editó localmente (M2). Firestore devuelve M1
+     *    con revisión incrementada. Si se aplicase REMOTE WINS, la mutación M2 se perdería.
+     * 2. Conflicto externo sin evidencia: otro dispositivo modificó el campo, pero no existe evidencia
+     *    verificable de precedencia respecto a la mutación local pendiente.
+     *
+     * DECISIÓN SEMÁNTICA:
+     * Se preservan todos los cambios locales intactos (localPendingFields), sin sobrescribir ningún
+     * campo ni aplicar parches parciales, bloqueando el descarte automático y solicitando reconciliación.
+     *
+     * DOCUMENTACIÓN DE DISEÑO PARA FASE C4:
+     * 1. C4 necesitará un historial durable de mutaciones locales o tracking de mutationIds anteriores
+     *    para poder correlacionar de forma determinista si remote.lastMutationId fue una mutación de este
+     *    mismo cliente o un cambio externo.
+     * 2. LIMITACIÓN COMPARTIDA CON FASE C3A:
+     *    `SyncProtocolPushPlanner` en la Fase C3A solo comprueba coincidencia con `local.lastMutationId`.
+     *    Si un ACK de M1 se perdió y local pasó a M2, C3A ve mutationIds distintos y remoteFieldRev > baseRevision,
+     *    clasificándolo erróneamente como `RemoteWinsOnly` y perdiendo M2 en el siguiente push.
+     *    La Fase C4 deberá implementar protecciones simétricas en PUSH y PULL. C3A no se modifica en esta fase.
+     *
+     * @property conflictingFields Campos dirty locales con cambio remoto concurrente de orden no demostrado.
+     * @property localPendingFields Conjunto completo de campos dirty locales preservados intactos.
+     * @property remoteRevision Revisión remota actual del documento en Firestore.
+     * @property localRemoteRevision Revisión remota conocida por el cliente.
+     * @property localBaseRevision Revisión base histórica congelada en local.
+     * @property remoteLastMutationId lastMutationId presente en el documento remoto.
+     * @property localLastMutationId lastMutationId activo en la entidad local.
+     * @property isKnownLostAck true si se demostró que remoteLastMutationId pertenece al historial local previo.
+     */
+    data class PendingConflictNeedsReconciliation(
+        val conflictingFields: Set<BeerDirtyField>,
+        val localPendingFields: Set<BeerDirtyField>,
+        val remoteRevision: Long,
+        val localRemoteRevision: Long,
+        val localBaseRevision: Long,
+        val remoteLastMutationId: String?,
+        val localLastMutationId: String?,
+        val isKnownLostAck: Boolean = false
+    ) : PullPlan
+
+    /**
      * Entidad previamente conocida en remoto (remoteRevision >= 0L) que no aparece en una lectura
      * autoritativa pero tiene cambios locales PENDING. Protección anti-resurrección / conflicto.
      */
@@ -213,7 +300,8 @@ object SyncProtocolPullPlanner {
      */
     fun planPull(
         local: LocalMutationContext?,
-        remoteState: RemotePullState
+        remoteState: RemotePullState,
+        provenance: PullProvenance = PullProvenance()
     ): PullPlan {
         // 1. Validación de metadata local
         if (local != null) {
@@ -357,11 +445,26 @@ object SyncProtocolPullPlanner {
             return PullPlan.LegacyRemoteNeedsResolution
         }
 
+        // Idempotencia PULL: la mutación activa local ya fue confirmada exactamente en remoto
+        // (ACK de PUSH perdido pero sin modificaciones posteriores locales).
+        if (local.lastMutationId != null && remote.lastMutationId == local.lastMutationId) {
+            return PullPlan.UpdateLocalSynced(
+                newRemoteRevision = remote.revision,
+                fieldsToApply = emptySet()
+            )
+        }
+
         // 9. Fusión campo por campo para PENDING
         val orthogonalRemoteFields = LinkedHashSet<BeerDirtyField>()
         val remoteWinsConflictFields = LinkedHashSet<BeerDirtyField>()
         val localPendingFieldsToPreserve = LinkedHashSet<BeerDirtyField>()
         val ambiguousFields = LinkedHashSet<BeerDirtyField>()
+        val indeterminateConflictFields = LinkedHashSet<BeerDirtyField>()
+
+        val isLostAck = (local.lastMutationId != null &&
+                remote.lastMutationId != null &&
+                remote.lastMutationId in provenance.pastLocalMutationIds) ||
+                provenance.origin == RemoteOrigin.LOCAL_LOST_ACK
 
         for (field in BeerDirtyFieldsCodec.ALL_FIELDS) {
             val isLocalDirty = field in local.dirtyFields
@@ -378,9 +481,16 @@ object SyncProtocolPullPlanner {
                             localPendingFieldsToPreserve.add(field)
                         }
                         // A2: Remoto modificó el campo después de la última revisión remota conocida localmente ->
-                        // conflicto verdaderamente nuevo y concurrente demostrable: REMOTE CONFIRMED WINS.
+                        // Conflicto potencial con edición local pendiente.
                         remoteChangedSinceLocalRemote -> {
-                            remoteWinsConflictFields.add(field)
+                            if (provenance.origin == RemoteOrigin.EXTERNAL_CONFIRMED) {
+                                // Evidencia explícita y verificable de origen externo posterior -> REMOTE CONFIRMED WINS
+                                remoteWinsConflictFields.add(field)
+                            } else {
+                                // Sin evidencia verificable de procedencia (ACK de M1 perdido antes de M2 local,
+                                // o cambio externo no secuenciado) -> Bloquear descarte automático y solicitar reconciliación.
+                                indeterminateConflictFields.add(field)
+                            }
                         }
                         // A3: local.baseRevision < remoteFieldRev <= local.remoteRevision ->
                         // El campo fue modificado en una revisión ya conocida localmente, pero baseRevision
@@ -409,8 +519,24 @@ object SyncProtocolPullPlanner {
             }
         }
 
-        // Si existen campos cuyo orden relativo es ambiguo, no sobrescribir ningún campo ni borrar fotos:
-        // preservar el estado local completo y solicitar reconciliación.
+        // Si existen conflictos de origen o precedencia indeterminada (o ACK perdido con edición local posterior):
+        // Bloquear descarte automático, preservar todos los cambios locales intactos y solicitar reconciliación.
+        // Regla estricta: no modificar ningún campo remoto ni local mientras el resultado sea una reconciliación bloqueada.
+        if (indeterminateConflictFields.isNotEmpty()) {
+            return PullPlan.PendingConflictNeedsReconciliation(
+                conflictingFields = indeterminateConflictFields,
+                localPendingFields = local.dirtyFields,
+                remoteRevision = remote.revision,
+                localRemoteRevision = local.remoteRevision,
+                localBaseRevision = local.baseRevision,
+                remoteLastMutationId = remote.lastMutationId,
+                localLastMutationId = local.lastMutationId,
+                isKnownLostAck = isLostAck
+            )
+        }
+
+        // Si existen campos cuyo orden relativo es ambiguo por baseRevision congelada:
+        // preservar el estado local completo y solicitar reconciliación sin sobrescritura parcial.
         if (ambiguousFields.isNotEmpty()) {
             return PullPlan.PendingFieldOrderNeedsReconciliation(
                 ambiguousFields = ambiguousFields,
@@ -443,18 +569,28 @@ object SyncProtocolPullPlanner {
     }
 
     /**
-     * Sobrecarga de conveniencia que acepta [RemoteBeerSyncMetadata] opcional y [RemoteReadScope].
+     * Sobrecarga de conveniencia que acepta [RemoteBeerSyncMetadata] opcional, [RemoteReadScope] y [PullProvenance].
      */
     fun planPull(
         local: LocalMutationContext?,
         remoteMetadata: RemoteBeerSyncMetadata?,
-        readScope: RemoteReadScope = RemoteReadScope.AUTHORITATIVE_CONFIRMED
+        readScope: RemoteReadScope = RemoteReadScope.AUTHORITATIVE_CONFIRMED,
+        provenance: PullProvenance = PullProvenance()
     ): PullPlan {
         val state = when {
             remoteMetadata != null -> RemotePullState.Present(remoteMetadata)
             readScope == RemoteReadScope.AUTHORITATIVE_CONFIRMED -> RemotePullState.ConfirmedAbsent
             else -> RemotePullState.IncompleteOrUnconfirmed
         }
-        return planPull(local, state)
+        return planPull(local, state, provenance)
     }
+
+    /**
+     * Sobrecarga directa con [PullProvenance] para llamadas sin [RemoteReadScope] explícito.
+     */
+    fun planPull(
+        local: LocalMutationContext?,
+        remoteMetadata: RemoteBeerSyncMetadata?,
+        provenance: PullProvenance
+    ): PullPlan = planPull(local, remoteMetadata, RemoteReadScope.AUTHORITATIVE_CONFIRMED, provenance)
 }
