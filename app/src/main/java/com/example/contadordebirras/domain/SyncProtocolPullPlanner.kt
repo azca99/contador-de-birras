@@ -125,6 +125,47 @@ sealed interface PullPlan {
     data object RemotePresentForLocalOnlyNeedsReconciliation : PullPlan
 
     /**
+     * Estado seguro de conflicto ambiguo: uno o más campos dirty locales presentan una revisión
+     * remota que es superior a baseRevision pero menor o igual a local.remoteRevision.
+     *
+     * CAUSA RAÍZ:
+     * baseRevision permanece congelada mientras existan campos locales pendientes para que el siguiente
+     * PUSH mantenga una base de OCC estricta. Sin embargo, remoteRevision avanza con los PULLs previos.
+     * Si tras un PULL previo el usuario modifica localmente un campo cuya revisión remota ya se encontraba
+     * entre baseRevision y remoteRevision, la metadata escalar actual no puede demostrar si la edición
+     * local ocurrió antes o después de incorporar dicha actualización remota.
+     *
+     * DECISIÓN SEMÁNTICA:
+     * Para evitar la pérdida silenciosa de modificaciones locales (por ej. sobrescribir una nueva foto
+     * local con una foto remota previa), se devuelve este resultado seguro que preserva los cambios locales
+     * y remite la entidad a reconciliación. No se sobrescriben otros campos ni se borran fotos.
+     *
+     * DOCUMENTACIÓN DE DISEÑO PARA FASE C4:
+     * 1. La Fase C4 necesitará historial o metadata adicional por campo (por ej. timestamps locales por campo
+     *    o un mapa de revisiones base por campo `Map<BeerDirtyField, Long>`) para resolver estos casos
+     *    automáticamente sin bloquear indefinidamente.
+     * 2. LIMITACIÓN COMPARTIDA CON FASE C3A:
+     *    `SyncProtocolPushPlanner` en la Fase C3A comparte conceptualmente esta misma limitación al evaluar
+     *    `remoteFieldRev > local.baseRevision` para clasificar campos conflictivos. Si un campo se edita
+     *    localmente tras un PULL previo mientras otro campo mantiene congelada baseRevision, C3A podría
+     *    clasificarlo como conflicto remoto perdiendo la edición local en un push directo. La Fase C4
+     *    deberá proteger simétricamente ambas rutas (PUSH y PULL). C3A no se modifica en esta fase.
+     *
+     * @property ambiguousFields Conjunto de campos dirty locales cuyo orden relativo con el remoto es ambiguo.
+     * @property localPendingFields Conjunto completo de campos dirty locales que se preservan intactos.
+     * @property remoteRevision Revisión actual del documento remoto.
+     * @property localRemoteRevision Revisión remota previamente conocida por el cliente.
+     * @property localBaseRevision Revisión base histórica sobre la que se congeló el estado local.
+     */
+    data class PendingFieldOrderNeedsReconciliation(
+        val ambiguousFields: Set<BeerDirtyField>,
+        val localPendingFields: Set<BeerDirtyField>,
+        val remoteRevision: Long,
+        val localRemoteRevision: Long,
+        val localBaseRevision: Long
+    ) : PullPlan
+
+    /**
      * Entidad previamente conocida en remoto (remoteRevision >= 0L) que no aparece en una lectura
      * autoritativa pero tiene cambios locales PENDING. Protección anti-resurrección / conflicto.
      */
@@ -320,26 +361,64 @@ object SyncProtocolPullPlanner {
         val orthogonalRemoteFields = LinkedHashSet<BeerDirtyField>()
         val remoteWinsConflictFields = LinkedHashSet<BeerDirtyField>()
         val localPendingFieldsToPreserve = LinkedHashSet<BeerDirtyField>()
+        val ambiguousFields = LinkedHashSet<BeerDirtyField>()
 
         for (field in BeerDirtyFieldsCodec.ALL_FIELDS) {
             val isLocalDirty = field in local.dirtyFields
             val remoteFieldRev = remote.fieldRevisions[field] ?: LEGACY_REMOTE_REVISION
             val remoteChangedSinceBase = remoteFieldRev > local.baseRevision
+            val remoteChangedSinceLocalRemote = remoteFieldRev > local.remoteRevision
 
             when {
-                !isLocalDirty && remoteChangedSinceBase -> {
-                    // Campo remoto modificado ortogonalmente: aplicar sin conflicto
-                    orthogonalRemoteFields.add(field)
+                isLocalDirty -> {
+                    when {
+                        // A1: Remoto NO ha modificado el campo desde la base histórica local ->
+                        // mutación local pura sin cambio remoto concurrente. Se preserva intacto.
+                        !remoteChangedSinceBase -> {
+                            localPendingFieldsToPreserve.add(field)
+                        }
+                        // A2: Remoto modificó el campo después de la última revisión remota conocida localmente ->
+                        // conflicto verdaderamente nuevo y concurrente demostrable: REMOTE CONFIRMED WINS.
+                        remoteChangedSinceLocalRemote -> {
+                            remoteWinsConflictFields.add(field)
+                        }
+                        // A3: local.baseRevision < remoteFieldRev <= local.remoteRevision ->
+                        // El campo fue modificado en una revisión ya conocida localmente, pero baseRevision
+                        // permanecía congelada por otro campo pendiente. El orden temporal entre la edición
+                        // local y la remota es indeterminado con la metadata escalar actual.
+                        else -> {
+                            ambiguousFields.add(field)
+                        }
+                    }
                 }
-                isLocalDirty && remoteChangedSinceBase -> {
-                    // Conflicto sobre el mismo campo: REMOTE CONFIRMED WINS
-                    remoteWinsConflictFields.add(field)
-                }
-                isLocalDirty && !remoteChangedSinceBase -> {
-                    // Campo local modificado sin cambios remotos: preservar pending
-                    localPendingFieldsToPreserve.add(field)
+                else -> {
+                    // Campo NO dirty en local
+                    when {
+                        // B1: Remoto modificó el campo de forma verdaderamente nueva (después de local.remoteRevision) ->
+                        // cambio ortogonal nuevo que debe incorporarse a la fila local.
+                        remoteChangedSinceLocalRemote -> {
+                            orthogonalRemoteFields.add(field)
+                        }
+                        // B2: remoteFieldRev <= local.remoteRevision ->
+                        // Ya fue incorporado previamente o coincide con el estado base conocido.
+                        else -> {
+                            // No-op
+                        }
+                    }
                 }
             }
+        }
+
+        // Si existen campos cuyo orden relativo es ambiguo, no sobrescribir ningún campo ni borrar fotos:
+        // preservar el estado local completo y solicitar reconciliación.
+        if (ambiguousFields.isNotEmpty()) {
+            return PullPlan.PendingFieldOrderNeedsReconciliation(
+                ambiguousFields = ambiguousFields,
+                localPendingFields = local.dirtyFields,
+                remoteRevision = remote.revision,
+                localRemoteRevision = local.remoteRevision,
+                localBaseRevision = local.baseRevision
+            )
         }
 
         val remoteFieldsToApply = orthogonalRemoteFields + remoteWinsConflictFields
