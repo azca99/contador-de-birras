@@ -227,8 +227,15 @@ sealed interface PullPlan {
 
     /**
      * Estado bloqueado de forma segura: entidad local PENDING local-only (-1/-1) encuentra un documento
-     * remoto activo con distinto lastMutationId (ACK de creación perdido o colisión).
+     * remoto activo con distinto lastMutationId (ACK de creación perdido o colisión), o metadata de creación
+     * incompleta o incoherente (faltan campos en fieldRevisions, dirtyFields incompleto o revisión remota != 1).
      * Compatible con C3A; no se reconcilia automáticamente en el pull para evitar pérdida de datos.
+     *
+     * ADVERTENCIA CRÍTICA PARA FASE C4:
+     * C4 deberá verificar también los datos reales del payload del documento y las referencias fotográficas
+     * (photoUri/remoteUrl), ya que SyncProtocolPullPlanner opera exclusivamente sobre metadata escalar
+     * (revisiones y mutationIds). Antes de asumir una creación completa en Room o descartar cambios locales,
+     * C4 debe certificar que los archivos y campos reales existen y son válidos en el almacenamiento.
      */
     data object RemotePresentForLocalOnlyNeedsReconciliation : PullPlan
 
@@ -525,17 +532,38 @@ object SyncProtocolPullPlanner {
         // 8. Local PENDING frente a remoto activo
         // Caso local-only con remoto activo:
         if (local.remoteRevision == LOCAL_ONLY_REVISION) {
-            return if (local.lastMutationId != null && remote.lastMutationId == local.lastMutationId) {
-                // Creación local-only M1 confirmada exactamente en remoto (ACK de creación perdido)
+            // Validación estricta de ACK de creación:
+            // C3A CreateActive exige escribir ALL_FIELDS exactamente en FIRST_PROTOCOL_REVISION (1L).
+            // Para confirmar la creación de forma idempotente, se requiere:
+            // 1) Coincidencia de lastMutationId
+            // 2) local.dirtyFields == ALL_FIELDS
+            // 3) remote.revision == FIRST_PROTOCOL_REVISION (1L)
+            // 4) remote.fieldRevisions contiene TODOS los campos de ALL_FIELDS y cada uno está en FIRST_PROTOCOL_REVISION (1L)
+            //
+            // ADVERTENCIA PARA FASE C4:
+            // C4 deberá verificar además la integridad de los datos reales del documento (payload) y las
+            // referencias fotográficas (Storage / URIs locales), dado que este planner solo evalúa metadata escalar.
+            val isCompleteCreation = local.dirtyFields == BeerDirtyFieldsCodec.ALL_FIELDS &&
+                remote.revision == FIRST_PROTOCOL_REVISION &&
+                BeerDirtyFieldsCodec.ALL_FIELDS.all { field ->
+                    remote.fieldRevisions[field] == FIRST_PROTOCOL_REVISION
+                }
+
+            return if (local.lastMutationId != null &&
+                remote.lastMutationId == local.lastMutationId &&
+                isCompleteCreation
+            ) {
+                // Creación local-only confirmada completamente en remoto
                 PullPlan.ConfirmPendingMutation(
                     confirmedMutationId = local.lastMutationId,
                     newRemoteRevision = remote.revision,
                     remoteFieldsToApply = emptySet(),
-                    confirmedFields = local.dirtyFields,
+                    confirmedFields = BeerDirtyFieldsCodec.ALL_FIELDS,
                     remoteWinsFields = emptySet()
                 )
             } else {
-                // Remoto presente con distinto lastMutationId: posible colisión o ACK de creación perdido con edición posterior M2
+                // Remoto presente con distinto lastMutationId, o metadata de creación incompleta/incoherente:
+                // Bloqueo seguro que remite la entidad a reconciliación sin confirmar ni sobrescribir datos.
                 PullPlan.RemotePresentForLocalOnlyNeedsReconciliation
             }
         }
