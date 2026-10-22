@@ -1308,7 +1308,9 @@ class SyncProtocolPullPlannerTest {
             PullPlan.ConfirmPendingMutation(
                 confirmedMutationId = "M1",
                 newRemoteRevision = 6L,
-                remoteFieldsToApply = emptySet()
+                remoteFieldsToApply = emptySet(),
+                confirmedFields = setOf(BeerDirtyField.COMMENT),
+                remoteWinsFields = emptySet()
             ),
             plan
         )
@@ -1568,7 +1570,9 @@ class SyncProtocolPullPlannerTest {
             PullPlan.ConfirmPendingMutation(
                 confirmedMutationId = "M1",
                 newRemoteRevision = 7L,
-                remoteFieldsToApply = setOf(BeerDirtyField.PHOTO)
+                remoteFieldsToApply = setOf(BeerDirtyField.PHOTO),
+                confirmedFields = setOf(BeerDirtyField.COMMENT),
+                remoteWinsFields = emptySet()
             ),
             plan
         )
@@ -1596,7 +1600,9 @@ class SyncProtocolPullPlannerTest {
             PullPlan.ConfirmPendingMutation(
                 confirmedMutationId = "M1",
                 newRemoteRevision = 6L,
-                remoteFieldsToApply = emptySet()
+                remoteFieldsToApply = emptySet(),
+                confirmedFields = setOf(BeerDirtyField.COMMENT),
+                remoteWinsFields = emptySet()
             ),
             plan
         )
@@ -1627,7 +1633,9 @@ class SyncProtocolPullPlannerTest {
             PullPlan.ConfirmPendingMutation(
                 confirmedMutationId = "M1",
                 newRemoteRevision = 1L,
-                remoteFieldsToApply = emptySet()
+                remoteFieldsToApply = emptySet(),
+                confirmedFields = BeerDirtyFieldsCodec.ALL_FIELDS,
+                remoteWinsFields = emptySet()
             ),
             plan
         )
@@ -1774,5 +1782,313 @@ class SyncProtocolPullPlannerTest {
         // Verificación de aislamiento de foto local: photoUri nunca forma parte del protocolo de campos remotos
         assertFalse(BeerDirtyFieldsCodec.ALL_FIELDS.any { it.name.equals("photoUri", ignoreCase = true) })
         assertTrue(BeerDirtyFieldsCodec.ALL_FIELDS.contains(BeerDirtyField.PHOTO))
+    }
+
+    // ==================================================
+    // 17. TESTS AUDITORÍA: ACK DE PATCH PARCIAL Y VALIDACIÓN DE FIELD EVIDENCE
+    // ==================================================
+
+    @Test
+    fun `audit scenario - lost ACK of partial ApplyPatch confirms PHOTO and applies remote COMMENT which won conflict`() {
+        // Escenario:
+        // Local: baseRevision=5, remoteRevision=5, syncStatus=PENDING, dirty={COMMENT, PHOTO}, lastMutationId=M1
+        // Remoto: revision=7, lastMutationId=M1, fieldRevisions={COMMENT:6, PHOTO:7}
+        // (PHOTO confirmado en rev 7 por M1, pero COMMENT remoto ganó en rev 6 durante PUSH)
+        val local = LocalMutationContext(
+            syncStatus = SyncStatus.PENDING,
+            remoteRevision = 5L,
+            baseRevision = 5L,
+            dirtyFields = setOf(BeerDirtyField.COMMENT, BeerDirtyField.PHOTO),
+            lastMutationId = "M1"
+        )
+        val remote = RemoteBeerSyncMetadata(
+            revision = 7L,
+            isDeleted = false,
+            lastMutationId = "M1",
+            fieldRevisions = mapOf(
+                BeerDirtyField.COMMENT to 6L,
+                BeerDirtyField.PHOTO to 7L
+            )
+        )
+
+        val plan = SyncProtocolPullPlanner.planPull(local, remote)
+
+        assertEquals(
+            PullPlan.ConfirmPendingMutation(
+                confirmedMutationId = "M1",
+                newRemoteRevision = 7L,
+                remoteFieldsToApply = setOf(BeerDirtyField.COMMENT),
+                confirmedFields = setOf(BeerDirtyField.PHOTO),
+                remoteWinsFields = setOf(BeerDirtyField.COMMENT)
+            ),
+            plan
+        )
+    }
+
+    @Test
+    fun `audit scenario - full ACK of ApplyPatch without conflicts confirms all dirty fields`() {
+        val local = LocalMutationContext(
+            syncStatus = SyncStatus.PENDING,
+            remoteRevision = 5L,
+            baseRevision = 5L,
+            dirtyFields = setOf(BeerDirtyField.COMMENT, BeerDirtyField.PHOTO),
+            lastMutationId = "M1"
+        )
+        val remote = RemoteBeerSyncMetadata(
+            revision = 6L,
+            isDeleted = false,
+            lastMutationId = "M1",
+            fieldRevisions = mapOf(
+                BeerDirtyField.COMMENT to 6L,
+                BeerDirtyField.PHOTO to 6L
+            )
+        )
+
+        val plan = SyncProtocolPullPlanner.planPull(local, remote)
+
+        assertEquals(
+            PullPlan.ConfirmPendingMutation(
+                confirmedMutationId = "M1",
+                newRemoteRevision = 6L,
+                remoteFieldsToApply = emptySet(),
+                confirmedFields = setOf(BeerDirtyField.COMMENT, BeerDirtyField.PHOTO),
+                remoteWinsFields = emptySet()
+            ),
+            plan
+        )
+    }
+
+    @Test
+    fun `audit scenario - ACK with additional orthogonal remote change applies orthogonal field atomically`() {
+        val local = LocalMutationContext(
+            syncStatus = SyncStatus.PENDING,
+            remoteRevision = 5L,
+            baseRevision = 5L,
+            dirtyFields = setOf(BeerDirtyField.PHOTO),
+            lastMutationId = "M1"
+        )
+        val remote = RemoteBeerSyncMetadata(
+            revision = 7L,
+            isDeleted = false,
+            lastMutationId = "M1",
+            fieldRevisions = mapOf(
+                BeerDirtyField.LOCATION to 6L,
+                BeerDirtyField.PHOTO to 7L
+            )
+        )
+
+        val plan = SyncProtocolPullPlanner.planPull(local, remote)
+
+        assertEquals(
+            PullPlan.ConfirmPendingMutation(
+                confirmedMutationId = "M1",
+                newRemoteRevision = 7L,
+                remoteFieldsToApply = setOf(BeerDirtyField.LOCATION),
+                confirmedFields = setOf(BeerDirtyField.PHOTO),
+                remoteWinsFields = emptySet()
+            ),
+            plan
+        )
+    }
+
+    @Test
+    fun `audit scenario - incomplete metadata for partial patch halts safely with PendingConflictNeedsReconciliation`() {
+        // Local tiene {COMMENT, PHOTO} dirty con M1.
+        // Remoto confirma PHOTO en 7L, pero no contiene metadata para COMMENT (falta en fieldRevisions).
+        val local = LocalMutationContext(
+            syncStatus = SyncStatus.PENDING,
+            remoteRevision = 5L,
+            baseRevision = 5L,
+            dirtyFields = setOf(BeerDirtyField.COMMENT, BeerDirtyField.PHOTO),
+            lastMutationId = "M1"
+        )
+        val remote = RemoteBeerSyncMetadata(
+            revision = 7L,
+            isDeleted = false,
+            lastMutationId = "M1",
+            fieldRevisions = mapOf(
+                BeerDirtyField.PHOTO to 7L
+            )
+        )
+
+        val plan = SyncProtocolPullPlanner.planPull(local, remote)
+
+        assertEquals(
+            PullPlan.PendingConflictNeedsReconciliation(
+                conflictingFields = setOf(BeerDirtyField.COMMENT),
+                localPendingFields = setOf(BeerDirtyField.COMMENT, BeerDirtyField.PHOTO),
+                remoteRevision = 7L,
+                localRemoteRevision = 5L,
+                localBaseRevision = 5L,
+                remoteLastMutationId = "M1",
+                localLastMutationId = "M1",
+                isKnownLostAck = true
+            ),
+            plan
+        )
+    }
+
+    @Test
+    fun `audit scenario - field evidence with mismatched key does not authorize REMOTE WINS and halts safely`() {
+        // Clave del mapa es COMMENT, pero el objeto FieldOriginEvidence tiene field = LOCATION
+        val local = LocalMutationContext(
+            syncStatus = SyncStatus.PENDING,
+            remoteRevision = 5L,
+            baseRevision = 5L,
+            dirtyFields = setOf(BeerDirtyField.COMMENT),
+            lastMutationId = "M_LOCAL"
+        )
+        val remote = RemoteBeerSyncMetadata(
+            revision = 6L,
+            isDeleted = false,
+            lastMutationId = "M_EXTERNAL",
+            fieldRevisions = mapOf(BeerDirtyField.COMMENT to 6L)
+        )
+        val provenance = PullProvenance(
+            origin = RemoteOrigin.EXTERNAL_CONFIRMED,
+            fieldEvidence = mapOf(
+                BeerDirtyField.COMMENT to FieldOriginEvidence(
+                    field = BeerDirtyField.LOCATION, // Inconsistente con la clave COMMENT
+                    externalRevision = 6L,
+                    sourceDeviceId = "DEVICE_B"
+                )
+            )
+        )
+
+        val plan = SyncProtocolPullPlanner.planPull(local, remote, provenance)
+
+        // No autoriza REMOTE WINS: se clasifica como indeterminado y solicita reconciliación segura
+        assertEquals(
+            PullPlan.PendingConflictNeedsReconciliation(
+                conflictingFields = setOf(BeerDirtyField.COMMENT),
+                localPendingFields = setOf(BeerDirtyField.COMMENT),
+                remoteRevision = 6L,
+                localRemoteRevision = 5L,
+                localBaseRevision = 5L,
+                remoteLastMutationId = "M_EXTERNAL",
+                localLastMutationId = "M_LOCAL",
+                isKnownLostAck = false
+            ),
+            plan
+        )
+    }
+
+    @Test
+    fun `audit scenario - valid and consistent field evidence authorizes REMOTE WINS via MergeWithPending`() {
+        val local = LocalMutationContext(
+            syncStatus = SyncStatus.PENDING,
+            remoteRevision = 5L,
+            baseRevision = 5L,
+            dirtyFields = setOf(BeerDirtyField.COMMENT),
+            lastMutationId = "M_LOCAL"
+        )
+        val remote = RemoteBeerSyncMetadata(
+            revision = 6L,
+            isDeleted = false,
+            lastMutationId = "M_EXTERNAL",
+            fieldRevisions = mapOf(BeerDirtyField.COMMENT to 6L)
+        )
+        val provenance = PullProvenance(
+            origin = RemoteOrigin.EXTERNAL_CONFIRMED,
+            fieldEvidence = mapOf(
+                BeerDirtyField.COMMENT to FieldOriginEvidence(
+                    field = BeerDirtyField.COMMENT, // Coincide exactamente con la clave y con el campo
+                    externalRevision = 6L,          // Coincide con remoteFieldRev
+                    sourceDeviceId = "DEVICE_B"
+                )
+            )
+        )
+
+        val plan = SyncProtocolPullPlanner.planPull(local, remote, provenance)
+
+        assertEquals(
+            PullPlan.MergeWithPending(
+                remoteFieldsToApply = setOf(BeerDirtyField.COMMENT),
+                remoteWinsConflictFields = setOf(BeerDirtyField.COMMENT),
+                localPendingFieldsToPreserve = emptySet(),
+                newRemoteRevision = 6L,
+                newBaseRevision = 6L
+            ),
+            plan
+        )
+    }
+
+    @Test
+    fun `audit scenario - regression suite preserves tombstones, local-only, DELETE WINS, photos and ambiguous conflicts`() {
+        // 1. DELETE WINS: Local DELETED vs remote activo con misma o mayor revisión
+        val localDeleted = LocalMutationContext(
+            syncStatus = SyncStatus.DELETED,
+            remoteRevision = 3L,
+            baseRevision = 3L,
+            dirtyFields = emptySet(),
+            lastMutationId = "M_DEL"
+        )
+        val remoteActive = RemoteBeerSyncMetadata(
+            revision = 8L,
+            isDeleted = false,
+            lastMutationId = "M_ACTIVE",
+            fieldRevisions = mapOf(BeerDirtyField.PHOTO to 8L)
+        )
+        assertEquals(PullPlan.PreserveLocalDelete, SyncProtocolPullPlanner.planPull(localDeleted, remoteActive))
+
+        // 2. Tombstone remoto: Local PENDING vs remote tombstone
+        val localPending = LocalMutationContext(
+            syncStatus = SyncStatus.PENDING,
+            remoteRevision = 6L,
+            baseRevision = 5L,
+            dirtyFields = setOf(BeerDirtyField.PHOTO),
+            lastMutationId = "M_EDIT"
+        )
+        val remoteTombstone = RemoteBeerSyncMetadata(
+            revision = 9L,
+            isDeleted = true,
+            lastMutationId = "M_TOMBSTONE",
+            fieldRevisions = emptyMap()
+        )
+        assertEquals(PullPlan.ApplyRemoteTombstone(newRemoteRevision = 9L), SyncProtocolPullPlanner.planPull(localPending, remoteTombstone))
+
+        // 3. Creación local-only con distinto mutationId
+        val localOnlyDiff = LocalMutationContext(
+            syncStatus = SyncStatus.PENDING,
+            remoteRevision = -1L,
+            baseRevision = -1L,
+            dirtyFields = BeerDirtyFieldsCodec.ALL_FIELDS,
+            lastMutationId = "M_LOCAL_NEW"
+        )
+        val remoteActiveDiff = RemoteBeerSyncMetadata(
+            revision = 1L,
+            isDeleted = false,
+            lastMutationId = "M_OTHER_NEW",
+            fieldRevisions = mapOf(BeerDirtyField.TYPE to 1L)
+        )
+        assertEquals(PullPlan.RemotePresentForLocalOnlyNeedsReconciliation, SyncProtocolPullPlanner.planPull(localOnlyDiff, remoteActiveDiff))
+
+        // 4. Protección de fotos y orden ambiguo por frozen baseRevision
+        val localAmbiguous = LocalMutationContext(
+            syncStatus = SyncStatus.PENDING,
+            remoteRevision = 6L,
+            baseRevision = 5L,
+            dirtyFields = setOf(BeerDirtyField.COMMENT, BeerDirtyField.PHOTO),
+            lastMutationId = "M_PHOTO_EDIT"
+        )
+        val remoteAmbiguous = RemoteBeerSyncMetadata(
+            revision = 6L,
+            isDeleted = false,
+            lastMutationId = "M_REMOTE",
+            fieldRevisions = mapOf(
+                BeerDirtyField.PHOTO to 6L,
+                BeerDirtyField.COMMENT to 5L
+            )
+        )
+        assertEquals(
+            PullPlan.PendingFieldOrderNeedsReconciliation(
+                ambiguousFields = setOf(BeerDirtyField.PHOTO),
+                localPendingFields = setOf(BeerDirtyField.COMMENT, BeerDirtyField.PHOTO),
+                remoteRevision = 6L,
+                localRemoteRevision = 6L,
+                localBaseRevision = 5L
+            ),
+            SyncProtocolPullPlanner.planPull(localAmbiguous, remoteAmbiguous)
+        )
     }
 }

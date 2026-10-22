@@ -50,6 +50,12 @@ enum class RemoteOrigin {
  * Certifica que la modificación en [field] en la revisión [externalRevision] fue originada
  * de forma independiente por una entidad externa y confirmada con posterioridad a la mutación local.
  *
+ * ADVERTENCIA CRÍTICA PARA FASE C4:
+ * C4 solo podrá proporcionar esta evidencia cuando tenga pruebas verificables de procedencia Y orden
+ * causal respecto a la mutación local pendiente. Un [sourceDeviceId] o [externalRevision] aislados no
+ * demuestran por sí solos que la escritura sea posterior a la edición local (por ejemplo, si el ACK de
+ * una mutación local previa se perdió, o si el reloj/secuencia no garantiza causalidad estricta).
+ *
  * @property field Campo al que aplica la evidencia.
  * @property externalRevision Revisión exacta de Firestore en la que se confirmó el cambio externo en este campo.
  * @property sourceDeviceId Identificador opcional del dispositivo o cliente externo de origen.
@@ -144,18 +150,25 @@ sealed interface PullPlan {
      * Permite a la futura integración C4:
      * 1. Verificar atómicamente que la fila local sigue teniendo `lastMutationId == confirmedMutationId`
      *    antes de limpiar dirtyFields (evitando limpiar mutaciones posteriores si el usuario volvió a editar).
-     * 2. Incorporar cualquier cambio remoto ortogonal en [remoteFieldsToApply] sin sobrescribir campos locales.
-     * 3. Preservar intactos los datos puramente locales (como photoUri).
-     * 4. Actualizar `remoteRevision = newRemoteRevision` y `baseRevision = newRemoteRevision`.
+     * 2. Distinguir con precisión qué campos dirty fueron efectivamente confirmados ([confirmedFields])
+     *    y qué campos dirty locales perdieron el conflicto durante PUSH ([remoteWinsFields]).
+     * 3. Incorporar cualquier cambio remoto ganado por conflicto o cambios ortogonales en [remoteFieldsToApply]
+     *    sin sobrescribir campos locales pendientes no confirmados.
+     * 4. Preservar intactos los datos puramente locales (como photoUri).
+     * 5. Actualizar `remoteRevision = newRemoteRevision` y `baseRevision = newRemoteRevision`.
      *
      * @property confirmedMutationId Identificador de la mutación confirmada (debe coincidir con remote.lastMutationId).
      * @property newRemoteRevision Nueva revisión remota del documento en Firestore.
-     * @property remoteFieldsToApply Conjunto de campos remotos ortogonales que deben incorporarse localmente.
+     * @property remoteFieldsToApply Conjunto de campos remotos (ganados en conflicto + ortogonales) que deben incorporarse localmente.
+     * @property confirmedFields Conjunto de campos dirty locales efectivamente confirmados por esta mutación.
+     * @property remoteWinsFields Conjunto de campos dirty locales que perdieron el conflicto durante PUSH y deben adoptarse de remoto.
      */
     data class ConfirmPendingMutation(
         val confirmedMutationId: String,
         val newRemoteRevision: Long,
-        val remoteFieldsToApply: Set<BeerDirtyField> = emptySet()
+        val remoteFieldsToApply: Set<BeerDirtyField> = emptySet(),
+        val confirmedFields: Set<BeerDirtyField> = emptySet(),
+        val remoteWinsFields: Set<BeerDirtyField> = emptySet()
     ) : PullPlan
 
     /**
@@ -423,10 +436,21 @@ object SyncProtocolPullPlanner {
             }
 
             // 2b. Validación de contradicción entre historial local y procedencia externa declarada
-            if (local != null && remote.lastMutationId != null && remote.lastMutationId in provenance.pastLocalMutationIds) {
+            if (local != null && remote.lastMutationId != null &&
+                (remote.lastMutationId in provenance.pastLocalMutationIds || remote.lastMutationId == local.lastMutationId)
+            ) {
                 if (provenance.origin == RemoteOrigin.EXTERNAL_CONFIRMED || provenance.fieldEvidence.isNotEmpty()) {
                     return PullPlan.InvalidMetadata(
-                        "Contradiction detected: remote lastMutationId '${remote.lastMutationId}' is present in pastLocalMutationIds of this device, but external origin evidence was declared."
+                        "Contradiction detected: remote lastMutationId '${remote.lastMutationId}' belongs to local device history, but external origin evidence was declared."
+                    )
+                }
+            }
+
+            // Validación de límites de revisión en fieldEvidence
+            for ((keyField, ev) in provenance.fieldEvidence) {
+                if (ev.externalRevision < 0L || ev.externalRevision > remote.revision) {
+                    return PullPlan.InvalidMetadata(
+                        "Field evidence for $keyField has externalRevision (${ev.externalRevision}) outside valid range [0, ${remote.revision}]."
                     )
                 }
             }
@@ -506,7 +530,9 @@ object SyncProtocolPullPlanner {
                 PullPlan.ConfirmPendingMutation(
                     confirmedMutationId = local.lastMutationId,
                     newRemoteRevision = remote.revision,
-                    remoteFieldsToApply = emptySet()
+                    remoteFieldsToApply = emptySet(),
+                    confirmedFields = local.dirtyFields,
+                    remoteWinsFields = emptySet()
                 )
             } else {
                 // Remoto presente con distinto lastMutationId: posible colisión o ACK de creación perdido con edición posterior M2
@@ -520,17 +546,64 @@ object SyncProtocolPullPlanner {
         }
 
         // Idempotencia PULL para mutación conocida (remoteRevision >= 0L):
-        // Reconoce el ACK de la mutación activa e incorpora cambios remotos ortogonales pendientes
+        // Reconoce el ACK de la mutación activa e incorpora cambios remotos ortogonales y campos que perdieron conflicto (ApplyPatch parcial)
         if (local.lastMutationId != null && remote.lastMutationId == local.lastMutationId) {
+            val confirmedFields = LinkedHashSet<BeerDirtyField>()
+            val remoteWinsFields = LinkedHashSet<BeerDirtyField>()
+            val incompleteMetadataFields = LinkedHashSet<BeerDirtyField>()
+
+            for (field in local.dirtyFields) {
+                val remoteFieldRev = remote.fieldRevisions[field]
+                when {
+                    // El campo fue efectivamente escrito por esta mutación en Firestore (revisión remota actual)
+                    remoteFieldRev == remote.revision -> {
+                        confirmedFields.add(field)
+                    }
+                    // El campo perdió el conflicto durante PUSH (ApplyPatch parcial) y remoto ganó con una revisión intermedia
+                    remoteFieldRev != null && remoteFieldRev > local.baseRevision && remoteFieldRev < remote.revision -> {
+                        remoteWinsFields.add(field)
+                    }
+                    // Metadata ausente o incoherente: no se puede distinguir de forma fiable qué ocurrió
+                    else -> {
+                        incompleteMetadataFields.add(field)
+                    }
+                }
+            }
+
+            // Si falta metadata fiable para distinguir campos confirmados de rechazados, o ningún campo dirty fue escrito:
+            // detener de forma segura y solicitar reconciliación sin confirmar ni limpiar dirtyFields erróneamente.
+            if (incompleteMetadataFields.isNotEmpty() || confirmedFields.isEmpty()) {
+                val conflictingFields = if (incompleteMetadataFields.isNotEmpty()) {
+                    incompleteMetadataFields
+                } else {
+                    local.dirtyFields
+                }
+                return PullPlan.PendingConflictNeedsReconciliation(
+                    conflictingFields = conflictingFields,
+                    localPendingFields = local.dirtyFields,
+                    remoteRevision = remote.revision,
+                    localRemoteRevision = local.remoteRevision,
+                    localBaseRevision = local.baseRevision,
+                    remoteLastMutationId = remote.lastMutationId,
+                    localLastMutationId = local.lastMutationId,
+                    isKnownLostAck = true
+                )
+            }
+
+            // Cambios ortogonales que el dispositivo aún no ha incorporado (campos limpios en local con revisión > local.remoteRevision)
             val orthogonalRemoteFields = BeerDirtyFieldsCodec.ALL_FIELDS.filter { field ->
                 field !in local.dirtyFields &&
                         (remote.fieldRevisions[field] ?: LEGACY_REMOTE_REVISION) > local.remoteRevision
             }.toSet()
 
+            val remoteFieldsToApply = remoteWinsFields + orthogonalRemoteFields
+
             return PullPlan.ConfirmPendingMutation(
                 confirmedMutationId = local.lastMutationId,
                 newRemoteRevision = remote.revision,
-                remoteFieldsToApply = orthogonalRemoteFields
+                remoteFieldsToApply = remoteFieldsToApply,
+                confirmedFields = confirmedFields,
+                remoteWinsFields = remoteWinsFields
             )
         }
 
@@ -564,13 +637,20 @@ object SyncProtocolPullPlanner {
                         // Conflicto potencial con edición local pendiente.
                         remoteChangedSinceLocalRemote -> {
                             val fieldEv = provenance.fieldEvidence[field]
-                            val hasValidFieldEvidence = fieldEv != null && fieldEv.externalRevision == remoteFieldRev
+                            val isLocallyOriginatedRevision = remoteFieldRev == remote.revision && isLostAck
+
+                            val hasValidFieldEvidence = fieldEv != null &&
+                                    fieldEv.field == field &&
+                                    fieldEv.externalRevision == remoteFieldRev &&
+                                    fieldEv.externalRevision <= remote.revision &&
+                                    fieldEv.externalRevision > local.remoteRevision &&
+                                    !isLocallyOriginatedRevision
 
                             if (hasValidFieldEvidence) {
                                 // Evidencia verificable POR CAMPO de que esta revisión específica proviene de un cambio externo posterior -> REMOTE CONFIRMED WINS
                                 remoteWinsConflictFields.add(field)
                             } else {
-                                // Sin evidencia válida por campo (la procedencia global no es suficiente, o es un ACK perdido) ->
+                                // Sin evidencia válida por campo (la procedencia global no es suficiente, clave incorrecta, o es un ACK perdido) ->
                                 // Bloquear descarte automático y solicitar reconciliación segura.
                                 indeterminateConflictFields.add(field)
                             }
