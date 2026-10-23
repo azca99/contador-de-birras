@@ -340,7 +340,7 @@ class LegacyBeerClassifierTest {
     }
 
     @Test
-    fun `active modern remote document with different mutationId yields ModernRemoteActive`() {
+    fun `active modern remote document with different mutationId against legacy PENDING 0-0 halts with NeedsReconciliation`() {
         val local = LegacyLocalEntityContext(
             syncId = defaultSyncId,
             ownerUid = activeUserUid,
@@ -349,6 +349,37 @@ class LegacyBeerClassifierTest {
             baseRevision = 0L,
             dirtyFields = setOf(BeerDirtyField.COMMENT),
             lastMutationId = "M_LOCAL"
+        )
+        val remote = LegacyRemoteSnapshot.Present(
+            revision = 2L,
+            isDeleted = false,
+            lastMutationId = "M_REMOTE_OTHER",
+            fieldRevisions = mapOf(BeerDirtyField.LOCATION to 2L)
+        )
+
+        val classification = LegacyBeerClassifier.classify(
+            local = local,
+            remote = remote,
+            readScope = RemoteReadScope.AUTHORITATIVE_CONFIRMED,
+            expectedOwnerUid = activeUserUid
+        )
+
+        assertTrue(classification is LegacyClassification.NeedsReconciliation)
+        val needsRecon = classification as LegacyClassification.NeedsReconciliation
+        assertEquals(SyncStatus.PENDING, needsRecon.localSyncStatus)
+        assertEquals(true, needsRecon.remoteObserved)
+    }
+
+    @Test
+    fun `active modern remote document with different mutationId against legacy SYNCED 0-0 yields ModernRemoteActive`() {
+        val local = LegacyLocalEntityContext(
+            syncId = defaultSyncId,
+            ownerUid = activeUserUid,
+            syncStatus = SyncStatus.SYNCED,
+            remoteRevision = 0L,
+            baseRevision = 0L,
+            dirtyFields = emptySet(),
+            lastMutationId = "M_LOCAL_OLD"
         )
         val remote = LegacyRemoteSnapshot.Present(
             revision = 2L,
@@ -815,6 +846,400 @@ class LegacyBeerClassifierTest {
                 remoteRevision = 5L
             ),
             result
+        )
+    }
+
+    // -------------------------------------------------------------------------
+    // 10. TESTS OBLIGATORIOS DE AUDITORÍA C4.1A (CASOS 1 A 8)
+    // -------------------------------------------------------------------------
+
+    @Test
+    fun `audit test 1 - pending 5-5 with isProvenNeverSyncedCreation true and absent remote does not promote`() {
+        val local = LegacyLocalEntityContext(
+            syncId = defaultSyncId,
+            ownerUid = activeUserUid,
+            syncStatus = SyncStatus.PENDING,
+            remoteRevision = 5L,
+            baseRevision = 5L,
+            dirtyFields = BeerDirtyFieldsCodec.ALL_FIELDS,
+            lastMutationId = "M_LOCAL_5",
+            hasRemotePhotoUrl = false
+        )
+        val evidence = LegacyHistoricalEvidence(
+            isProvenNeverSyncedCreation = true,
+            hasPriorSyncHistory = false
+        )
+
+        val classification = LegacyBeerClassifier.classify(
+            local = local,
+            remote = LegacyRemoteSnapshot.Absent,
+            readScope = RemoteReadScope.AUTHORITATIVE_CONFIRMED,
+            expectedOwnerUid = activeUserUid,
+            evidence = evidence
+        )
+
+        assertTrue(classification is LegacyClassification.NeedsReconciliation)
+    }
+
+    @Test
+    fun `audit test 2 - synced 0-0 with ALL_FIELDS and isProvenNeverSyncedCreation true does not promote`() {
+        val local = LegacyLocalEntityContext(
+            syncId = defaultSyncId,
+            ownerUid = activeUserUid,
+            syncStatus = SyncStatus.SYNCED,
+            remoteRevision = 0L,
+            baseRevision = 0L,
+            dirtyFields = BeerDirtyFieldsCodec.ALL_FIELDS,
+            lastMutationId = "M_SYNCED_0",
+            hasRemotePhotoUrl = false
+        )
+        val evidence = LegacyHistoricalEvidence(
+            isProvenNeverSyncedCreation = true,
+            hasPriorSyncHistory = false
+        )
+
+        val classification = LegacyBeerClassifier.classify(
+            local = local,
+            remote = LegacyRemoteSnapshot.Absent,
+            readScope = RemoteReadScope.AUTHORITATIVE_CONFIRMED,
+            expectedOwnerUid = activeUserUid,
+            evidence = evidence
+        )
+
+        assertTrue(
+            classification is LegacyClassification.NeedsReconciliation ||
+            classification is LegacyClassification.RemoteAbsentForPreviouslySyncedEntity
+        )
+        assertTrue(classification !is LegacyClassification.PromoteToLocalOnlyCreation)
+    }
+
+    @Test
+    fun `audit test 3 - pending 0-0 ALL_FIELDS with proven creation, absent remote, and valid lastMutationId promotes`() {
+        val local = LegacyLocalEntityContext(
+            syncId = defaultSyncId,
+            ownerUid = activeUserUid,
+            syncStatus = SyncStatus.PENDING,
+            remoteRevision = 0L,
+            baseRevision = 0L,
+            dirtyFields = BeerDirtyFieldsCodec.ALL_FIELDS,
+            lastMutationId = "M_VALID_PROVEN",
+            hasRemotePhotoUrl = false
+        )
+        val evidence = LegacyHistoricalEvidence(
+            isProvenNeverSyncedCreation = true,
+            hasPriorSyncHistory = false
+        )
+
+        val classification = LegacyBeerClassifier.classify(
+            local = local,
+            remote = LegacyRemoteSnapshot.Absent,
+            readScope = RemoteReadScope.AUTHORITATIVE_CONFIRMED,
+            expectedOwnerUid = activeUserUid,
+            evidence = evidence
+        )
+
+        assertEquals(
+            LegacyClassification.PromoteToLocalOnlyCreation(initialMutationId = "M_VALID_PROVEN"),
+            classification
+        )
+    }
+
+    @Test
+    fun `audit test 4 - pending 0-0 ALL_FIELDS with proven creation, absent remote, and null lastMutationId yields NeedsReconciliation`() {
+        val local = LegacyLocalEntityContext(
+            syncId = defaultSyncId,
+            ownerUid = activeUserUid,
+            syncStatus = SyncStatus.PENDING,
+            remoteRevision = 0L,
+            baseRevision = 0L,
+            dirtyFields = BeerDirtyFieldsCodec.ALL_FIELDS,
+            lastMutationId = null, // Nulo: no debe usar "CREATION_INITIAL" ni UUID sintético
+            hasRemotePhotoUrl = false
+        )
+        val evidence = LegacyHistoricalEvidence(
+            isProvenNeverSyncedCreation = true,
+            hasPriorSyncHistory = false
+        )
+
+        val classification = LegacyBeerClassifier.classify(
+            local = local,
+            remote = LegacyRemoteSnapshot.Absent,
+            readScope = RemoteReadScope.AUTHORITATIVE_CONFIRMED,
+            expectedOwnerUid = activeUserUid,
+            evidence = evidence
+        )
+
+        assertTrue(classification is LegacyClassification.NeedsReconciliation)
+        val needsRecon = classification as LegacyClassification.NeedsReconciliation
+        assertEquals(SyncStatus.PENDING, needsRecon.localSyncStatus)
+        assertEquals(false, needsRecon.remoteObserved)
+        assertTrue(needsRecon.reason.contains("lastMutationId"))
+    }
+
+    @Test
+    fun `audit test 5 - pending 0-0 COMMENT dirty against modern remote rev 6 COMMENT 6 with diff mutation yields NeedsReconciliation`() {
+        val local = LegacyLocalEntityContext(
+            syncId = defaultSyncId,
+            ownerUid = activeUserUid,
+            syncStatus = SyncStatus.PENDING,
+            remoteRevision = 0L,
+            baseRevision = 0L,
+            dirtyFields = setOf(BeerDirtyField.COMMENT),
+            lastMutationId = "M_LOCAL_EDIT",
+            hasRemotePhotoUrl = false
+        )
+        val remote = LegacyRemoteSnapshot.Present(
+            revision = 6L,
+            isDeleted = false,
+            lastMutationId = "M_REMOTE_OTHER",
+            fieldRevisions = mapOf(BeerDirtyField.COMMENT to 6L)
+        )
+
+        val classification = LegacyBeerClassifier.classify(
+            local = local,
+            remote = remote,
+            readScope = RemoteReadScope.AUTHORITATIVE_CONFIRMED,
+            expectedOwnerUid = activeUserUid
+        )
+
+        assertTrue(classification is LegacyClassification.NeedsReconciliation)
+        val needsRecon = classification as LegacyClassification.NeedsReconciliation
+        assertEquals(SyncStatus.PENDING, needsRecon.localSyncStatus)
+        assertEquals(true, needsRecon.remoteObserved)
+    }
+
+    @Test
+    fun `audit test 6 - pending 0-0 COMMENT dirty against modern remote rev 6 with matching own mutation yields PotentialOwnMutationAck`() {
+        val local = LegacyLocalEntityContext(
+            syncId = defaultSyncId,
+            ownerUid = activeUserUid,
+            syncStatus = SyncStatus.PENDING,
+            remoteRevision = 0L,
+            baseRevision = 0L,
+            dirtyFields = setOf(BeerDirtyField.COMMENT),
+            lastMutationId = "M_OWN_MUTATION",
+            hasRemotePhotoUrl = false
+        )
+        val remote = LegacyRemoteSnapshot.Present(
+            revision = 6L,
+            isDeleted = false,
+            lastMutationId = "M_OWN_MUTATION",
+            fieldRevisions = mapOf(BeerDirtyField.COMMENT to 6L)
+        )
+
+        val classification = LegacyBeerClassifier.classify(
+            local = local,
+            remote = remote,
+            readScope = RemoteReadScope.AUTHORITATIVE_CONFIRMED,
+            expectedOwnerUid = activeUserUid
+        )
+
+        assertEquals(
+            LegacyClassification.PotentialOwnMutationAck(
+                matchedMutationId = "M_OWN_MUTATION",
+                isModern = true,
+                remoteRevision = 6L
+            ),
+            classification
+        )
+    }
+
+    @Test
+    fun `audit test 6b - pending 0-0 COMMENT dirty against modern remote rev 6 matching pastLocalMutationId yields PotentialOwnMutationAck`() {
+        val local = LegacyLocalEntityContext(
+            syncId = defaultSyncId,
+            ownerUid = activeUserUid,
+            syncStatus = SyncStatus.PENDING,
+            remoteRevision = 0L,
+            baseRevision = 0L,
+            dirtyFields = setOf(BeerDirtyField.COMMENT),
+            lastMutationId = "M_LATER_LOCAL_MUTATION",
+            hasRemotePhotoUrl = false
+        )
+        val remote = LegacyRemoteSnapshot.Present(
+            revision = 6L,
+            isDeleted = false,
+            lastMutationId = "M_PAST_LOCAL_MUTATION",
+            fieldRevisions = mapOf(BeerDirtyField.COMMENT to 6L)
+        )
+        val evidence = LegacyHistoricalEvidence(
+            pastLocalMutationIds = setOf("M_PAST_LOCAL_MUTATION")
+        )
+
+        val classification = LegacyBeerClassifier.classify(
+            local = local,
+            remote = remote,
+            readScope = RemoteReadScope.AUTHORITATIVE_CONFIRMED,
+            expectedOwnerUid = activeUserUid,
+            evidence = evidence
+        )
+
+        assertEquals(
+            LegacyClassification.PotentialOwnMutationAck(
+                matchedMutationId = "M_PAST_LOCAL_MUTATION",
+                isModern = true,
+                remoteRevision = 6L
+            ),
+            classification
+        )
+    }
+
+    @Test
+    fun `audit test 7a - contradictory evidence with priorSyncHistory yields NeedsReconciliation`() {
+        val local = LegacyLocalEntityContext(
+            syncId = defaultSyncId,
+            ownerUid = activeUserUid,
+            syncStatus = SyncStatus.PENDING,
+            remoteRevision = 0L,
+            baseRevision = 0L,
+            dirtyFields = BeerDirtyFieldsCodec.ALL_FIELDS,
+            lastMutationId = "M_CONTRADICT_1",
+            hasRemotePhotoUrl = false
+        )
+        val evidence = LegacyHistoricalEvidence(
+            isProvenNeverSyncedCreation = true,
+            hasPriorSyncHistory = true // Contradicción directa
+        )
+
+        val classification = LegacyBeerClassifier.classify(
+            local = local,
+            remote = LegacyRemoteSnapshot.Absent,
+            readScope = RemoteReadScope.AUTHORITATIVE_CONFIRMED,
+            expectedOwnerUid = activeUserUid,
+            evidence = evidence
+        )
+
+        assertTrue(classification is LegacyClassification.NeedsReconciliation)
+        val needsRecon = classification as LegacyClassification.NeedsReconciliation
+        assertTrue(needsRecon.reason.contains("Contradictory evidence"))
+    }
+
+    @Test
+    fun `audit test 7b - contradictory evidence with positive revisions yields NeedsReconciliation`() {
+        val local = LegacyLocalEntityContext(
+            syncId = defaultSyncId,
+            ownerUid = activeUserUid,
+            syncStatus = SyncStatus.PENDING,
+            remoteRevision = 2L, // Contradicción: revisiones positivas
+            baseRevision = 2L,
+            dirtyFields = BeerDirtyFieldsCodec.ALL_FIELDS,
+            lastMutationId = "M_CONTRADICT_2",
+            hasRemotePhotoUrl = false
+        )
+        val evidence = LegacyHistoricalEvidence(
+            isProvenNeverSyncedCreation = true,
+            hasPriorSyncHistory = false
+        )
+
+        val classification = LegacyBeerClassifier.classify(
+            local = local,
+            remote = LegacyRemoteSnapshot.Absent,
+            readScope = RemoteReadScope.AUTHORITATIVE_CONFIRMED,
+            expectedOwnerUid = activeUserUid,
+            evidence = evidence
+        )
+
+        assertTrue(classification is LegacyClassification.NeedsReconciliation)
+        val needsRecon = classification as LegacyClassification.NeedsReconciliation
+        assertTrue(needsRecon.reason.contains("Contradictory evidence"))
+    }
+
+    @Test
+    fun `audit test 7c - contradictory evidence with remotePhotoUrl yields NeedsReconciliation`() {
+        val local = LegacyLocalEntityContext(
+            syncId = defaultSyncId,
+            ownerUid = activeUserUid,
+            syncStatus = SyncStatus.PENDING,
+            remoteRevision = 0L,
+            baseRevision = 0L,
+            dirtyFields = BeerDirtyFieldsCodec.ALL_FIELDS,
+            lastMutationId = "M_CONTRADICT_3",
+            hasRemotePhotoUrl = true // Contradicción: tiene URL remota en Storage
+        )
+        val evidence = LegacyHistoricalEvidence(
+            isProvenNeverSyncedCreation = true,
+            hasPriorSyncHistory = false
+        )
+
+        val classification = LegacyBeerClassifier.classify(
+            local = local,
+            remote = LegacyRemoteSnapshot.Absent,
+            readScope = RemoteReadScope.AUTHORITATIVE_CONFIRMED,
+            expectedOwnerUid = activeUserUid,
+            evidence = evidence
+        )
+
+        assertTrue(classification is LegacyClassification.NeedsReconciliation)
+        val needsRecon = classification as LegacyClassification.NeedsReconciliation
+        assertTrue(needsRecon.reason.contains("Contradictory evidence"))
+    }
+
+    @Test
+    fun `audit test 8a - remoteOwnerUid mismatch in Present snapshot yields OwnershipMismatch`() {
+        val local = LegacyLocalEntityContext(
+            syncId = defaultSyncId,
+            ownerUid = activeUserUid,
+            syncStatus = SyncStatus.PENDING,
+            remoteRevision = 0L,
+            baseRevision = 0L,
+            dirtyFields = BeerDirtyFieldsCodec.ALL_FIELDS,
+            lastMutationId = "M_LOCAL_MATCH"
+        )
+        val remote = LegacyRemoteSnapshot.Present(
+            revision = 2L,
+            isDeleted = false,
+            lastMutationId = "M_LOCAL_MATCH",
+            fieldRevisions = mapOf(BeerDirtyField.PHOTO to 2L),
+            remoteOwnerUid = "different_remote_user_uid_456" // Mismatch con activeUserUid
+        )
+
+        val classification = LegacyBeerClassifier.classify(
+            local = local,
+            remote = remote,
+            readScope = RemoteReadScope.AUTHORITATIVE_CONFIRMED,
+            expectedOwnerUid = activeUserUid
+        )
+
+        assertTrue(classification is LegacyClassification.OwnershipMismatch)
+        val mismatch = classification as LegacyClassification.OwnershipMismatch
+        assertEquals(activeUserUid, mismatch.localOwnerUid)
+        assertEquals(activeUserUid, mismatch.expectedOwnerUid)
+        assertTrue(mismatch.reason.contains("different_remote_user_uid_456"))
+    }
+
+    @Test
+    fun `audit test 8b - matching remoteOwnerUid in Present snapshot continues normal classification`() {
+        val local = LegacyLocalEntityContext(
+            syncId = defaultSyncId,
+            ownerUid = activeUserUid,
+            syncStatus = SyncStatus.PENDING,
+            remoteRevision = 0L,
+            baseRevision = 0L,
+            dirtyFields = setOf(BeerDirtyField.COMMENT),
+            lastMutationId = "M_SAME_OWNER"
+        )
+        val remote = LegacyRemoteSnapshot.Present(
+            revision = 1L,
+            isDeleted = false,
+            lastMutationId = "M_SAME_OWNER",
+            fieldRevisions = mapOf(BeerDirtyField.COMMENT to 1L),
+            remoteOwnerUid = activeUserUid // Coincide con expectedOwnerUid
+        )
+
+        val classification = LegacyBeerClassifier.classify(
+            local = local,
+            remote = remote,
+            readScope = RemoteReadScope.AUTHORITATIVE_CONFIRMED,
+            expectedOwnerUid = activeUserUid
+        )
+
+        assertEquals(
+            LegacyClassification.PotentialOwnMutationAck(
+                matchedMutationId = "M_SAME_OWNER",
+                isModern = true,
+                remoteRevision = 1L
+            ),
+            classification
         )
     }
 }

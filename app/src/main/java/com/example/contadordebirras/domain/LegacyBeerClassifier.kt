@@ -37,7 +37,8 @@ sealed interface LegacyRemoteSnapshot {
         val revision: Long,
         val isDeleted: Boolean = false,
         val lastMutationId: String? = null,
-        val fieldRevisions: Map<BeerDirtyField, Long> = emptyMap()
+        val fieldRevisions: Map<BeerDirtyField, Long> = emptyMap(),
+        val remoteOwnerUid: String? = null
     ) : LegacyRemoteSnapshot {
         val isModern: Boolean get() = revision >= FIRST_PROTOCOL_REVISION
         val isLegacy: Boolean get() = revision == LEGACY_REMOTE_REVISION
@@ -77,6 +78,8 @@ sealed interface LegacyClassification {
      * - Evidencia positiva verificable de que nunca fue sincronizada (isProvenNeverSyncedCreation = true).
      * - dirtyFields == ALL_FIELDS.
      * - local.syncStatus == PENDING.
+     * - local.remoteRevision == 0L y local.baseRevision == 0L (o ya -1L/-1L).
+     * - local.lastMutationId presente y no nulo.
      * - Coherencia estricta de ownerUid.
      *
      * Autoriza la transición segura a sentinelas local-only (-1L/-1L) para emitir CreateActive en C3A.
@@ -165,8 +168,9 @@ sealed interface LegacyClassification {
     ) : LegacyClassification
 
     /**
-     * Inconsistencia o colisión de ownership detectada (ej. pertenece a otro UID autenticado distinto).
-     * Se bloquea la operación para evitar fuga de información entre usuarios.
+     * Inconsistencia o colisión de ownership detectada (ej. pertenece a otro UID autenticado distinto,
+     * o el documento remoto indica un ownerUid diferente al esperado).
+     * Se bloquea la operación para evitar fuga o cruce de información entre usuarios.
      */
     data class OwnershipMismatch(
         val localOwnerUid: String,
@@ -178,7 +182,9 @@ sealed interface LegacyClassification {
      * Situación ambigua o con evidencia insuficiente:
      * - PENDING 0/0 ALL_FIELDS con remoto ausente PERO sin evidencia positiva de creación no sincronizada.
      * - PENDING 0/0 con dirtyFields parciales y remoto ausente.
-     * - Datos contradictorios o estados indeterminados.
+     * - PENDING 0/0 frente a remoto moderno (revision >= 1) con mutationId diferente.
+     * - Entidad con creación probada pero sin lastMutationId persistido en Room.
+     * - Evidencia histórica contradictoria.
      *
      * DECISIÓN DE SEGURIDAD:
      * La fila se preserva íntegramente en Room. Se bloquea cualquier mutación a -1/-1 y se remite a reconciliación.
@@ -206,6 +212,17 @@ sealed interface LegacyClassification {
  * y situaciones ambiguas que deben bloquearse para impedir pérdidas de datos.
  *
  * No realiza consultas a base de datos, red, Firebase ni WorkManager.
+ *
+ * LÍMITE DE CONFIANZA DE OWNERSHIP:
+ * El clasificador asume como precondición arquitectónica que las consultas y lecturas remotas
+ * en Firestore ya han sido acotadas por la capa de integración / repositorio a la ruta o
+ * subcolección del usuario autenticado (/users/{expectedOwnerUid}/beers).
+ * No obstante, como mecanismo de defensa en profundidad, si [LegacyRemoteSnapshot.Present]
+ * incluye un [LegacyRemoteSnapshot.Present.remoteOwnerUid] explícito y difiere de [expectedOwnerUid],
+ * o si la entidad local [LegacyLocalEntityContext.ownerUid] no coincide con [expectedOwnerUid],
+ * el clasificador aborta inmediatamente devolviendo [LegacyClassification.OwnershipMismatch]
+ * (o [LegacyClassification.PreserveIsolatedGuestOrUnassigned] para datos guest o unassigned),
+ * impidiendo cualquier cruce de datos o fuga de información entre usuarios.
  */
 object LegacyBeerClassifier {
 
@@ -278,7 +295,7 @@ object LegacyBeerClassifier {
             }
         }
 
-        // 3. Aislamiento estricto de OwnerUid (Regla 6)
+        // 3. Aislamiento y comprobación de OwnerUid (Regla 6 y Problema 4)
         if (local.ownerUid != expectedOwnerUid) {
             return if (local.ownerUid == GUEST_OWNER_UID || local.ownerUid == LEGACY_UNASSIGNED_UID) {
                 LegacyClassification.PreserveIsolatedGuestOrUnassigned(
@@ -289,31 +306,62 @@ object LegacyBeerClassifier {
                 LegacyClassification.OwnershipMismatch(
                     localOwnerUid = local.ownerUid,
                     expectedOwnerUid = expectedOwnerUid,
-                    reason = "Ownership mismatch: entity owned by '${local.ownerUid}' cannot be synced under '$expectedOwnerUid'."
+                    reason = "Ownership mismatch: local entity owned by '${local.ownerUid}' cannot be synced under '$expectedOwnerUid'."
                 )
             }
         }
 
-        // 4. Garantía de lectura remota para documento ausente (Regla 2)
+        if (remote is LegacyRemoteSnapshot.Present &&
+            remote.remoteOwnerUid != null &&
+            remote.remoteOwnerUid != expectedOwnerUid
+        ) {
+            return LegacyClassification.OwnershipMismatch(
+                localOwnerUid = local.ownerUid,
+                expectedOwnerUid = expectedOwnerUid,
+                reason = "Ownership mismatch: remote document owned by '${remote.remoteOwnerUid}' does not match expected user '$expectedOwnerUid'."
+            )
+        }
+
+        // 4. Detección de evidencia histórica contradictoria (Problema 1)
+        if (evidence.isProvenNeverSyncedCreation &&
+            (local.syncStatus != SyncStatus.PENDING ||
+             local.remoteRevision > 0L || local.baseRevision > 0L ||
+             local.hasRemotePhotoUrl || evidence.hasPriorSyncHistory)
+        ) {
+            return LegacyClassification.NeedsReconciliation(
+                reason = "Contradictory evidence: entity claims never-synced creation but status is '${local.syncStatus}', has positive revisions (${local.remoteRevision}/${local.baseRevision}), remote photo URL, or prior sync history.",
+                localSyncStatus = local.syncStatus,
+                remoteObserved = remote is LegacyRemoteSnapshot.Present
+            )
+        }
+
+        // 5. Garantía de lectura remota para documento ausente (Regla 2, Problema 1 y 3)
         if (remote is LegacyRemoteSnapshot.Absent) {
             if (readScope != RemoteReadScope.AUTHORITATIVE_CONFIRMED) {
                 return LegacyClassification.IgnoreIncompleteRead
             }
 
             // Remoto ausente bajo lectura autoritativa confirmada:
-            // 4a. Entidad local DELETED (Regla 7)
+            // 5a. Entidad local DELETED (Regla 7)
             if (local.syncStatus == SyncStatus.DELETED) {
                 return LegacyClassification.DeleteAlreadySatisfied
             }
 
-            // 4b. Entidad con evidencia de haber sido sincronizada previamente (Regla 2)
-            if (evidence.hasPriorSyncHistory || local.hasRemotePhotoUrl) {
+            // 5b. Entidad en estado SYNCED: estaba marcada como sincronizada, ahora ausente en remoto
+            if (local.syncStatus == SyncStatus.SYNCED) {
                 return LegacyClassification.RemoteAbsentForPreviouslySyncedEntity(
-                    reason = "Entity has prior sync history but is absent from authoritative remote read."
+                    reason = "Entity in SYNCED status is absent from authoritative remote read."
                 )
             }
 
-            // 4c. Entidad PENDING con dirtyFields parciales (Regla 1 y 2)
+            // 5c. Entidad con revisiones remotas positivas (> 0L) o evidencia de sync previa (Regla 2)
+            if (local.remoteRevision > 0L || local.baseRevision > 0L || evidence.hasPriorSyncHistory || local.hasRemotePhotoUrl) {
+                return LegacyClassification.RemoteAbsentForPreviouslySyncedEntity(
+                    reason = "Entity has prior sync history or positive remote revisions (${local.remoteRevision}/${local.baseRevision}) but is absent from authoritative remote read."
+                )
+            }
+
+            // 5d. Entidad PENDING con dirtyFields parciales (Regla 1 y 2)
             // Si solo tiene modificados algunos campos, existió previamente en Firestore y se editaron campos locales.
             if (local.dirtyFields != BeerDirtyFieldsCodec.ALL_FIELDS) {
                 return LegacyClassification.RemoteAbsentForPreviouslySyncedEntity(
@@ -321,17 +369,47 @@ object LegacyBeerClassifier {
                 )
             }
 
-            // 4d. Entidad PENDING con ALL_FIELDS
-            // Regla 1 y 3: ALL_FIELDS NO demuestra creación nueva a menos que haya prueba positiva fidedigna.
-            if (evidence.isProvenNeverSyncedCreation) {
+            // 5e. Entidad ya local-only (-1L/-1L)
+            if (local.remoteRevision == LOCAL_ONLY_REVISION && local.baseRevision == LOCAL_ONLY_REVISION) {
+                if (local.lastMutationId.isNullOrBlank()) {
+                    return LegacyClassification.NeedsReconciliation(
+                        reason = "Local-only entity (-1/-1) lacks a persisted lastMutationId; a unique mutationId must be generated and persisted in Room before promotion.",
+                        localSyncStatus = local.syncStatus,
+                        remoteObserved = false
+                    )
+                }
                 return LegacyClassification.PromoteToLocalOnlyCreation(
-                    initialMutationId = local.lastMutationId ?: "CREATION_INITIAL"
+                    initialMutationId = local.lastMutationId
                 )
             }
 
-            // Sin prueba positiva de creación no sincronizada: BLOQUEO SEGURO (Regla 1)
+            // 5f. Entidad legacy (0L/0L)
+            if (local.remoteRevision == LEGACY_REMOTE_REVISION && local.baseRevision == LEGACY_REMOTE_REVISION) {
+                // Regla 1 y 3: ALL_FIELDS NO demuestra creación nueva a menos que haya prueba positiva fidedigna.
+                if (evidence.isProvenNeverSyncedCreation) {
+                    if (local.lastMutationId.isNullOrBlank()) {
+                        return LegacyClassification.NeedsReconciliation(
+                            reason = "Legacy entity has proven un-synced creation but lacks a persisted lastMutationId; a unique mutationId must be generated and persisted in Room before promotion.",
+                            localSyncStatus = local.syncStatus,
+                            remoteObserved = false
+                        )
+                    }
+                    return LegacyClassification.PromoteToLocalOnlyCreation(
+                        initialMutationId = local.lastMutationId
+                    )
+                }
+
+                // Sin prueba positiva de creación no sincronizada: BLOQUEO SEGURO (Regla 1)
+                return LegacyClassification.NeedsReconciliation(
+                    reason = "Legacy PENDING 0/0 entity with ALL_FIELDS lacks positive evidence of un-synced creation.",
+                    localSyncStatus = local.syncStatus,
+                    remoteObserved = false
+                )
+            }
+
+            // Cualquier otra combinación no contemplada
             return LegacyClassification.NeedsReconciliation(
-                reason = "Legacy PENDING 0/0 entity with ALL_FIELDS lacks positive evidence of un-synced creation.",
+                reason = "Unrecognized revision combination (${local.remoteRevision}/${local.baseRevision}) for absent remote document.",
                 localSyncStatus = local.syncStatus,
                 remoteObserved = false
             )
@@ -340,7 +418,7 @@ object LegacyBeerClassifier {
         // A partir de aquí: remote is LegacyRemoteSnapshot.Present
         check(remote is LegacyRemoteSnapshot.Present)
 
-        // 5. Remoto es Tombstone (isDeleted == true) (Regla 7: DELETE WINS)
+        // 6. Remoto es Tombstone (isDeleted == true) (Regla 7: DELETE WINS)
         if (remote.isDeleted) {
             return if (local.syncStatus == SyncStatus.DELETED) {
                 LegacyClassification.DeleteAlreadySatisfied
@@ -352,7 +430,7 @@ object LegacyBeerClassifier {
             }
         }
 
-        // 6. Local DELETED frente a remoto activo (Regla 7: DELETE WINS)
+        // 7. Local DELETED frente a remoto activo (Regla 7: DELETE WINS)
         if (local.syncStatus == SyncStatus.DELETED) {
             return LegacyClassification.LocalDeleteWins(
                 remoteExists = true,
@@ -360,7 +438,7 @@ object LegacyBeerClassifier {
             )
         }
 
-        // 7. ACK de mutación propia conocida (Regla 4)
+        // 8. ACK de mutación propia conocida (Regla 4)
         // Coincidencia con lastMutationId activo o con mutationIds pasados en el historial
         val matchedMutationId = when {
             local.lastMutationId != null && remote.lastMutationId == local.lastMutationId -> local.lastMutationId
@@ -375,18 +453,32 @@ object LegacyBeerClassifier {
             )
         }
 
-        // 8. Remoto activo con mutación diferente
+        // 9. Remoto activo con mutación diferente (Regla 5 y Problema 2)
         return if (remote.isLegacy) {
             // Regla 5: Documento legacy activo sin revisión moderna (revision = 0)
             LegacyClassification.LegacyRemoteActive(
                 remoteLastMutationId = remote.lastMutationId
             )
         } else {
-            // Documento moderno activo (revision >= 1)
-            LegacyClassification.ModernRemoteActive(
-                remoteRevision = remote.revision,
-                remoteLastMutationId = remote.lastMutationId
-            )
+            // Documento moderno activo (revision >= 1) con mutación diferente:
+            // 0/0 NO es una base moderna verificada de concurrencia OCC.
+            // Si la entidad local tiene dirtyFields pendientes en base legacy o sentinela,
+            // NO clasificar como ModernRemoteActive para evitar que C3A aplique RemoteWinsOnly
+            // silenciosamente descartando la edición local.
+            if (local.syncStatus == SyncStatus.PENDING &&
+                (local.remoteRevision <= LEGACY_REMOTE_REVISION || local.baseRevision <= LEGACY_REMOTE_REVISION)
+            ) {
+                LegacyClassification.NeedsReconciliation(
+                    reason = "Local PENDING entity with unversioned/sentinel revisions (${local.remoteRevision}/${local.baseRevision}) cannot establish a verified causal base against modern remote document (revision ${remote.revision}) with different mutationId '${remote.lastMutationId}'. Reconcile without discarding local edits.",
+                    localSyncStatus = local.syncStatus,
+                    remoteObserved = true
+                )
+            } else {
+                LegacyClassification.ModernRemoteActive(
+                    remoteRevision = remote.revision,
+                    remoteLastMutationId = remote.lastMutationId
+                )
+            }
         }
     }
 
@@ -406,7 +498,8 @@ object LegacyBeerClassifier {
                 revision = remoteMetadata.revision,
                 isDeleted = remoteMetadata.isDeleted,
                 lastMutationId = remoteMetadata.lastMutationId,
-                fieldRevisions = remoteMetadata.fieldRevisions
+                fieldRevisions = remoteMetadata.fieldRevisions,
+                remoteOwnerUid = null
             )
         }
         return classify(local, snapshot, readScope, expectedOwnerUid, evidence)
