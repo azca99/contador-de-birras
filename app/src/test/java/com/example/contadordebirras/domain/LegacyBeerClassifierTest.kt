@@ -205,7 +205,8 @@ class LegacyBeerClassifierTest {
             fieldRevisions = mapOf(
                 BeerDirtyField.TYPE to 1L,
                 BeerDirtyField.COMMENT to 1L
-            )
+            ),
+            remoteOwnerUid = activeUserUid
         )
 
         val classification = LegacyBeerClassifier.classify(
@@ -241,7 +242,8 @@ class LegacyBeerClassifierTest {
             revision = 1L,
             isDeleted = false,
             lastMutationId = "M_LOCAL_1",
-            fieldRevisions = mapOf(BeerDirtyField.COMMENT to 1L)
+            fieldRevisions = mapOf(BeerDirtyField.COMMENT to 1L),
+            remoteOwnerUid = activeUserUid
         )
         val evidence = LegacyHistoricalEvidence(
             pastLocalMutationIds = setOf("M_LOCAL_0", "M_LOCAL_1")
@@ -284,7 +286,8 @@ class LegacyBeerClassifierTest {
             fieldRevisions = mapOf(
                 BeerDirtyField.TYPE to 1L,
                 BeerDirtyField.COMMENT to 1L
-            )
+            ),
+            remoteOwnerUid = activeUserUid
         )
 
         val classification = LegacyBeerClassifier.classify(
@@ -323,7 +326,8 @@ class LegacyBeerClassifierTest {
             revision = 0L,
             isDeleted = false,
             lastMutationId = null,
-            fieldRevisions = emptyMap()
+            fieldRevisions = emptyMap(),
+            remoteOwnerUid = activeUserUid
         )
 
         val classification = LegacyBeerClassifier.classify(
@@ -354,7 +358,8 @@ class LegacyBeerClassifierTest {
             revision = 2L,
             isDeleted = false,
             lastMutationId = "M_REMOTE_OTHER",
-            fieldRevisions = mapOf(BeerDirtyField.LOCATION to 2L)
+            fieldRevisions = mapOf(BeerDirtyField.LOCATION to 2L),
+            remoteOwnerUid = activeUserUid
         )
 
         val classification = LegacyBeerClassifier.classify(
@@ -385,7 +390,8 @@ class LegacyBeerClassifierTest {
             revision = 2L,
             isDeleted = false,
             lastMutationId = "M_REMOTE_OTHER",
-            fieldRevisions = mapOf(BeerDirtyField.LOCATION to 2L)
+            fieldRevisions = mapOf(BeerDirtyField.LOCATION to 2L),
+            remoteOwnerUid = activeUserUid
         )
 
         val classification = LegacyBeerClassifier.classify(
@@ -499,7 +505,8 @@ class LegacyBeerClassifierTest {
         val remoteTombstone = LegacyRemoteSnapshot.Present(
             revision = 3L,
             isDeleted = true,
-            lastMutationId = "M_TOMBSTONE"
+            lastMutationId = "M_TOMBSTONE",
+            remoteOwnerUid = activeUserUid
         )
 
         val classification = LegacyBeerClassifier.classify(
@@ -532,7 +539,8 @@ class LegacyBeerClassifierTest {
         val remoteActive = LegacyRemoteSnapshot.Present(
             revision = 2L,
             isDeleted = false,
-            lastMutationId = "M_REMOTE_ACTIVE"
+            lastMutationId = "M_REMOTE_ACTIVE",
+            remoteOwnerUid = activeUserUid
         )
 
         val classification = LegacyBeerClassifier.classify(
@@ -565,7 +573,8 @@ class LegacyBeerClassifierTest {
         val remoteTombstone = LegacyRemoteSnapshot.Present(
             revision = 4L,
             isDeleted = true,
-            lastMutationId = "M_TOMB"
+            lastMutationId = "M_TOMB",
+            remoteOwnerUid = activeUserUid
         )
 
         val classification = LegacyBeerClassifier.classify(
@@ -688,7 +697,8 @@ class LegacyBeerClassifierTest {
         val remote = LegacyRemoteSnapshot.Present(
             revision = 2L,
             isDeleted = false,
-            fieldRevisions = mapOf(BeerDirtyField.PHOTO to 3L) // Incoherente: 3 > 2
+            fieldRevisions = mapOf(BeerDirtyField.PHOTO to 3L), // Incoherente: 3 > 2
+            remoteOwnerUid = activeUserUid
         )
 
         val classification = LegacyBeerClassifier.classify(
@@ -758,7 +768,7 @@ class LegacyBeerClassifierTest {
                 name = "Remote is Tombstone -> RemoteTombstonePrevailed",
                 localStatus = SyncStatus.PENDING,
                 dirtyFields = BeerDirtyFieldsCodec.ALL_FIELDS,
-                remoteSnapshot = LegacyRemoteSnapshot.Present(revision = 1L, isDeleted = true),
+                remoteSnapshot = LegacyRemoteSnapshot.Present(revision = 1L, isDeleted = true, remoteOwnerUid = activeUserUid),
                 readScope = RemoteReadScope.AUTHORITATIVE_CONFIRMED,
                 evidence = LegacyHistoricalEvidence(),
                 expectedClassificationClass = LegacyClassification.RemoteTombstonePrevailed::class.java
@@ -767,7 +777,7 @@ class LegacyBeerClassifierTest {
                 name = "Local is DELETED with active remote -> LocalDeleteWins",
                 localStatus = SyncStatus.DELETED,
                 dirtyFields = emptySet(),
-                remoteSnapshot = LegacyRemoteSnapshot.Present(revision = 1L, isDeleted = false),
+                remoteSnapshot = LegacyRemoteSnapshot.Present(revision = 1L, isDeleted = false, remoteOwnerUid = activeUserUid),
                 readScope = RemoteReadScope.AUTHORITATIVE_CONFIRMED,
                 evidence = LegacyHistoricalEvidence(),
                 expectedClassificationClass = LegacyClassification.LocalDeleteWins::class.java
@@ -776,7 +786,7 @@ class LegacyBeerClassifierTest {
                 name = "Local is DELETED with tombstone remote -> DeleteAlreadySatisfied",
                 localStatus = SyncStatus.DELETED,
                 dirtyFields = emptySet(),
-                remoteSnapshot = LegacyRemoteSnapshot.Present(revision = 1L, isDeleted = true),
+                remoteSnapshot = LegacyRemoteSnapshot.Present(revision = 1L, isDeleted = true, remoteOwnerUid = activeUserUid),
                 readScope = RemoteReadScope.AUTHORITATIVE_CONFIRMED,
                 evidence = LegacyHistoricalEvidence(),
                 expectedClassificationClass = LegacyClassification.DeleteAlreadySatisfied::class.java
@@ -836,7 +846,8 @@ class LegacyBeerClassifierTest {
             local = local,
             remoteMetadata = remoteMetadata,
             readScope = RemoteReadScope.AUTHORITATIVE_CONFIRMED,
-            expectedOwnerUid = activeUserUid
+            expectedOwnerUid = activeUserUid,
+            remoteOwnerUid = activeUserUid
         )
 
         assertEquals(
@@ -992,7 +1003,8 @@ class LegacyBeerClassifierTest {
             revision = 6L,
             isDeleted = false,
             lastMutationId = "M_REMOTE_OTHER",
-            fieldRevisions = mapOf(BeerDirtyField.COMMENT to 6L)
+            fieldRevisions = mapOf(BeerDirtyField.COMMENT to 6L),
+            remoteOwnerUid = activeUserUid
         )
 
         val classification = LegacyBeerClassifier.classify(
@@ -1024,7 +1036,8 @@ class LegacyBeerClassifierTest {
             revision = 6L,
             isDeleted = false,
             lastMutationId = "M_OWN_MUTATION",
-            fieldRevisions = mapOf(BeerDirtyField.COMMENT to 6L)
+            fieldRevisions = mapOf(BeerDirtyField.COMMENT to 6L),
+            remoteOwnerUid = activeUserUid
         )
 
         val classification = LegacyBeerClassifier.classify(
@@ -1060,7 +1073,8 @@ class LegacyBeerClassifierTest {
             revision = 6L,
             isDeleted = false,
             lastMutationId = "M_PAST_LOCAL_MUTATION",
-            fieldRevisions = mapOf(BeerDirtyField.COMMENT to 6L)
+            fieldRevisions = mapOf(BeerDirtyField.COMMENT to 6L),
+            remoteOwnerUid = activeUserUid
         )
         val evidence = LegacyHistoricalEvidence(
             pastLocalMutationIds = setOf("M_PAST_LOCAL_MUTATION")
@@ -1241,5 +1255,236 @@ class LegacyBeerClassifierTest {
             ),
             classification
         )
+    }
+
+    // -------------------------------------------------------------------------
+    // 11. TESTS DE CONTRATO DE CONFIANZA Y LECTURAS REMOTAS (FASE C4.1A REVISIÓN)
+    // -------------------------------------------------------------------------
+
+    @Test
+    fun `trust contract test 1 - present remote with different owner yields OwnershipMismatch`() {
+        val local = LegacyLocalEntityContext(
+            syncId = defaultSyncId,
+            ownerUid = activeUserUid,
+            syncStatus = SyncStatus.PENDING,
+            remoteRevision = 0L,
+            baseRevision = 0L,
+            dirtyFields = BeerDirtyFieldsCodec.ALL_FIELDS,
+            lastMutationId = "M_LOCAL_MATCH"
+        )
+        val remote = LegacyRemoteSnapshot.Present(
+            revision = 2L,
+            isDeleted = false,
+            lastMutationId = "M_LOCAL_MATCH",
+            fieldRevisions = mapOf(BeerDirtyField.PHOTO to 2L),
+            remoteOwnerUid = "attacker_or_other_user_uid_789" // Distinto a activeUserUid
+        )
+
+        val classification = LegacyBeerClassifier.classify(
+            local = local,
+            remote = remote,
+            readScope = RemoteReadScope.AUTHORITATIVE_CONFIRMED,
+            expectedOwnerUid = activeUserUid
+        )
+
+        assertTrue(classification is LegacyClassification.OwnershipMismatch)
+        val mismatch = classification as LegacyClassification.OwnershipMismatch
+        assertEquals(activeUserUid, mismatch.localOwnerUid)
+        assertEquals(activeUserUid, mismatch.expectedOwnerUid)
+        assertTrue(mismatch.reason.contains("attacker_or_other_user_uid_789"))
+    }
+
+    @Test
+    fun `trust contract test 2 - present remote with missing remoteOwnerUid yields safe block with NeedsReconciliation`() {
+        val local = LegacyLocalEntityContext(
+            syncId = defaultSyncId,
+            ownerUid = activeUserUid,
+            syncStatus = SyncStatus.PENDING,
+            remoteRevision = 0L,
+            baseRevision = 0L,
+            dirtyFields = BeerDirtyFieldsCodec.ALL_FIELDS,
+            lastMutationId = "M_LOCAL_MATCH"
+        )
+        val remote = LegacyRemoteSnapshot.Present(
+            revision = 2L,
+            isDeleted = false,
+            lastMutationId = "M_LOCAL_MATCH",
+            fieldRevisions = mapOf(BeerDirtyField.PHOTO to 2L),
+            remoteOwnerUid = null // Ausente / no verificado en /beers/{syncId}
+        )
+
+        val classification = LegacyBeerClassifier.classify(
+            local = local,
+            remote = remote,
+            readScope = RemoteReadScope.AUTHORITATIVE_CONFIRMED,
+            expectedOwnerUid = activeUserUid
+        )
+
+        assertTrue(classification is LegacyClassification.NeedsReconciliation)
+        val needsRecon = classification as LegacyClassification.NeedsReconciliation
+        assertEquals(SyncStatus.PENDING, needsRecon.localSyncStatus)
+        assertEquals(true, needsRecon.remoteObserved)
+        assertTrue(needsRecon.reason.contains("remoteOwnerUid"))
+    }
+
+    @Test
+    fun `trust contract test 3 - present remote with verified matching owner and authoritative read performs normal classification`() {
+        val local = LegacyLocalEntityContext(
+            syncId = defaultSyncId,
+            ownerUid = activeUserUid,
+            syncStatus = SyncStatus.PENDING,
+            remoteRevision = 0L,
+            baseRevision = 0L,
+            dirtyFields = setOf(BeerDirtyField.COMMENT),
+            lastMutationId = "M_CONFIRMED_ACK"
+        )
+        val remote = LegacyRemoteSnapshot.Present(
+            revision = 3L,
+            isDeleted = false,
+            lastMutationId = "M_CONFIRMED_ACK",
+            fieldRevisions = mapOf(BeerDirtyField.COMMENT to 3L),
+            remoteOwnerUid = activeUserUid // Owner correcto y verificado
+        )
+
+        val classification = LegacyBeerClassifier.classify(
+            local = local,
+            remote = remote,
+            readScope = RemoteReadScope.AUTHORITATIVE_CONFIRMED, // Lectura autoritativa
+            expectedOwnerUid = activeUserUid
+        )
+
+        assertEquals(
+            LegacyClassification.PotentialOwnMutationAck(
+                matchedMutationId = "M_CONFIRMED_ACK",
+                isModern = true,
+                remoteRevision = 3L
+            ),
+            classification
+        )
+    }
+
+    @Test
+    fun `trust contract test 4 - convenience overload with RemoteBeerSyncMetadata without verified owner does not authorize operations`() {
+        val local = LegacyLocalEntityContext(
+            syncId = defaultSyncId,
+            ownerUid = activeUserUid,
+            syncStatus = SyncStatus.PENDING,
+            remoteRevision = 0L,
+            baseRevision = 0L,
+            dirtyFields = BeerDirtyFieldsCodec.ALL_FIELDS,
+            lastMutationId = "M_OVERLOAD_UNVERIFIED"
+        )
+        val remoteMetadata = RemoteBeerSyncMetadata(
+            revision = 5L,
+            isDeleted = false,
+            lastMutationId = "M_OVERLOAD_UNVERIFIED",
+            fieldRevisions = mapOf(BeerDirtyField.PHOTO to 5L)
+        )
+
+        // Se invoca la sobrecarga omitiendo remoteOwnerUid (por defecto null)
+        val result = LegacyBeerClassifier.classify(
+            local = local,
+            remoteMetadata = remoteMetadata,
+            readScope = RemoteReadScope.AUTHORITATIVE_CONFIRMED,
+            expectedOwnerUid = activeUserUid
+            // remoteOwnerUid = null por defecto
+        )
+
+        assertTrue(result is LegacyClassification.NeedsReconciliation)
+        val needsRecon = result as LegacyClassification.NeedsReconciliation
+        assertEquals(SyncStatus.PENDING, needsRecon.localSyncStatus)
+        assertEquals(true, needsRecon.remoteObserved)
+        assertTrue(needsRecon.reason.contains("remoteOwnerUid"))
+    }
+
+    @Test
+    fun `trust contract test 5 - present remote with incomplete read and matching mutationId does not confirm ACK`() {
+        val local = LegacyLocalEntityContext(
+            syncId = defaultSyncId,
+            ownerUid = activeUserUid,
+            syncStatus = SyncStatus.PENDING,
+            remoteRevision = 0L,
+            baseRevision = 0L,
+            dirtyFields = setOf(BeerDirtyField.COMMENT),
+            lastMutationId = "M_LOCAL_MATCH"
+        )
+        val remote = LegacyRemoteSnapshot.Present(
+            revision = 2L,
+            isDeleted = false,
+            lastMutationId = "M_LOCAL_MATCH",
+            fieldRevisions = mapOf(BeerDirtyField.COMMENT to 2L),
+            remoteOwnerUid = activeUserUid
+        )
+
+        val classification = LegacyBeerClassifier.classify(
+            local = local,
+            remote = remote,
+            readScope = RemoteReadScope.INCOMPLETE_OR_UNCONFIRMED, // Snapshot no confirmado / incompleto
+            expectedOwnerUid = activeUserUid
+        )
+
+        // No debe confirmar ACK ni mutar: bloquea con IgnoreIncompleteRead
+        assertEquals(LegacyClassification.IgnoreIncompleteRead, classification)
+    }
+
+    @Test
+    fun `trust contract test 6 - present tombstone from unconfirmed read does not apply delete`() {
+        val local = LegacyLocalEntityContext(
+            syncId = defaultSyncId,
+            ownerUid = activeUserUid,
+            syncStatus = SyncStatus.PENDING,
+            remoteRevision = 0L,
+            baseRevision = 0L,
+            dirtyFields = setOf(BeerDirtyField.COMMENT),
+            lastMutationId = "M_LOCAL_EDIT"
+        )
+        val remoteTombstone = LegacyRemoteSnapshot.Present(
+            revision = 4L,
+            isDeleted = true, // Tombstone en remoto
+            lastMutationId = "M_REMOTE_DELETE",
+            remoteOwnerUid = activeUserUid
+        )
+
+        val classification = LegacyBeerClassifier.classify(
+            local = local,
+            remote = remoteTombstone,
+            readScope = RemoteReadScope.INCOMPLETE_OR_UNCONFIRMED, // Lectura no confirmada
+            expectedOwnerUid = activeUserUid
+        )
+
+        // No debe aplicar el borrado (ni RemoteTombstonePrevailed ni DeleteAlreadySatisfied)
+        assertEquals(LegacyClassification.IgnoreIncompleteRead, classification)
+    }
+
+    @Test
+    fun `trust contract test 7 - guest_local as expectedOwnerUid does not authorize remote push and preserves isolated`() {
+        val local = LegacyLocalEntityContext(
+            syncId = defaultSyncId,
+            ownerUid = LegacyBeerClassifier.GUEST_OWNER_UID,
+            syncStatus = SyncStatus.PENDING,
+            remoteRevision = 0L,
+            baseRevision = 0L,
+            dirtyFields = BeerDirtyFieldsCodec.ALL_FIELDS,
+            lastMutationId = "M_GUEST_123",
+            hasRemotePhotoUrl = false
+        )
+        val evidence = LegacyHistoricalEvidence(
+            isProvenNeverSyncedCreation = true,
+            hasPriorSyncHistory = false
+        )
+
+        // expectedOwnerUid coincide con guest_local: no debe convertirlo en propietario autenticado
+        val classification = LegacyBeerClassifier.classify(
+            local = local,
+            remote = LegacyRemoteSnapshot.Absent,
+            readScope = RemoteReadScope.AUTHORITATIVE_CONFIRMED,
+            expectedOwnerUid = LegacyBeerClassifier.GUEST_OWNER_UID,
+            evidence = evidence
+        )
+
+        assertTrue(classification !is LegacyClassification.PromoteToLocalOnlyCreation)
+        assertTrue(classification is LegacyClassification.PreserveIsolatedGuestOrUnassigned)
+        val result = classification as LegacyClassification.PreserveIsolatedGuestOrUnassigned
+        assertEquals(LegacyBeerClassifier.GUEST_OWNER_UID, result.ownerUid)
     }
 }

@@ -213,16 +213,28 @@ sealed interface LegacyClassification {
  *
  * No realiza consultas a base de datos, red, Firebase ni WorkManager.
  *
- * LÍMITE DE CONFIANZA DE OWNERSHIP:
- * El clasificador asume como precondición arquitectónica que las consultas y lecturas remotas
- * en Firestore ya han sido acotadas por la capa de integración / repositorio a la ruta o
- * subcolección del usuario autenticado (/users/{expectedOwnerUid}/beers).
- * No obstante, como mecanismo de defensa en profundidad, si [LegacyRemoteSnapshot.Present]
- * incluye un [LegacyRemoteSnapshot.Present.remoteOwnerUid] explícito y difiere de [expectedOwnerUid],
- * o si la entidad local [LegacyLocalEntityContext.ownerUid] no coincide con [expectedOwnerUid],
- * el clasificador aborta inmediatamente devolviendo [LegacyClassification.OwnershipMismatch]
- * (o [LegacyClassification.PreserveIsolatedGuestOrUnassigned] para datos guest o unassigned),
- * impidiendo cualquier cruce de datos o fuga de información entre usuarios.
+ * LÍMITE DE CONFIANZA DE OWNERSHIP Y RUTA REAL DE FIRESTORE:
+ * En producción, los documentos de birras se almacenan en la colección de primer nivel `/beers/{syncId}`
+ * (NO en una subcolección `/users/{uid}/beers`). Cada documento remoto contiene un campo `userId`
+ * que identifica a su propietario.
+ *
+ * Por tanto, para todo snapshot [LegacyRemoteSnapshot.Present]:
+ * 1. Se exige que [LegacyRemoteSnapshot.Present.remoteOwnerUid] esté presente y verificado.
+ * 2. Si [remoteOwnerUid] es nulo o está en blanco, se bloquea la operación con
+ *    [LegacyClassification.NeedsReconciliation] (bloqueo seguro sin alterar datos locales).
+ * 3. Si [remoteOwnerUid] difiere de [expectedOwnerUid], se bloquea inmediatamente devolviendo
+ *    [LegacyClassification.OwnershipMismatch].
+ * 4. Las identidades locales `guest_local` y `legacy_unassigned` nunca se consideran propietarios
+ *    autenticados para sincronización remota; cualquier intento de sincronización bajo estos UIDs
+ *    es bloqueado mediante [LegacyClassification.PreserveIsolatedGuestOrUnassigned].
+ *
+ * GARANTÍA DE LECTURA REMOTA (PROBLEMA 2):
+ * La capa de integración C4 debe entregar snapshots con [RemoteReadScope.AUTHORITATIVE_CONFIRMED]
+ * antes de ejecutar cualquier acción real en base de datos o emitir planes de sincronización.
+ * Tanto si el documento remoto está [LegacyRemoteSnapshot.Absent] como si está
+ * [LegacyRemoteSnapshot.Present], si [readScope] es [RemoteReadScope.INCOMPLETE_OR_UNCONFIRMED],
+ * el clasificador bloquea inmediatamente devolviendo [LegacyClassification.IgnoreIncompleteRead],
+ * preservando el estado local íntegro y sin autorizar ACKs, merges, escrituras ni borrados.
  */
 object LegacyBeerClassifier {
 
@@ -295,34 +307,54 @@ object LegacyBeerClassifier {
             }
         }
 
-        // 3. Aislamiento y comprobación de OwnerUid (Regla 6 y Problema 4)
+        // 3. Aislamiento estricto de identidades locales y comprobación de OwnerUid local (Problema 1 y 3)
+        if (local.ownerUid == GUEST_OWNER_UID || local.ownerUid == LEGACY_UNASSIGNED_UID) {
+            return LegacyClassification.PreserveIsolatedGuestOrUnassigned(
+                ownerUid = local.ownerUid,
+                reason = "Entity belongs to local-only identity '${local.ownerUid}' and must remain isolated; remote PUSH is not authorized without an explicit adoption flow."
+            )
+        }
+        if (expectedOwnerUid == GUEST_OWNER_UID || expectedOwnerUid == LEGACY_UNASSIGNED_UID) {
+            return LegacyClassification.PreserveIsolatedGuestOrUnassigned(
+                ownerUid = expectedOwnerUid,
+                reason = "Target sync user '$expectedOwnerUid' is a local-only identity and cannot perform remote synchronization operations."
+            )
+        }
         if (local.ownerUid != expectedOwnerUid) {
-            return if (local.ownerUid == GUEST_OWNER_UID || local.ownerUid == LEGACY_UNASSIGNED_UID) {
-                LegacyClassification.PreserveIsolatedGuestOrUnassigned(
-                    ownerUid = local.ownerUid,
-                    reason = "Entity belongs to '${local.ownerUid}' and must remain isolated from active user '$expectedOwnerUid'."
+            return LegacyClassification.OwnershipMismatch(
+                localOwnerUid = local.ownerUid,
+                expectedOwnerUid = expectedOwnerUid,
+                reason = "Ownership mismatch: local entity owned by '${local.ownerUid}' cannot be synced under '$expectedOwnerUid'."
+            )
+        }
+
+        // 4. Verificación de frontera de confianza para documento remoto Present (Problema 1)
+        // La colección real es /beers/{syncId} con campo userId. Se exige owner remoto conocido y verificado.
+        if (remote is LegacyRemoteSnapshot.Present) {
+            if (remote.remoteOwnerUid.isNullOrBlank()) {
+                return LegacyClassification.NeedsReconciliation(
+                    reason = "Remote document in '/beers/${local.syncId}' lacks a verified remoteOwnerUid (userId); ownership must be confirmed before processing.",
+                    localSyncStatus = local.syncStatus,
+                    remoteObserved = true
                 )
-            } else {
-                LegacyClassification.OwnershipMismatch(
+            }
+            if (remote.remoteOwnerUid != expectedOwnerUid) {
+                return LegacyClassification.OwnershipMismatch(
                     localOwnerUid = local.ownerUid,
                     expectedOwnerUid = expectedOwnerUid,
-                    reason = "Ownership mismatch: local entity owned by '${local.ownerUid}' cannot be synced under '$expectedOwnerUid'."
+                    reason = "Ownership mismatch: remote document in '/beers/${local.syncId}' owned by '${remote.remoteOwnerUid}' does not match expected user '$expectedOwnerUid'."
                 )
             }
         }
 
-        if (remote is LegacyRemoteSnapshot.Present &&
-            remote.remoteOwnerUid != null &&
-            remote.remoteOwnerUid != expectedOwnerUid
-        ) {
-            return LegacyClassification.OwnershipMismatch(
-                localOwnerUid = local.ownerUid,
-                expectedOwnerUid = expectedOwnerUid,
-                reason = "Ownership mismatch: remote document owned by '${remote.remoteOwnerUid}' does not match expected user '$expectedOwnerUid'."
-            )
+        // 5. Garantía de lectura remota autoritativa (Problema 2)
+        // No autoriza ACKs, merges ni decisiones de escritura usando snapshots no confirmados.
+        // Bloquea tanto Absent como Present si la lectura no es autoritativa confirmada.
+        if (readScope != RemoteReadScope.AUTHORITATIVE_CONFIRMED) {
+            return LegacyClassification.IgnoreIncompleteRead
         }
 
-        // 4. Detección de evidencia histórica contradictoria (Problema 1)
+        // 6. Detección de evidencia histórica contradictoria (Problema 1)
         if (evidence.isProvenNeverSyncedCreation &&
             (local.syncStatus != SyncStatus.PENDING ||
              local.remoteRevision > 0L || local.baseRevision > 0L ||
@@ -335,33 +367,28 @@ object LegacyBeerClassifier {
             )
         }
 
-        // 5. Garantía de lectura remota para documento ausente (Regla 2, Problema 1 y 3)
+        // 7. Evaluación de documento remoto ausente bajo lectura autoritativa confirmada (Regla 2)
         if (remote is LegacyRemoteSnapshot.Absent) {
-            if (readScope != RemoteReadScope.AUTHORITATIVE_CONFIRMED) {
-                return LegacyClassification.IgnoreIncompleteRead
-            }
-
-            // Remoto ausente bajo lectura autoritativa confirmada:
-            // 5a. Entidad local DELETED (Regla 7)
+            // 7a. Entidad local DELETED (Regla 7)
             if (local.syncStatus == SyncStatus.DELETED) {
                 return LegacyClassification.DeleteAlreadySatisfied
             }
 
-            // 5b. Entidad en estado SYNCED: estaba marcada como sincronizada, ahora ausente en remoto
+            // 7b. Entidad en estado SYNCED: estaba marcada como sincronizada, ahora ausente en remoto
             if (local.syncStatus == SyncStatus.SYNCED) {
                 return LegacyClassification.RemoteAbsentForPreviouslySyncedEntity(
                     reason = "Entity in SYNCED status is absent from authoritative remote read."
                 )
             }
 
-            // 5c. Entidad con revisiones remotas positivas (> 0L) o evidencia de sync previa (Regla 2)
+            // 7c. Entidad con revisiones remotas positivas (> 0L) o evidencia de sync previa (Regla 2)
             if (local.remoteRevision > 0L || local.baseRevision > 0L || evidence.hasPriorSyncHistory || local.hasRemotePhotoUrl) {
                 return LegacyClassification.RemoteAbsentForPreviouslySyncedEntity(
                     reason = "Entity has prior sync history or positive remote revisions (${local.remoteRevision}/${local.baseRevision}) but is absent from authoritative remote read."
                 )
             }
 
-            // 5d. Entidad PENDING con dirtyFields parciales (Regla 1 y 2)
+            // 7d. Entidad PENDING con dirtyFields parciales (Regla 1 y 2)
             // Si solo tiene modificados algunos campos, existió previamente en Firestore y se editaron campos locales.
             if (local.dirtyFields != BeerDirtyFieldsCodec.ALL_FIELDS) {
                 return LegacyClassification.RemoteAbsentForPreviouslySyncedEntity(
@@ -369,7 +396,7 @@ object LegacyBeerClassifier {
                 )
             }
 
-            // 5e. Entidad ya local-only (-1L/-1L)
+            // 7e. Entidad ya local-only (-1L/-1L)
             if (local.remoteRevision == LOCAL_ONLY_REVISION && local.baseRevision == LOCAL_ONLY_REVISION) {
                 if (local.lastMutationId.isNullOrBlank()) {
                     return LegacyClassification.NeedsReconciliation(
@@ -383,7 +410,7 @@ object LegacyBeerClassifier {
                 )
             }
 
-            // 5f. Entidad legacy (0L/0L)
+            // 7f. Entidad legacy (0L/0L)
             if (local.remoteRevision == LEGACY_REMOTE_REVISION && local.baseRevision == LEGACY_REMOTE_REVISION) {
                 // Regla 1 y 3: ALL_FIELDS NO demuestra creación nueva a menos que haya prueba positiva fidedigna.
                 if (evidence.isProvenNeverSyncedCreation) {
@@ -415,10 +442,10 @@ object LegacyBeerClassifier {
             )
         }
 
-        // A partir de aquí: remote is LegacyRemoteSnapshot.Present
+        // A partir de aquí: remote is LegacyRemoteSnapshot.Present con lectura autoritativa y owner verificado
         check(remote is LegacyRemoteSnapshot.Present)
 
-        // 6. Remoto es Tombstone (isDeleted == true) (Regla 7: DELETE WINS)
+        // 8. Remoto es Tombstone (isDeleted == true) (Regla 7: DELETE WINS)
         if (remote.isDeleted) {
             return if (local.syncStatus == SyncStatus.DELETED) {
                 LegacyClassification.DeleteAlreadySatisfied
@@ -430,7 +457,7 @@ object LegacyBeerClassifier {
             }
         }
 
-        // 7. Local DELETED frente a remoto activo (Regla 7: DELETE WINS)
+        // 9. Local DELETED frente a remoto activo (Regla 7: DELETE WINS)
         if (local.syncStatus == SyncStatus.DELETED) {
             return LegacyClassification.LocalDeleteWins(
                 remoteExists = true,
@@ -438,7 +465,7 @@ object LegacyBeerClassifier {
             )
         }
 
-        // 8. ACK de mutación propia conocida (Regla 4)
+        // 10. ACK de mutación propia conocida (Regla 4)
         // Coincidencia con lastMutationId activo o con mutationIds pasados en el historial
         val matchedMutationId = when {
             local.lastMutationId != null && remote.lastMutationId == local.lastMutationId -> local.lastMutationId
@@ -453,7 +480,7 @@ object LegacyBeerClassifier {
             )
         }
 
-        // 9. Remoto activo con mutación diferente (Regla 5 y Problema 2)
+        // 11. Remoto activo con mutación diferente (Regla 5 y Problema 2)
         return if (remote.isLegacy) {
             // Regla 5: Documento legacy activo sin revisión moderna (revision = 0)
             LegacyClassification.LegacyRemoteActive(
@@ -484,13 +511,21 @@ object LegacyBeerClassifier {
 
     /**
      * Sobrecarga de conveniencia que acepta [RemoteBeerSyncMetadata] opcional.
+     *
+     * IMPORTANTE PARA FASE C4:
+     * Dado que [RemoteBeerSyncMetadata] no contiene información del propietario (`userId`),
+     * esta sobrecarga requiere que el llamador suministre explícitamente el [remoteOwnerUid]
+     * verificado obtenido del documento en Firestore (`/beers/{syncId}`).
+     * Si no se suministra (por defecto null), el clasificador bloquea la operación con
+     * [LegacyClassification.NeedsReconciliation] para no autorizar mutaciones ni ACKs a ciegas.
      */
     fun classify(
         local: LegacyLocalEntityContext,
         remoteMetadata: RemoteBeerSyncMetadata?,
         readScope: RemoteReadScope,
         expectedOwnerUid: String,
-        evidence: LegacyHistoricalEvidence = LegacyHistoricalEvidence()
+        evidence: LegacyHistoricalEvidence = LegacyHistoricalEvidence(),
+        remoteOwnerUid: String? = null
     ): LegacyClassification {
         val snapshot = when {
             remoteMetadata == null -> LegacyRemoteSnapshot.Absent
@@ -499,7 +534,7 @@ object LegacyBeerClassifier {
                 isDeleted = remoteMetadata.isDeleted,
                 lastMutationId = remoteMetadata.lastMutationId,
                 fieldRevisions = remoteMetadata.fieldRevisions,
-                remoteOwnerUid = null
+                remoteOwnerUid = remoteOwnerUid
             )
         }
         return classify(local, snapshot, readScope, expectedOwnerUid, evidence)
