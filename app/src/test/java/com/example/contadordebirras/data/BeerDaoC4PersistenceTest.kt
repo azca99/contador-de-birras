@@ -199,9 +199,9 @@ class BeerDaoC4PersistenceTest {
     }
 
     /**
-     * 4. ACK antiguo no modifica una mutación local más reciente (anti-regresión por concurrencia).
-     * Si local tenía M1, el usuario editó a M2, y luego llega el ACK de M1:
-     * El DAO debe retornar 0 filas actualizadas y NO modificar beers ni confirmar M1 en historial.
+     * 4. ACK antiguo frente a nueva mutación (anti-regresión por concurrencia).
+     * Si local tenía M1, el usuario editó a M2, y luego llega el ACK retrasado de M1:
+     * El DAO debe retornar false (0 filas actualizadas) y NO modificar beers ni confirmar M1.
      */
     @Test
     fun staleAck_doesNotOverwriteOrClearNewerLocalMutation() {
@@ -248,26 +248,39 @@ class BeerDaoC4PersistenceTest {
         assertEquals("Edición nueva M2", currentBeer.comment)
         assertEquals("file:///local/photo_m2.jpg", currentBeer.photoUri)
 
-        // Verificar que M2 sigue PENDING en historial
+        // Verificar que M2 sigue PENDING en historial y M1 sigue SUPERSEDED
+        val m1Record = historyDao.getMutationById("M1", ownerUid)!!
+        assertEquals(MutationStatus.SUPERSEDED, m1Record.status)
+        assertNull(m1Record.confirmedRevision)
+
         val m2Record = historyDao.getMutationById("M2", ownerUid)!!
         assertEquals(MutationStatus.PENDING, m2Record.status)
         assertNull(m2Record.confirmedRevision)
+
+        // Verificar también la consulta directa confirmPushMutationFullSuccess
+        val directResult = beerDao.confirmPushMutationFullSuccess(
+            syncId = syncId,
+            ownerUid = ownerUid,
+            expectedMutationId = "M1",
+            newRemoteRevision = 6L
+        )
+        assertEquals(0, directResult)
     }
 
     /**
-     * 5. Confirmación de ApplyPatch parcial:
-     * Confirma algunos campos dirty pero preserva los restantes en [remainingDirtyFields],
-     * manteniendo syncStatus = PENDING y actualizando revisiones.
+     * 5. (Auditoría #1) PATCH parcial con base=5, remoto=6:
+     * COMMENT sigue dirty y DEBE conservar su base causal original (baseRevision=5, remoteRevision=6).
+     * No se debe sobrescribir baseRevision = 6 porque ocultaría conflictos remotos para COMMENT.
      */
     @Test
-    fun confirmPartialPatch_preservesRemainingDirtyFieldsAndStatusPending() {
+    fun partialPatch_preservesCausalBaseRevisionAndPendingFields() {
         val syncId = "beer-partial-patch"
         val ownerUid = "user_david"
 
         val beer = BeerEntity(
             type = BeerType.LATA,
             timestamp = 1000L,
-            comment = "Comentario local",
+            comment = "Comentario local pendiente",
             photoUri = "file:///local/david.jpg",
             syncId = syncId,
             ownerUid = ownerUid,
@@ -287,73 +300,461 @@ class BeerDaoC4PersistenceTest {
             expectedMutationId = "M1",
             newRemoteRevision = 6L,
             remainingDirtyFields = "COMMENT",
-            remotePhotoUrl = "https://storage/david.jpg"
+            newRemotePhotoUrl = "https://storage/david.jpg"
         )
 
         assertTrue("El patch parcial debe aplicarse", success)
 
         val updatedBeer = beerDao.getBeerBySyncId(syncId, ownerUid)!!
         assertEquals(SyncStatus.PENDING, updatedBeer.syncStatus)
-        assertEquals(6L, updatedBeer.remoteRevision)
-        assertEquals(6L, updatedBeer.baseRevision)
+        assertEquals("remoteRevision debe avanzar a 6L", 6L, updatedBeer.remoteRevision)
+        assertEquals("baseRevision DEBE conservar 5L causal", 5L, updatedBeer.baseRevision)
         assertEquals("COMMENT", updatedBeer.dirtyFields)
         assertEquals("M1", updatedBeer.lastMutationId)
         assertEquals("https://storage/david.jpg", updatedBeer.remotePhotoUrl)
         assertEquals("file:///local/david.jpg", updatedBeer.photoUri)
-
-        val m1Record = historyDao.getMutationById("M1", ownerUid)!!
-        assertEquals(MutationStatus.CONFIRMED, m1Record.status)
-        assertEquals(6L, m1Record.confirmedRevision)
     }
 
     /**
-     * 6. Protección incondicional de photoUri (campo estrictamente local):
-     * Ni los ACKs de PUSH ni las actualizaciones remotas de PULL deben alterar jamás photoUri.
+     * 6. (Auditoría #2) PATCH parcial no marca CONFIRMED una mutación que sigue pendiente:
+     * En el historial se marca como PARTIALLY_CONFIRMED, NUNCA como CONFIRMED.
      */
     @Test
-    fun photoUri_isStrictlyProtectedAsLocalOnlyAcrossPullAndPush() {
-        val syncId = "beer-photo-protect"
-        val ownerUid = "user_eva"
-        val localPhotoUri = "content://media/external/images/media/42"
+    fun partialPatch_marksHistoryAsPartiallyConfirmedNotFullConfirmed() {
+        val syncId = "beer-partial-hist"
+        val ownerUid = "user_david"
 
         val beer = BeerEntity(
             type = BeerType.LATA,
             timestamp = 1000L,
-            photoUri = localPhotoUri,
-            remotePhotoUrl = null,
             syncId = syncId,
             ownerUid = ownerUid,
-            syncStatus = SyncStatus.SYNCED,
-            remoteRevision = 5L,
-            baseRevision = 5L
+            syncStatus = SyncStatus.PENDING,
+            remoteRevision = 2L,
+            baseRevision = 2L,
+            dirtyFields = "COMMENT,TYPE",
+            lastMutationId = "M_PARTIAL"
         )
         beerDao.insertBeer(beer)
-
-        // 1. Simular PULL con nueva foto remota en revisión 6
-        val pullRows = beerDao.applyRemoteUpdateToSyncedBeer(
+        historyDao.insertMutation(LocalMutationHistoryEntity(
+            mutationId = "M_PARTIAL",
             syncId = syncId,
             ownerUid = ownerUid,
-            newRemoteRevision = 6L,
-            type = BeerType.LATA,
             timestamp = 1000L,
-            latitude = null,
-            longitude = null,
-            comment = "Actualizado por otro dispositivo",
-            locationName = null,
-            remotePhotoUrl = "https://firebasestorage/beers/beer-photo-protect.jpg",
-            photoSource = "remote_sync"
-        )
-        assertEquals(1, pullRows)
+            dirtyFields = "COMMENT,TYPE",
+            baseRevision = 2L,
+            status = MutationStatus.PENDING
+        ))
 
-        val pulledBeer = beerDao.getBeerBySyncId(syncId, ownerUid)!!
-        assertEquals("photoUri debe permanecer inmutable", localPhotoUri, pulledBeer.photoUri)
-        assertEquals("https://firebasestorage/beers/beer-photo-protect.jpg", pulledBeer.remotePhotoUrl)
-        assertEquals("remote_sync", pulledBeer.photoSource)
-        assertEquals(6L, pulledBeer.remoteRevision)
+        val success = beerDao.confirmPartialPatchWithHistory(
+            syncId = syncId,
+            ownerUid = ownerUid,
+            expectedMutationId = "M_PARTIAL",
+            newRemoteRevision = 3L,
+            remainingDirtyFields = "COMMENT"
+        )
+        assertTrue(success)
+
+        val histRecord = historyDao.getMutationById("M_PARTIAL", ownerUid)!!
+        assertEquals("El estado en historial debe ser PARTIALLY_CONFIRMED", MutationStatus.PARTIALLY_CONFIRMED, histRecord.status)
+        assertEquals(3L, histRecord.confirmedRevision)
+        assertNotEquals(MutationStatus.CONFIRMED, histRecord.status)
     }
 
     /**
-     * 7. PULL sobre SYNCED vs PENDING:
+     * 7. (Auditoría #3) ACK completo con historial ausente:
+     * Retorna false y la cerveza permanece en PENDING sin modificaciones.
+     */
+    @Test
+    fun confirmPushSuccessWithHistory_failsWhenHistoryMissing() {
+        val syncId = "beer-no-history"
+        val ownerUid = "user_elena"
+
+        val beer = BeerEntity(
+            type = BeerType.LATA,
+            timestamp = 1000L,
+            syncId = syncId,
+            ownerUid = ownerUid,
+            syncStatus = SyncStatus.PENDING,
+            remoteRevision = 0L,
+            baseRevision = 0L,
+            dirtyFields = "ALL_FIELDS",
+            lastMutationId = "mut-orphan"
+        )
+        beerDao.insertBeer(beer)
+        // No insertamos nada en local_mutation_history
+
+        val success = beerDao.confirmPushSuccessWithHistory(
+            syncId = syncId,
+            ownerUid = ownerUid,
+            expectedMutationId = "mut-orphan",
+            newRemoteRevision = 1L
+        )
+
+        assertFalse("Debe fallar porque falta el registro de historial", success)
+
+        val preservedBeer = beerDao.getBeerBySyncId(syncId, ownerUid)!!
+        assertEquals(SyncStatus.PENDING, preservedBeer.syncStatus)
+        assertEquals("mut-orphan", preservedBeer.lastMutationId)
+        assertEquals(0L, preservedBeer.remoteRevision)
+        assertEquals(0L, preservedBeer.baseRevision)
+    }
+
+    /**
+     * 8. (Auditoría #4) ACK con historial de otro syncId:
+     * Retorna false, no confirma ninguna tabla.
+     */
+    @Test
+    fun confirmPushSuccessWithHistory_failsWhenHistoryBelongsToDifferentSyncId() {
+        val ownerUid = "user_felix"
+        val syncIdA = "beer-AAA"
+        val syncIdB = "beer-BBB"
+        val mutationId = "mut-cross-sync"
+
+        val beerA = BeerEntity(
+            type = BeerType.LATA,
+            timestamp = 1000L,
+            syncId = syncIdA,
+            ownerUid = ownerUid,
+            syncStatus = SyncStatus.PENDING,
+            remoteRevision = 1L,
+            baseRevision = 1L,
+            dirtyFields = "COMMENT",
+            lastMutationId = mutationId
+        )
+        beerDao.insertBeer(beerA)
+
+        // Historial con el mismo mutationId pero asignado a syncIdB
+        val historyB = LocalMutationHistoryEntity(
+            mutationId = mutationId,
+            syncId = syncIdB,
+            ownerUid = ownerUid,
+            timestamp = 1000L,
+            dirtyFields = "COMMENT",
+            baseRevision = 1L,
+            status = MutationStatus.PENDING
+        )
+        historyDao.insertMutation(historyB)
+
+        val success = beerDao.confirmPushSuccessWithHistory(
+            syncId = syncIdA,
+            ownerUid = ownerUid,
+            expectedMutationId = mutationId,
+            newRemoteRevision = 2L
+        )
+
+        assertFalse("Debe fallar por discrepancia de syncId entre beers e historial", success)
+
+        // Verificar que beerA permanece PENDING
+        val refreshedA = beerDao.getBeerBySyncId(syncIdA, ownerUid)!!
+        assertEquals(SyncStatus.PENDING, refreshedA.syncStatus)
+        assertEquals(mutationId, refreshedA.lastMutationId)
+
+        // Verificar que el historial B sigue PENDING y sin confirmación
+        val refreshedHist = historyDao.getMutationById(mutationId, ownerUid)!!
+        assertEquals(MutationStatus.PENDING, refreshedHist.status)
+        assertNull(refreshedHist.confirmedRevision)
+    }
+
+    /**
+     * 9. (Auditoría #6) Borrado con mutationId incorrecto:
+     * Retorna 0/false, no elimina de beers.
+     */
+    @Test
+    fun deletionSafety_failsOnMismatchedMutationId() {
+        val syncId = "beer-del-mismatch"
+        val ownerUid = "user_gustav"
+
+        val beer = BeerEntity(
+            type = BeerType.LATA,
+            timestamp = 1000L,
+            syncId = syncId,
+            ownerUid = ownerUid,
+            syncStatus = SyncStatus.DELETED,
+            remoteRevision = 3L,
+            baseRevision = 3L,
+            lastMutationId = "del-mut-correct"
+        )
+        beerDao.insertBeer(beer)
+        historyDao.insertMutation(LocalMutationHistoryEntity(
+            mutationId = "del-mut-correct",
+            syncId = syncId,
+            ownerUid = ownerUid,
+            timestamp = 1000L,
+            dirtyFields = "DELETED",
+            baseRevision = 3L,
+            status = MutationStatus.PENDING
+        ))
+
+        // Intento con expectedMutationId erróneo vía transacción completa
+        val successTx = beerDao.confirmDeletePushSuccessWithHistory(
+            syncId = syncId,
+            ownerUid = ownerUid,
+            expectedMutationId = "del-mut-WRONG",
+            newRemoteRevision = 4L
+        )
+        assertFalse("Transacción debe retornar false", successTx)
+
+        // Intento con expectedMutationId erróneo vía query directa
+        val rowsDirect = beerDao.confirmDeletePushSuccess(
+            syncId = syncId,
+            ownerUid = ownerUid,
+            expectedMutationId = "del-mut-WRONG",
+            newRemoteRevision = 4L
+        )
+        assertEquals("Query directa debe afectar 0 filas", 0, rowsDirect)
+
+        // La cerveza NO debe haber sido eliminada
+        val stillExists = beerDao.getBeerBySyncId(syncId, ownerUid)
+        assertNotNull("La cerveza no debe haber sido eliminada", stillExists)
+        assertEquals(SyncStatus.DELETED, stillExists!!.syncStatus)
+    }
+
+    /**
+     * 10. (Auditoría #7) Borrado sin evidencia suficiente (o sin historial correspondiente):
+     * No elimina la entidad de beers.
+     */
+    @Test
+    fun deletionSafety_failsWithoutSufficientEvidenceOrHistory() {
+        val syncId = "beer-del-evidence"
+        val ownerUid = "user_hugo"
+
+        val beer = BeerEntity(
+            type = BeerType.LATA,
+            timestamp = 1000L,
+            syncId = syncId,
+            ownerUid = ownerUid,
+            syncStatus = SyncStatus.DELETED,
+            remoteRevision = 5L,
+            baseRevision = 5L,
+            lastMutationId = "del-mut-hugo"
+        )
+        beerDao.insertBeer(beer)
+
+        // Caso 1: Sin historial correspondiente en local_mutation_history
+        val successNoHist = beerDao.confirmDeletePushSuccessWithHistory(
+            syncId = syncId,
+            ownerUid = ownerUid,
+            expectedMutationId = "del-mut-hugo",
+            newRemoteRevision = 6L
+        )
+        assertFalse("Debe fallar si falta el historial", successNoHist)
+        assertNotNull(beerDao.getBeerBySyncId(syncId, ownerUid))
+
+        // Insertar historial para el Caso 2
+        historyDao.insertMutation(LocalMutationHistoryEntity(
+            mutationId = "del-mut-hugo",
+            syncId = syncId,
+            ownerUid = ownerUid,
+            timestamp = 1000L,
+            dirtyFields = "DELETED",
+            baseRevision = 5L,
+            status = MutationStatus.PENDING
+        ))
+
+        // Caso 2: Sin evidencia remota suficiente (newRemoteRevision = 4L < remoteRevision actual 5L)
+        val successStaleRev = beerDao.confirmDeletePushSuccessWithHistory(
+            syncId = syncId,
+            ownerUid = ownerUid,
+            expectedMutationId = "del-mut-hugo",
+            newRemoteRevision = 4L
+        )
+        assertFalse("Debe fallar si newRemoteRevision es menor a la remota conocida", successStaleRev)
+
+        val rowsStaleDirect = beerDao.confirmDeletePushSuccess(
+            syncId = syncId,
+            ownerUid = ownerUid,
+            expectedMutationId = "del-mut-hugo",
+            newRemoteRevision = 4L
+        )
+        assertEquals(0, rowsStaleDirect)
+
+        assertNotNull("La cerveza debe seguir existiendo intacta", beerDao.getBeerBySyncId(syncId, ownerUid))
+    }
+
+    /**
+     * 11. (Auditoría #8) Eliminación explícita de foto (clearRemotePhoto = true) vs
+     * ausencia de cambio (clearRemotePhoto = false, newRemotePhotoUrl = null) vs nueva URL.
+     */
+    @Test
+    fun photoHandling_explicitClearVsNoChangeVsNewUrl() {
+        val ownerUid = "user_irene"
+
+        // 1. Ausencia de cambio (clearRemotePhoto = false, newRemotePhotoUrl = null)
+        // La foto remota y el source deben permanecer INTACTOS.
+        val syncIdNoChange = "beer-photo-nochange"
+        beerDao.insertBeer(BeerEntity(
+            type = BeerType.LATA,
+            timestamp = 1000L,
+            syncId = syncIdNoChange,
+            ownerUid = ownerUid,
+            syncStatus = SyncStatus.PENDING,
+            remoteRevision = 5L,
+            baseRevision = 5L,
+            remotePhotoUrl = "https://cdn.example.com/original.jpg",
+            photoSource = "remote_sync",
+            dirtyFields = "COMMENT",
+            lastMutationId = "M1"
+        ))
+
+        val rowsNoChange = beerDao.confirmPushMutationFullSuccess(
+            syncId = syncIdNoChange,
+            ownerUid = ownerUid,
+            expectedMutationId = "M1",
+            newRemoteRevision = 6L,
+            newRemotePhotoUrl = null,
+            newPhotoSource = null,
+            clearRemotePhoto = false
+        )
+        assertEquals(1, rowsNoChange)
+
+        val beerNoChange = beerDao.getBeerBySyncId(syncIdNoChange, ownerUid)!!
+        assertEquals("https://cdn.example.com/original.jpg", beerNoChange.remotePhotoUrl)
+        assertEquals("remote_sync", beerNoChange.photoSource)
+
+        // 2. Eliminación explícita de foto (clearRemotePhoto = true)
+        // remotePhotoUrl y photoSource deben pasar a NULL.
+        val syncIdClear = "beer-photo-clear"
+        beerDao.insertBeer(BeerEntity(
+            type = BeerType.LATA,
+            timestamp = 1000L,
+            syncId = syncIdClear,
+            ownerUid = ownerUid,
+            syncStatus = SyncStatus.PENDING,
+            remoteRevision = 6L,
+            baseRevision = 6L,
+            remotePhotoUrl = "https://cdn.example.com/to_delete.jpg",
+            photoSource = "remote_sync",
+            dirtyFields = "PHOTO",
+            lastMutationId = "M2"
+        ))
+
+        val rowsClear = beerDao.confirmPushMutationFullSuccess(
+            syncId = syncIdClear,
+            ownerUid = ownerUid,
+            expectedMutationId = "M2",
+            newRemoteRevision = 7L,
+            clearRemotePhoto = true
+        )
+        assertEquals(1, rowsClear)
+
+        val beerClear = beerDao.getBeerBySyncId(syncIdClear, ownerUid)!!
+        assertNull("remotePhotoUrl debe ser NULL tras clearRemotePhoto = true", beerClear.remotePhotoUrl)
+        assertNull("photoSource debe ser NULL tras clearRemotePhoto = true", beerClear.photoSource)
+
+        // 3. Asignación de nueva URL de foto
+        val syncIdNewUrl = "beer-photo-newurl"
+        beerDao.insertBeer(BeerEntity(
+            type = BeerType.LATA,
+            timestamp = 1000L,
+            syncId = syncIdNewUrl,
+            ownerUid = ownerUid,
+            syncStatus = SyncStatus.PENDING,
+            remoteRevision = 7L,
+            baseRevision = 7L,
+            remotePhotoUrl = "https://cdn.example.com/old.jpg",
+            photoSource = "remote_sync",
+            dirtyFields = "PHOTO",
+            lastMutationId = "M3"
+        ))
+
+        val rowsNewUrl = beerDao.confirmPushMutationFullSuccess(
+            syncId = syncIdNewUrl,
+            ownerUid = ownerUid,
+            expectedMutationId = "M3",
+            newRemoteRevision = 8L,
+            newRemotePhotoUrl = "https://cdn.example.com/updated.jpg",
+            newPhotoSource = "firebase_storage",
+            clearRemotePhoto = false
+        )
+        assertEquals(1, rowsNewUrl)
+
+        val beerNewUrl = beerDao.getBeerBySyncId(syncIdNewUrl, ownerUid)!!
+        assertEquals("https://cdn.example.com/updated.jpg", beerNewUrl.remotePhotoUrl)
+        assertEquals("firebase_storage", beerNewUrl.photoSource)
+    }
+
+    /**
+     * 12. (Auditoría #9) Regresión de preservación de photoUri como campo estrictamente local
+     * a lo largo de PUSH exitoso, PATCH parcial, PULL de actualización y PULL tombstone.
+     */
+    @Test
+    fun photoUri_isStrictlyProtectedAsLocalOnlyAcrossAllOperations() {
+        val syncId = "beer-photo-uri-local"
+        val ownerUid = "user_juan"
+        val localUri = "content://media/external/images/media/999"
+
+        val initialBeer = BeerEntity(
+            type = BeerType.LATA,
+            timestamp = 1000L,
+            photoUri = localUri,
+            remotePhotoUrl = null,
+            syncId = syncId,
+            ownerUid = ownerUid,
+            syncStatus = SyncStatus.PENDING,
+            remoteRevision = 1L,
+            baseRevision = 1L,
+            dirtyFields = "COMMENT,PHOTO",
+            lastMutationId = "M_LOCAL"
+        )
+        beerDao.insertBeer(initialBeer)
+        historyDao.insertMutation(LocalMutationHistoryEntity("M_LOCAL", syncId, ownerUid, 1000L, "COMMENT,PHOTO", 1L, MutationStatus.PENDING))
+
+        // A. PATCH parcial: no debe alterar photoUri
+        beerDao.confirmPartialPatchWithHistory(
+            syncId = syncId,
+            ownerUid = ownerUid,
+            expectedMutationId = "M_LOCAL",
+            newRemoteRevision = 2L,
+            remainingDirtyFields = "COMMENT",
+            newRemotePhotoUrl = "https://storage/juan.jpg"
+        )
+        var beer = beerDao.getBeerBySyncId(syncId, ownerUid)!!
+        assertEquals(localUri, beer.photoUri)
+
+        // B. PUSH full: no debe alterar photoUri
+        beerDao.confirmPushMutationFullSuccess(
+            syncId = syncId,
+            ownerUid = ownerUid,
+            expectedMutationId = "M_LOCAL",
+            newRemoteRevision = 3L
+        )
+        beer = beerDao.getBeerBySyncId(syncId, ownerUid)!!
+        assertEquals(localUri, beer.photoUri)
+        assertEquals(SyncStatus.SYNCED, beer.syncStatus)
+
+        // C. PULL actualización remota: no debe alterar photoUri
+        beerDao.applyRemoteUpdateToSyncedBeer(
+            syncId = syncId,
+            ownerUid = ownerUid,
+            newRemoteRevision = 4L,
+            type = BeerType.BOTELLIN,
+            timestamp = 2000L,
+            latitude = null,
+            longitude = null,
+            comment = "Actualizado desde otro teléfono",
+            locationName = null,
+            remotePhotoUrl = "https://storage/other.jpg",
+            photoSource = "other_device"
+        )
+        beer = beerDao.getBeerBySyncId(syncId, ownerUid)!!
+        assertEquals(localUri, beer.photoUri)
+        assertEquals("https://storage/other.jpg", beer.remotePhotoUrl)
+
+        // D. Tombstone remoto: no debe alterar photoUri
+        beerDao.applyRemoteTombstoneToSyncedBeer(
+            syncId = syncId,
+            ownerUid = ownerUid,
+            newRemoteRevision = 5L,
+            deletedAt = 3000L
+        )
+        beer = beerDao.getBeerBySyncId(syncId, ownerUid)!!
+        assertEquals(localUri, beer.photoUri)
+        assertEquals(SyncStatus.DELETED, beer.syncStatus)
+    }
+
+    /**
+     * 13. PULL sobre SYNCED vs PENDING:
      * - Si la entidad está en SYNCED, applyRemoteUpdateToSyncedBeer aplica la actualización.
      * - Si la entidad está en PENDING, applyRemoteUpdateToSyncedBeer NO modifica la fila (retorna 0),
      *   impidiendo la sobrescritura destructiva de las ediciones del usuario.
@@ -398,7 +799,7 @@ class BeerDaoC4PersistenceTest {
     }
 
     /**
-     * 8. Tombstone remoto aplicado a SYNCED:
+     * 14. Tombstone remoto aplicado a SYNCED:
      * - Si local está SYNCED, applyRemoteTombstoneToSyncedBeer marca como DELETED de forma segura.
      * - Si local está PENDING, NO aplica de forma ciega (retorna 0).
      */
@@ -441,7 +842,7 @@ class BeerDaoC4PersistenceTest {
     }
 
     /**
-     * 9. Transacción atómica completa: confirmación exitosa de PUSH con actualización de historial.
+     * 15. Transacción atómica completa: confirmación exitosa de PUSH con actualización de historial.
      */
     @Test
     fun confirmPushSuccessWithHistory_atomicExecution() {
@@ -464,8 +865,8 @@ class BeerDaoC4PersistenceTest {
             ownerUid = ownerUid,
             expectedMutationId = "mut-heidi-1",
             newRemoteRevision = 1L,
-            remotePhotoUrl = "https://storage/heidi.jpg",
-            photoSource = "camera"
+            newRemotePhotoUrl = "https://storage/heidi.jpg",
+            newPhotoSource = "camera"
         )
 
         assertTrue(success)
@@ -481,5 +882,51 @@ class BeerDaoC4PersistenceTest {
         val historyRecord = historyDao.getMutationById("mut-heidi-1", ownerUid)!!
         assertEquals(MutationStatus.CONFIRMED, historyRecord.status)
         assertEquals(1L, historyRecord.confirmedRevision)
+    }
+
+    /**
+     * 16. Transacción atómica completa: confirmación de borrado físico tras ACK de tombstone con historial.
+     */
+    @Test
+    fun confirmDeletePushSuccessWithHistory_atomicExecution() {
+        val syncId = "beer-atomic-del"
+        val ownerUid = "user_karl"
+
+        beerDao.insertBeer(BeerEntity(
+            type = BeerType.LATA,
+            timestamp = 1000L,
+            syncId = syncId,
+            ownerUid = ownerUid,
+            syncStatus = SyncStatus.DELETED,
+            remoteRevision = 4L,
+            baseRevision = 4L,
+            lastMutationId = "del-karl-1"
+        ))
+        historyDao.insertMutation(LocalMutationHistoryEntity(
+            mutationId = "del-karl-1",
+            syncId = syncId,
+            ownerUid = ownerUid,
+            timestamp = 1000L,
+            dirtyFields = "DELETED",
+            baseRevision = 4L,
+            status = MutationStatus.PENDING
+        ))
+
+        val success = beerDao.confirmDeletePushSuccessWithHistory(
+            syncId = syncId,
+            ownerUid = ownerUid,
+            expectedMutationId = "del-karl-1",
+            newRemoteRevision = 5L
+        )
+
+        assertTrue(success)
+
+        // La cerveza debe haber sido eliminada físicamente de beers
+        assertNull("La cerveza debe haber sido eliminada de beers", beerDao.getBeerBySyncId(syncId, ownerUid))
+
+        // El registro de historial debe quedar CONFIRMED
+        val histRecord = historyDao.getMutationById("del-karl-1", ownerUid)!!
+        assertEquals(MutationStatus.CONFIRMED, histRecord.status)
+        assertEquals(5L, histRecord.confirmedRevision)
     }
 }

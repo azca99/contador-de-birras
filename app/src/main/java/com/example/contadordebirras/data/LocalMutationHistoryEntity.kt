@@ -10,8 +10,10 @@ import androidx.room.PrimaryKey
 object MutationStatus {
     /** La mutación está registrada localmente y pendiente de envío/confirmación en Firestore. */
     const val PENDING = "PENDING"
-    /** La mutación fue confirmada exitosamente por Firestore (ACK recibido). */
+    /** La mutación fue confirmada exitosamente por Firestore (ACK recibido para todos los campos). */
     const val CONFIRMED = "CONFIRMED"
+    /** La mutación fue confirmada parcialmente (algunos campos confirmados en Firestore, otros siguen pendientes). */
+    const val PARTIALLY_CONFIRMED = "PARTIALLY_CONFIRMED"
     /** La mutación fue sustituida localmente por una edición posterior del usuario antes de recibir ACK. */
     const val SUPERSEDED = "SUPERSEDED"
     /** La mutación fue rechazada de forma explícita o descartada por conflicto terminal. */

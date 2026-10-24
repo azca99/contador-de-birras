@@ -77,8 +77,29 @@ interface LocalMutationHistoryDao {
     fun getPastMutationIdsForBeer(syncId: String, ownerUid: String, activeMutationId: String): List<String>
 
     /**
-     * Marca una mutación pendiente como confirmada con la revisión asignada por Firestore.
-     * Retorna el número de filas actualizadas (1 si estaba en PENDING, 0 en caso contrario).
+     * Marca una mutación pendiente o parcialmente confirmada como completamente confirmada.
+     * Retorna el número de filas actualizadas (1 si estaba en PENDING o PARTIALLY_CONFIRMED, 0 en caso contrario).
+     */
+    @Query("""
+        UPDATE local_mutation_history SET
+            status = 'CONFIRMED',
+            confirmedRevision = :confirmedRevision,
+            confirmedAt = :confirmedAt
+        WHERE mutationId = :mutationId
+          AND syncId = :syncId
+          AND ownerUid = :ownerUid
+          AND (status = 'PENDING' OR status = 'PARTIALLY_CONFIRMED')
+    """)
+    fun markMutationConfirmed(
+        mutationId: String,
+        syncId: String,
+        ownerUid: String,
+        confirmedRevision: Long,
+        confirmedAt: Long = System.currentTimeMillis()
+    ): Int
+
+    /**
+     * Sobrecarga de conveniencia para confirmación cuando solo se dispone de mutationId y ownerUid.
      */
     @Query("""
         UPDATE local_mutation_history SET
@@ -87,10 +108,32 @@ interface LocalMutationHistoryDao {
             confirmedAt = :confirmedAt
         WHERE mutationId = :mutationId
           AND ownerUid = :ownerUid
-          AND status = 'PENDING'
+          AND (status = 'PENDING' OR status = 'PARTIALLY_CONFIRMED')
     """)
     fun markMutationConfirmed(
         mutationId: String,
+        ownerUid: String,
+        confirmedRevision: Long,
+        confirmedAt: Long = System.currentTimeMillis()
+    ): Int
+
+    /**
+     * Marca una mutación como parcialmente confirmada ([MutationStatus.PARTIALLY_CONFIRMED])
+     * sin marcarla falsamente como CONFIRMED completa mientras mantenga dirtyFields pendientes.
+     */
+    @Query("""
+        UPDATE local_mutation_history SET
+            status = 'PARTIALLY_CONFIRMED',
+            confirmedRevision = :confirmedRevision,
+            confirmedAt = :confirmedAt
+        WHERE mutationId = :mutationId
+          AND syncId = :syncId
+          AND ownerUid = :ownerUid
+          AND (status = 'PENDING' OR status = 'PARTIALLY_CONFIRMED')
+    """)
+    fun markMutationPartiallyConfirmed(
+        mutationId: String,
+        syncId: String,
         ownerUid: String,
         confirmedRevision: Long,
         confirmedAt: Long = System.currentTimeMillis()

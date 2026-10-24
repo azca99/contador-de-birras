@@ -118,7 +118,7 @@ interface BeerDao {
     // =========================================================================================
 
     /**
-     * Confirma atómicamente un PUSH exitoso completo (CreateActive o ApplyPatch con todos los campos dirty
+     * Confirma un PUSH exitoso completo (CreateActive o ApplyPatch con todos los campos dirty
      * confirmados), transitando el documento local a [SyncStatus.SYNCED].
      *
      * PROTECCIONES:
@@ -128,6 +128,10 @@ interface BeerDao {
      *   volvió a editar el documento antes de recibir el ACK, el mutationId local habrá cambiado, la
      *   condición WHERE no coincidirá y se retornará 0 filas actualizadas (sin sobrescribir ni limpiar cambios).
      * - Monotonía: la revisión remota actual debe ser menor o igual a [newRemoteRevision].
+     * - Referencias fotográficas explícitas:
+     *   a) Si [clearRemotePhoto] es true: se elimina explícitamente la referencia remota (NULL).
+     *   b) Si [newRemotePhotoUrl] no es null: se asigna la nueva referencia remota.
+     *   c) Si [newRemotePhotoUrl] es null y [clearRemotePhoto] es false: se preserva intacta la referencia actual.
      * - Protección de foto local: [photoUri] permanece inmutable y nunca es alterado por el ACK remoto.
      *
      * @return Número de filas actualizadas (1 si el ACK fue aplicado de forma segura, 0 en caso de conflicto/carrera).
@@ -140,8 +144,16 @@ interface BeerDao {
             dirtyFields = NULL,
             lastMutationId = NULL,
             deletedAt = NULL,
-            remotePhotoUrl = CASE WHEN :remotePhotoUrl IS NOT NULL THEN :remotePhotoUrl ELSE remotePhotoUrl END,
-            photoSource = CASE WHEN :photoSource IS NOT NULL THEN :photoSource ELSE photoSource END,
+            remotePhotoUrl = CASE
+                WHEN :clearRemotePhoto = 1 THEN NULL
+                WHEN :newRemotePhotoUrl IS NOT NULL THEN :newRemotePhotoUrl
+                ELSE remotePhotoUrl
+            END,
+            photoSource = CASE
+                WHEN :clearRemotePhoto = 1 THEN NULL
+                WHEN :newPhotoSource IS NOT NULL THEN :newPhotoSource
+                ELSE photoSource
+            END,
             updatedAt = :updatedAt
         WHERE syncId = :syncId
           AND ownerUid = :ownerUid
@@ -154,8 +166,9 @@ interface BeerDao {
         ownerUid: String,
         expectedMutationId: String,
         newRemoteRevision: Long,
-        remotePhotoUrl: String? = null,
-        photoSource: String? = null,
+        newRemotePhotoUrl: String? = null,
+        newPhotoSource: String? = null,
+        clearRemotePhoto: Boolean = false,
         updatedAt: Long = System.currentTimeMillis()
     ): Int
 
@@ -163,20 +176,35 @@ interface BeerDao {
      * Confirma un PUSH parcial (ApplyPatch donde solo una parte de los dirtyFields fueron confirmados,
      * o algunos perdieron conflicto contra remoto), manteniendo el documento en [SyncStatus.PENDING].
      *
+     * INVARIANTE CAUSAL CRÍTICA:
+     * [remoteRevision] avanza a [newRemoteRevision] porque el documento remoto progresó, PERO
+     * [baseRevision] se preserva INTACTA en su valor original (sin actualizar a [newRemoteRevision]),
+     * ya que los [remainingDirtyFields] continúan pendientes sobre la base causal previa en la que
+     * fueron modificados. Actualizar [baseRevision] en un patch parcial ocultaría conflictos remotos
+     * anteriores y falsearía la precedencia causal.
+     *
      * PROTECCIONES:
      * - No limpia [dirtyFields] a ciegas: preserva los campos restantes en [remainingDirtyFields].
      * - Protegido por [lastMutationId], [ownerUid], [syncId] y [syncStatus] = 'PENDING'.
      * - Preserva [photoUri] intacto.
+     * - Manejo explícito de fotos con [clearRemotePhoto] y [newRemotePhotoUrl].
      *
      * @return Número de filas actualizadas (1 si fue aplicado, 0 si fue sustituido por otra edición).
      */
     @Query("""
         UPDATE beers SET
             remoteRevision = :newRemoteRevision,
-            baseRevision = :newRemoteRevision,
             dirtyFields = :remainingDirtyFields,
-            remotePhotoUrl = CASE WHEN :remotePhotoUrl IS NOT NULL THEN :remotePhotoUrl ELSE remotePhotoUrl END,
-            photoSource = CASE WHEN :photoSource IS NOT NULL THEN :photoSource ELSE photoSource END,
+            remotePhotoUrl = CASE
+                WHEN :clearRemotePhoto = 1 THEN NULL
+                WHEN :newRemotePhotoUrl IS NOT NULL THEN :newRemotePhotoUrl
+                ELSE remotePhotoUrl
+            END,
+            photoSource = CASE
+                WHEN :clearRemotePhoto = 1 THEN NULL
+                WHEN :newPhotoSource IS NOT NULL THEN :newPhotoSource
+                ELSE photoSource
+            END,
             updatedAt = :updatedAt
         WHERE syncId = :syncId
           AND ownerUid = :ownerUid
@@ -190,8 +218,9 @@ interface BeerDao {
         expectedMutationId: String,
         newRemoteRevision: Long,
         remainingDirtyFields: String,
-        remotePhotoUrl: String? = null,
-        photoSource: String? = null,
+        newRemotePhotoUrl: String? = null,
+        newPhotoSource: String? = null,
+        clearRemotePhoto: Boolean = false,
         updatedAt: Long = System.currentTimeMillis()
     ): Int
 
@@ -275,9 +304,12 @@ interface BeerDao {
      * Confirma la eliminación física local de una entidad cuyo borrado ([SyncStatus.DELETED]) ya fue
      * confirmado en remoto mediante tombstone.
      *
-     * PROTECCIONES:
+     * REQUISITOS DE SEGURIDAD ESTRICTOS:
+     * - [expectedMutationId] es obligatorio (no anulable), garantizando que no se eliminen entidades
+     *   cuyo borrado pendiente haya sido sustituido o no esté verificado.
+     * - Requiere que la revisión remota sea superior o igual a [newRemoteRevision], exigiendo evidencia
+     *   remota verificable antes de proceder al borrado destructivo.
      * - Solo elimina físicamente si el documento local sigue en estado 'DELETED'.
-     * - Si se proporciona [expectedMutationId], valida que coincida.
      *
      * @return Número de filas eliminadas.
      */
@@ -286,15 +318,14 @@ interface BeerDao {
         WHERE syncId = :syncId
           AND ownerUid = :ownerUid
           AND syncStatus = 'DELETED'
-          AND (
-              :expectedMutationId IS NULL
-              OR lastMutationId = :expectedMutationId
-          )
+          AND lastMutationId = :expectedMutationId
+          AND remoteRevision <= :newRemoteRevision
     """)
     fun confirmDeletePushSuccess(
         syncId: String,
         ownerUid: String,
-        expectedMutationId: String? = null
+        expectedMutationId: String,
+        newRemoteRevision: Long
     ): Int
 
     // -----------------------------------------------------------------------------------------
@@ -302,16 +333,44 @@ interface BeerDao {
     // -----------------------------------------------------------------------------------------
 
     @Query("""
+        SELECT * FROM local_mutation_history
+        WHERE mutationId = :mutationId
+          AND ownerUid = :ownerUid
+        LIMIT 1
+    """)
+    fun getHistoryRecordById(mutationId: String, ownerUid: String): LocalMutationHistoryEntity?
+
+    @Query("""
         UPDATE local_mutation_history SET
             status = 'CONFIRMED',
             confirmedRevision = :confirmedRevision,
             confirmedAt = :confirmedAt
         WHERE mutationId = :mutationId
+          AND syncId = :syncId
           AND ownerUid = :ownerUid
-          AND status = 'PENDING'
+          AND (status = 'PENDING' OR status = 'PARTIALLY_CONFIRMED')
     """)
     fun confirmHistoryRecord(
         mutationId: String,
+        syncId: String,
+        ownerUid: String,
+        confirmedRevision: Long,
+        confirmedAt: Long
+    ): Int
+
+    @Query("""
+        UPDATE local_mutation_history SET
+            status = 'PARTIALLY_CONFIRMED',
+            confirmedRevision = :confirmedRevision,
+            confirmedAt = :confirmedAt
+        WHERE mutationId = :mutationId
+          AND syncId = :syncId
+          AND ownerUid = :ownerUid
+          AND (status = 'PENDING' OR status = 'PARTIALLY_CONFIRMED')
+    """)
+    fun markHistoryRecordPartiallyConfirmed(
+        mutationId: String,
+        syncId: String,
         ownerUid: String,
         confirmedRevision: Long,
         confirmedAt: Long
@@ -338,8 +397,12 @@ interface BeerDao {
      * Transacción Room atómica: confirma el PUSH completo en `beers` y simultáneamente marca
      * el registro correspondiente en `local_mutation_history` como CONFIRMED.
      *
-     * Si la entidad local fue modificada con posterioridad (lastMutationId sustituido), ninguna
-     * tabla es alterada y la función retorna false sin pérdida de consistencia.
+     * EXIGENCIAS DE COHERENCIA:
+     * - Si el historial obligatorio falta, pertenece a otro [syncId] o no está en un estado válido,
+     *   la función retorna false inmediatamente sin modificar ninguna tabla.
+     * - Si la mutación activa en `beers` fue sustituida (lastMutationId diferente) o está en conflicto,
+     *   retorna false sin tocar los datos.
+     * - Si ocurre un desajuste concurrente durante la escritura, se fuerza un rollback total de la transacción.
      */
     @androidx.room.Transaction
     fun confirmPushSuccessWithHistory(
@@ -347,34 +410,60 @@ interface BeerDao {
         ownerUid: String,
         expectedMutationId: String,
         newRemoteRevision: Long,
-        remotePhotoUrl: String? = null,
-        photoSource: String? = null,
+        newRemotePhotoUrl: String? = null,
+        newPhotoSource: String? = null,
+        clearRemotePhoto: Boolean = false,
         updatedAt: Long = System.currentTimeMillis()
     ): Boolean {
-        val updatedRows = confirmPushMutationFullSuccess(
+        val beer = getBeerBySyncId(syncId, ownerUid) ?: return false
+        if (beer.syncStatus != SyncStatus.PENDING ||
+            beer.lastMutationId != expectedMutationId ||
+            beer.remoteRevision > newRemoteRevision
+        ) {
+            return false
+        }
+
+        val history = getHistoryRecordById(expectedMutationId, ownerUid) ?: return false
+        if (history.syncId != syncId ||
+            (history.status != MutationStatus.PENDING && history.status != MutationStatus.PARTIALLY_CONFIRMED)
+        ) {
+            return false
+        }
+
+        val beerUpdated = confirmPushMutationFullSuccess(
             syncId = syncId,
             ownerUid = ownerUid,
             expectedMutationId = expectedMutationId,
             newRemoteRevision = newRemoteRevision,
-            remotePhotoUrl = remotePhotoUrl,
-            photoSource = photoSource,
+            newRemotePhotoUrl = newRemotePhotoUrl,
+            newPhotoSource = newPhotoSource,
+            clearRemotePhoto = clearRemotePhoto,
             updatedAt = updatedAt
         )
-        if (updatedRows > 0) {
-            confirmHistoryRecord(
-                mutationId = expectedMutationId,
-                ownerUid = ownerUid,
-                confirmedRevision = newRemoteRevision,
-                confirmedAt = updatedAt
+
+        val histUpdated = confirmHistoryRecord(
+            mutationId = expectedMutationId,
+            syncId = syncId,
+            ownerUid = ownerUid,
+            confirmedRevision = newRemoteRevision,
+            confirmedAt = updatedAt
+        )
+
+        if (beerUpdated != 1 || histUpdated != 1) {
+            throw IllegalStateException(
+                "Atomic confirmation failed: beerUpdated=$beerUpdated, histUpdated=$histUpdated for mutation $expectedMutationId"
             )
-            return true
         }
-        return false
+
+        return true
     }
 
     /**
-     * Transacción Room atómica: confirma un ApplyPatch parcial en `beers` y simultáneamente marca
-     * el registro en `local_mutation_history` como CONFIRMED.
+     * Transacción Room atómica: confirma un ApplyPatch parcial en `beers` y marca el registro
+     * en `local_mutation_history` como [MutationStatus.PARTIALLY_CONFIRMED] (NUNCA como CONFIRMED completo
+     * mientras queden [remainingDirtyFields] pendientes).
+     *
+     * Preserva la [baseRevision] causal original en `beers` y garantiza rollback completo ante cualquier inconsistencia.
      */
     @androidx.room.Transaction
     fun confirmPartialPatchWithHistory(
@@ -383,30 +472,104 @@ interface BeerDao {
         expectedMutationId: String,
         newRemoteRevision: Long,
         remainingDirtyFields: String,
-        remotePhotoUrl: String? = null,
-        photoSource: String? = null,
+        newRemotePhotoUrl: String? = null,
+        newPhotoSource: String? = null,
+        clearRemotePhoto: Boolean = false,
         updatedAt: Long = System.currentTimeMillis()
     ): Boolean {
-        val updatedRows = confirmPushMutationPartialPatch(
+        val beer = getBeerBySyncId(syncId, ownerUid) ?: return false
+        if (beer.syncStatus != SyncStatus.PENDING ||
+            beer.lastMutationId != expectedMutationId ||
+            beer.remoteRevision > newRemoteRevision
+        ) {
+            return false
+        }
+
+        val history = getHistoryRecordById(expectedMutationId, ownerUid) ?: return false
+        if (history.syncId != syncId ||
+            (history.status != MutationStatus.PENDING && history.status != MutationStatus.PARTIALLY_CONFIRMED)
+        ) {
+            return false
+        }
+
+        val beerUpdated = confirmPushMutationPartialPatch(
             syncId = syncId,
             ownerUid = ownerUid,
             expectedMutationId = expectedMutationId,
             newRemoteRevision = newRemoteRevision,
             remainingDirtyFields = remainingDirtyFields,
-            remotePhotoUrl = remotePhotoUrl,
-            photoSource = photoSource,
+            newRemotePhotoUrl = newRemotePhotoUrl,
+            newPhotoSource = newPhotoSource,
+            clearRemotePhoto = clearRemotePhoto,
             updatedAt = updatedAt
         )
-        if (updatedRows > 0) {
-            confirmHistoryRecord(
-                mutationId = expectedMutationId,
-                ownerUid = ownerUid,
-                confirmedRevision = newRemoteRevision,
-                confirmedAt = updatedAt
+
+        val histUpdated = markHistoryRecordPartiallyConfirmed(
+            mutationId = expectedMutationId,
+            syncId = syncId,
+            ownerUid = ownerUid,
+            confirmedRevision = newRemoteRevision,
+            confirmedAt = updatedAt
+        )
+
+        if (beerUpdated != 1 || histUpdated != 1) {
+            throw IllegalStateException(
+                "Atomic partial patch failed: beerUpdated=$beerUpdated, histUpdated=$histUpdated for mutation $expectedMutationId"
             )
-            return true
         }
-        return false
+
+        return true
+    }
+
+    /**
+     * Transacción Room atómica: confirma la eliminación física en `beers` tras verificación
+     * estricta de evidencia remota y del historial correspondiente.
+     */
+    @androidx.room.Transaction
+    fun confirmDeletePushSuccessWithHistory(
+        syncId: String,
+        ownerUid: String,
+        expectedMutationId: String,
+        newRemoteRevision: Long,
+        updatedAt: Long = System.currentTimeMillis()
+    ): Boolean {
+        val beer = getBeerBySyncId(syncId, ownerUid) ?: return false
+        if (beer.syncStatus != SyncStatus.DELETED ||
+            beer.lastMutationId != expectedMutationId ||
+            beer.remoteRevision > newRemoteRevision
+        ) {
+            return false
+        }
+
+        val history = getHistoryRecordById(expectedMutationId, ownerUid) ?: return false
+        if (history.syncId != syncId ||
+            (history.status != MutationStatus.PENDING && history.status != MutationStatus.PARTIALLY_CONFIRMED)
+        ) {
+            return false
+        }
+
+        val histUpdated = confirmHistoryRecord(
+            mutationId = expectedMutationId,
+            syncId = syncId,
+            ownerUid = ownerUid,
+            confirmedRevision = newRemoteRevision,
+            confirmedAt = updatedAt
+        )
+
+        val beerDeleted = confirmDeletePushSuccess(
+            syncId = syncId,
+            ownerUid = ownerUid,
+            expectedMutationId = expectedMutationId,
+            newRemoteRevision = newRemoteRevision
+        )
+
+        if (histUpdated != 1 || beerDeleted != 1) {
+            throw IllegalStateException(
+                "Atomic delete confirmation failed: histUpdated=$histUpdated, beerDeleted=$beerDeleted for mutation $expectedMutationId"
+            )
+        }
+
+        return true
     }
 
     /*
