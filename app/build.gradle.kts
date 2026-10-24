@@ -48,6 +48,9 @@ android {
         getByName("androidTest") {
             assets.srcDirs("$projectDir/schemas")
         }
+        getByName("test") {
+            assets.srcDirs("$projectDir/schemas")
+        }
     }
 }
 
@@ -107,6 +110,7 @@ dependencies {
   implementation(libs.room.runtime)
   implementation(libs.room.ktx)
   ksp(libs.room.compiler)
+  testImplementation(libs.room.testing)
   androidTestImplementation(libs.room.testing)
   implementation(libs.datastore.preferences)
 
