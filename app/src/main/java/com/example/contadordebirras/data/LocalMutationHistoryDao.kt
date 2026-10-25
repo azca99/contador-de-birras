@@ -46,11 +46,14 @@ interface LocalMutationHistoryDao {
     fun getMutationById(mutationId: String, ownerUid: String): LocalMutationHistoryEntity?
 
     /**
-     * Obtiene todas las mutaciones que siguen en estado [MutationStatus.PENDING] para un usuario.
+     * Obtiene todas las mutaciones que siguen pendientes de confirmación total ([MutationStatus.PENDING]
+     * o [MutationStatus.PARTIALLY_CONFIRMED]) para un usuario, garantizando que el trabajo parcialmente resuelto
+     * continúe en cola para sincronizar sus campos restantes.
      */
     @Query("""
         SELECT * FROM local_mutation_history
-        WHERE ownerUid = :ownerUid AND status = 'PENDING'
+        WHERE ownerUid = :ownerUid
+          AND (status = 'PENDING' OR status = 'PARTIALLY_CONFIRMED')
         ORDER BY timestamp ASC
     """)
     fun getPendingMutations(ownerUid: String): List<LocalMutationHistoryEntity>
@@ -140,19 +143,21 @@ interface LocalMutationHistoryDao {
     ): Int
 
     /**
-     * Marca una mutación pendiente como sustituida ([MutationStatus.SUPERSEDED]) por una edición posterior.
+     * Marca una mutación pendiente o parcialmente confirmada como sustituida ([MutationStatus.SUPERSEDED])
+     * cuando el usuario realiza una edición posterior antes de completar la sincronización.
      */
     @Query("""
         UPDATE local_mutation_history SET
             status = 'SUPERSEDED'
         WHERE mutationId = :mutationId
           AND ownerUid = :ownerUid
-          AND status = 'PENDING'
+          AND (status = 'PENDING' OR status = 'PARTIALLY_CONFIRMED')
     """)
     fun markMutationSuperseded(mutationId: String, ownerUid: String): Int
 
     /**
-     * Marca como SUPERSEDED todas las mutaciones pendientes anteriores a [activeMutationId] para una cerveza.
+     * Marca como SUPERSEDED todas las mutaciones anteriores (pendientes o parcialmente confirmadas)
+     * a [activeMutationId] para una cerveza.
      */
     @Query("""
         UPDATE local_mutation_history SET
@@ -160,7 +165,7 @@ interface LocalMutationHistoryDao {
         WHERE syncId = :syncId
           AND ownerUid = :ownerUid
           AND mutationId != :activeMutationId
-          AND status = 'PENDING'
+          AND (status = 'PENDING' OR status = 'PARTIALLY_CONFIRMED')
     """)
     fun supersedePriorPendingMutations(syncId: String, ownerUid: String, activeMutationId: String): Int
 
@@ -172,7 +177,7 @@ interface LocalMutationHistoryDao {
             status = 'REJECTED'
         WHERE mutationId = :mutationId
           AND ownerUid = :ownerUid
-          AND status = 'PENDING'
+          AND (status = 'PENDING' OR status = 'PARTIALLY_CONFIRMED')
     """)
     fun markMutationRejected(mutationId: String, ownerUid: String): Int
 

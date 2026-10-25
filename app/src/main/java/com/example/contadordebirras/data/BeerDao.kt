@@ -6,6 +6,8 @@ import androidx.room.Query
 import androidx.room.Delete
 import kotlinx.coroutines.flow.Flow
 import com.example.contadordebirras.domain.BeerType
+import com.example.contadordebirras.domain.BeerDirtyField
+import com.example.contadordebirras.domain.BeerDirtyFieldsCodec
 
 @Dao
 interface BeerDao {
@@ -301,32 +303,24 @@ interface BeerDao {
     ): Int
 
     /**
-     * Confirma la eliminación física local de una entidad cuyo borrado ([SyncStatus.DELETED]) ya fue
-     * confirmado en remoto mediante tombstone.
+     * OPERACIÓN DE HARD DELETE APLAZADA HASTA C4.3 / C4.4:
      *
-     * REQUISITOS DE SEGURIDAD ESTRICTOS:
-     * - [expectedMutationId] es obligatorio (no anulable), garantizando que no se eliminen entidades
-     *   cuyo borrado pendiente haya sido sustituido o no esté verificado.
-     * - Requiere que la revisión remota sea superior o igual a [newRemoteRevision], exigiendo evidencia
-     *   remota verificable antes de proceder al borrado destructivo.
-     * - Solo elimina físicamente si el documento local sigue en estado 'DELETED'.
+     * La comparación `remoteRevision <= newRemoteRevision` NO demuestra por sí sola que Firestore
+     * haya confirmado un tombstone. No se permite que un número entregado por el llamador sea
+     * prueba de borrado remoto.
      *
-     * @return Número de filas eliminadas.
+     * Como C4.3/C4.4 todavía no existen, se aplazan las nuevas primitivas de hard delete y se
+     * preservan localmente las filas DELETED junto con su historial durable en Room.
+     * No se modifica el borrado legacy existente (hardDeleteDeletedBySyncId).
+     *
+     * @return 0 incondicionalmente para impedir la eliminación física sin prueba real de tombstone.
      */
-    @Query("""
-        DELETE FROM beers
-        WHERE syncId = :syncId
-          AND ownerUid = :ownerUid
-          AND syncStatus = 'DELETED'
-          AND lastMutationId = :expectedMutationId
-          AND remoteRevision <= :newRemoteRevision
-    """)
     fun confirmDeletePushSuccess(
         syncId: String,
         ownerUid: String,
         expectedMutationId: String,
         newRemoteRevision: Long
-    ): Int
+    ): Int = 0
 
     // -----------------------------------------------------------------------------------------
     // COORDINACIÓN ATÓMICA CON EL HISTORIAL DURABLE (TRANSACCIONES ROOM)
@@ -382,7 +376,7 @@ interface BeerDao {
         WHERE syncId = :syncId
           AND ownerUid = :ownerUid
           AND mutationId != :activeMutationId
-          AND status = 'PENDING'
+          AND (status = 'PENDING' OR status = 'PARTIALLY_CONFIRMED')
     """)
     fun supersedePriorPendingHistoryRecords(
         syncId: String,
@@ -463,7 +457,18 @@ interface BeerDao {
      * en `local_mutation_history` como [MutationStatus.PARTIALLY_CONFIRMED] (NUNCA como CONFIRMED completo
      * mientras queden [remainingDirtyFields] pendientes).
      *
-     * Preserva la [baseRevision] causal original en `beers` y garantiza rollback completo ante cualquier inconsistencia.
+     * EXIGENCIAS DE VALIDACIÓN ESTRICTA (Auditoría C4.1B):
+     * 1. [remainingDirtyFields] no se acepta arbitrariamente: debe ser no vacío, no blanco, estar bien codificado
+     *    en orden canónico y contener únicamente campos válidos de [BeerDirtyField].
+     * 2. [confirmedFields] debe especificarse explícitamente y estar bien codificado. No se autoriza eliminar campos
+     *    sin confirmación o resolución explícita. Si no se dispone de evidencia de confirmación, la operación se
+     *    rechaza (retorna false) y se aplaza a C4.4.
+     * 3. Relación verificable exacta: [remainingDirtyFields] y [confirmedFields] deben ser disjuntos
+     *    y su unión debe ser idéntica al conjunto original de dirtyFields de la entidad.
+     *    Cualquier campo nuevo ficticio, campo no presente originalmente o eliminación arbitraria de campos
+     *    provoca el rechazo inmediato (retorna false).
+     * 4. Invariante causal: preserva la [baseRevision] causal original intacta en `beers`.
+     * 5. Preservación inmutable de [photoUri] estrictamente local.
      */
     @androidx.room.Transaction
     fun confirmPartialPatchWithHistory(
@@ -472,11 +477,63 @@ interface BeerDao {
         expectedMutationId: String,
         newRemoteRevision: Long,
         remainingDirtyFields: String,
+        confirmedFields: String? = null,
         newRemotePhotoUrl: String? = null,
         newPhotoSource: String? = null,
         clearRemotePhoto: Boolean = false,
         updatedAt: Long = System.currentTimeMillis()
     ): Boolean {
+        // 1. Verificación de campos restantes no vacíos
+        if (remainingDirtyFields.isBlank()) {
+            return false
+        }
+
+        // 2. Validación de codificación y campos válidos en remainingDirtyFields
+        val rawRemainingTokens = remainingDirtyFields.split(',')
+        val remainingSet = LinkedHashSet<BeerDirtyField>()
+        for (token in rawRemainingTokens) {
+            val trimmed = token.trim()
+            if (trimmed.isEmpty()) return false
+            val field = try {
+                BeerDirtyField.valueOf(trimmed)
+            } catch (e: IllegalArgumentException) {
+                return false // Campo ficticio o desconocido
+            }
+            if (!remainingSet.add(field)) return false // Duplicado
+        }
+        if (remainingSet.isEmpty()) return false
+        if (BeerDirtyFieldsCodec.encode(remainingSet) != remainingDirtyFields) {
+            return false // No cumple formato canónico CSV
+        }
+
+        // 3. Verificación de evidencia explícita de campos confirmados
+        if (confirmedFields.isNullOrBlank()) {
+            // Sin evidencia explícita de los campos confirmados, no se permite eliminar campos arbitrariamente.
+            return false
+        }
+        val rawConfirmedTokens = confirmedFields.split(',')
+        val confirmedSet = LinkedHashSet<BeerDirtyField>()
+        for (token in rawConfirmedTokens) {
+            val trimmed = token.trim()
+            if (trimmed.isEmpty()) return false
+            val field = try {
+                BeerDirtyField.valueOf(trimmed)
+            } catch (e: IllegalArgumentException) {
+                return false
+            }
+            if (!confirmedSet.add(field)) return false
+        }
+        if (confirmedSet.isEmpty()) return false
+        if (BeerDirtyFieldsCodec.encode(confirmedSet) != confirmedFields) {
+            return false
+        }
+
+        // 4. Verificación de disyunción: ningún campo puede estar confirmado y pendiente a la vez
+        if (remainingSet.any { confirmedSet.contains(it) }) {
+            return false
+        }
+
+        // 5. Carga y verificación del documento en beers
         val beer = getBeerBySyncId(syncId, ownerUid) ?: return false
         if (beer.syncStatus != SyncStatus.PENDING ||
             beer.lastMutationId != expectedMutationId ||
@@ -485,6 +542,17 @@ interface BeerDao {
             return false
         }
 
+        // 6. Verificación de partición exacta sobre los dirtyFields originales
+        val originalDirtyRaw = beer.dirtyFields ?: return false
+        val originalSet = BeerDirtyFieldsCodec.decode(originalDirtyRaw)
+        if (originalSet.isEmpty()) return false
+
+        // La unión de confirmed y remaining debe coincidir exactamente con los originales
+        if (remainingSet + confirmedSet != originalSet) {
+            return false // Eliminación arbitraria o campos añadidos no presentes originalmente
+        }
+
+        // 7. Verificación del registro en local_mutation_history
         val history = getHistoryRecordById(expectedMutationId, ownerUid) ?: return false
         if (history.syncId != syncId ||
             (history.status != MutationStatus.PENDING && history.status != MutationStatus.PARTIALLY_CONFIRMED)
@@ -492,6 +560,7 @@ interface BeerDao {
             return false
         }
 
+        // 8. Aplicación en beers preservando baseRevision y actualizando remoteRevision
         val beerUpdated = confirmPushMutationPartialPatch(
             syncId = syncId,
             ownerUid = ownerUid,
@@ -504,6 +573,7 @@ interface BeerDao {
             updatedAt = updatedAt
         )
 
+        // 9. Actualización en historial durable a PARTIALLY_CONFIRMED
         val histUpdated = markHistoryRecordPartiallyConfirmed(
             mutationId = expectedMutationId,
             syncId = syncId,
@@ -522,10 +592,16 @@ interface BeerDao {
     }
 
     /**
-     * Transacción Room atómica: confirma la eliminación física en `beers` tras verificación
-     * estricta de evidencia remota y del historial correspondiente.
+     * OPERACIÓN DE HARD DELETE APLAZADA HASTA C4.3 / C4.4:
+     *
+     * Rechaza incondicionalmente la eliminación física (retorna false) porque una revisión numérica
+     * entregada por el llamador (`newRemoteRevision`) NO demuestra que Firestore haya confirmado un tombstone.
+     *
+     * Las entidades en estado [SyncStatus.DELETED] y su historial durable se preservan íntegramente
+     * en Room para evitar la pérdida irreversible de datos antes de C4.3/C4.4.
+     *
+     * @return false incondicionalmente (borrado físico rechazado).
      */
-    @androidx.room.Transaction
     fun confirmDeletePushSuccessWithHistory(
         syncId: String,
         ownerUid: String,
@@ -533,43 +609,8 @@ interface BeerDao {
         newRemoteRevision: Long,
         updatedAt: Long = System.currentTimeMillis()
     ): Boolean {
-        val beer = getBeerBySyncId(syncId, ownerUid) ?: return false
-        if (beer.syncStatus != SyncStatus.DELETED ||
-            beer.lastMutationId != expectedMutationId ||
-            beer.remoteRevision > newRemoteRevision
-        ) {
-            return false
-        }
-
-        val history = getHistoryRecordById(expectedMutationId, ownerUid) ?: return false
-        if (history.syncId != syncId ||
-            (history.status != MutationStatus.PENDING && history.status != MutationStatus.PARTIALLY_CONFIRMED)
-        ) {
-            return false
-        }
-
-        val histUpdated = confirmHistoryRecord(
-            mutationId = expectedMutationId,
-            syncId = syncId,
-            ownerUid = ownerUid,
-            confirmedRevision = newRemoteRevision,
-            confirmedAt = updatedAt
-        )
-
-        val beerDeleted = confirmDeletePushSuccess(
-            syncId = syncId,
-            ownerUid = ownerUid,
-            expectedMutationId = expectedMutationId,
-            newRemoteRevision = newRemoteRevision
-        )
-
-        if (histUpdated != 1 || beerDeleted != 1) {
-            throw IllegalStateException(
-                "Atomic delete confirmation failed: histUpdated=$histUpdated, beerDeleted=$beerDeleted for mutation $expectedMutationId"
-            )
-        }
-
-        return true
+        // Bloqueado / Aplazado a C4.3/C4.4: se rechaza el borrado físico sin prueba real de tombstone confirmado
+        return false
     }
 
     /*

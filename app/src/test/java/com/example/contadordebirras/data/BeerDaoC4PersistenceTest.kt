@@ -299,6 +299,7 @@ class BeerDaoC4PersistenceTest {
             ownerUid = ownerUid,
             expectedMutationId = "M1",
             newRemoteRevision = 6L,
+            confirmedFields = "PHOTO",
             remainingDirtyFields = "COMMENT",
             newRemotePhotoUrl = "https://storage/david.jpg"
         )
@@ -351,6 +352,7 @@ class BeerDaoC4PersistenceTest {
             ownerUid = ownerUid,
             expectedMutationId = "M_PARTIAL",
             newRemoteRevision = 3L,
+            confirmedFields = "TYPE",
             remainingDirtyFields = "COMMENT"
         )
         assertTrue(success)
@@ -706,6 +708,7 @@ class BeerDaoC4PersistenceTest {
             ownerUid = ownerUid,
             expectedMutationId = "M_LOCAL",
             newRemoteRevision = 2L,
+            confirmedFields = "PHOTO",
             remainingDirtyFields = "COMMENT",
             newRemotePhotoUrl = "https://storage/juan.jpg"
         )
@@ -885,10 +888,13 @@ class BeerDaoC4PersistenceTest {
     }
 
     /**
-     * 16. Transacción atómica completa: confirmación de borrado físico tras ACK de tombstone con historial.
+     * 16. (Auditoría C4.1B #1) Borrado físico rechazado sin prueba real de tombstone confirmado:
+     * Una revisión remota superior entregada por el llamador (newRemoteRevision = 5L) NO autoriza
+     * el borrado físico de la entidad; la fila en beers (syncStatus = DELETED) y su historial
+     * durable se preservan íntegramente en la base de datos local.
      */
     @Test
-    fun confirmDeletePushSuccessWithHistory_atomicExecution() {
+    fun hardDelete_rejectedWithoutRealTombstoneProof_preservesDeletedRowAndHistory() {
         val syncId = "beer-atomic-del"
         val ownerUid = "user_karl"
 
@@ -919,14 +925,367 @@ class BeerDaoC4PersistenceTest {
             newRemoteRevision = 5L
         )
 
-        assertTrue(success)
+        assertFalse("El borrado físico debe ser rechazado sin prueba real de tombstone confirmado", success)
 
-        // La cerveza debe haber sido eliminada físicamente de beers
-        assertNull("La cerveza debe haber sido eliminada de beers", beerDao.getBeerBySyncId(syncId, ownerUid))
+        // La cerveza NO debe haber sido eliminada de beers: se preserva localmente en estado DELETED
+        val beer = beerDao.getBeerBySyncId(syncId, ownerUid)
+        assertNotNull("La cerveza DELETED debe preservarse intacta en beers", beer)
+        assertEquals(SyncStatus.DELETED, beer!!.syncStatus)
+        assertEquals("del-karl-1", beer.lastMutationId)
+        assertEquals(4L, beer.remoteRevision)
 
-        // El registro de historial debe quedar CONFIRMED
+        // El registro de historial debe preservarse en PENDING
         val histRecord = historyDao.getMutationById("del-karl-1", ownerUid)!!
-        assertEquals(MutationStatus.CONFIRMED, histRecord.status)
-        assertEquals(5L, histRecord.confirmedRevision)
+        assertEquals(MutationStatus.PENDING, histRecord.status)
+        assertNull(histRecord.confirmedRevision)
+    }
+
+    /**
+     * 17. (Auditoría C4.1B #1) Borrado físico rechazado sin prueba real de tombstone confirmado:
+     * Proporcionar una revisión remota arbitrariamente alta (ej. 100L) no demuestra que Firestore
+     * haya confirmado un tombstone y no debe borrar físicamente la fila.
+     */
+    @Test
+    fun borradoFisico_rechazadoSinPruebaRealDeTombstoneConfirmado() {
+        val syncId = "beer-del-high-rev"
+        val ownerUid = "user_lucas"
+
+        beerDao.insertBeer(BeerEntity(
+            type = BeerType.LATA,
+            timestamp = 1000L,
+            syncId = syncId,
+            ownerUid = ownerUid,
+            syncStatus = SyncStatus.DELETED,
+            remoteRevision = 1L,
+            baseRevision = 1L,
+            lastMutationId = "del-mut-high"
+        ))
+        historyDao.insertMutation(LocalMutationHistoryEntity(
+            mutationId = "del-mut-high",
+            syncId = syncId,
+            ownerUid = ownerUid,
+            timestamp = 1000L,
+            dirtyFields = "DELETED",
+            baseRevision = 1L,
+            status = MutationStatus.PENDING
+        ))
+
+        // Intento con revisión 100L
+        val success = beerDao.confirmDeletePushSuccessWithHistory(
+            syncId = syncId,
+            ownerUid = ownerUid,
+            expectedMutationId = "del-mut-high",
+            newRemoteRevision = 100L
+        )
+        assertFalse("El borrado físico debe ser rechazado incondicionalmente antes de C4.3/C4.4", success)
+
+        val preservedBeer = beerDao.getBeerBySyncId(syncId, ownerUid)
+        assertNotNull("La entidad DELETED debe preservarse localmente", preservedBeer)
+        assertEquals(SyncStatus.DELETED, preservedBeer!!.syncStatus)
+
+        val directResult = beerDao.confirmDeletePushSuccess(
+            syncId = syncId,
+            ownerUid = ownerUid,
+            expectedMutationId = "del-mut-high",
+            newRemoteRevision = 100L
+        )
+        assertEquals("confirmDeletePushSuccess aplazado debe retornar 0", 0, directResult)
+    }
+
+    /**
+     * 18. (Auditoría C4.1B #2) PATCH no puede eliminar arbitrariamente COMMENT de COMMENT+PHOTO:
+     * Si no se proporciona evidencia explícita de confirmación de COMMENT (confirmedFields),
+     * o se suministran campos confirmados que no justifican la eliminación de COMMENT, el PATCH debe ser rechazado.
+     */
+    @Test
+    fun patch_cannotArbitrarilyEliminateCommentFromCommentAndPhoto() {
+        val syncId = "beer-patch-no-drop"
+        val ownerUid = "user_mateo"
+
+        beerDao.insertBeer(BeerEntity(
+            type = BeerType.LATA,
+            timestamp = 1000L,
+            comment = "Notas de cata",
+            photoUri = "file:///local/photo.jpg",
+            syncId = syncId,
+            ownerUid = ownerUid,
+            syncStatus = SyncStatus.PENDING,
+            remoteRevision = 2L,
+            baseRevision = 2L,
+            dirtyFields = "COMMENT,PHOTO",
+            lastMutationId = "M_DROP_TEST"
+        ))
+        historyDao.insertMutation(LocalMutationHistoryEntity(
+            mutationId = "M_DROP_TEST",
+            syncId = syncId,
+            ownerUid = ownerUid,
+            timestamp = 1000L,
+            dirtyFields = "COMMENT,PHOTO",
+            baseRevision = 2L,
+            status = MutationStatus.PENDING
+        ))
+
+        // Intento 1: Sin confirmedFields (null) intentando dejar solo PHOTO (eliminando COMMENT a ciegas)
+        val successNullConfirmed = beerDao.confirmPartialPatchWithHistory(
+            syncId = syncId,
+            ownerUid = ownerUid,
+            expectedMutationId = "M_DROP_TEST",
+            newRemoteRevision = 3L,
+            remainingDirtyFields = "PHOTO",
+            confirmedFields = null
+        )
+        assertFalse("No se puede eliminar COMMENT sin evidencia explícita de confirmación", successNullConfirmed)
+
+        // Intento 2: Con confirmedFields incoherente (ej. LOCATION en lugar de COMMENT)
+        val successWrongConfirmed = beerDao.confirmPartialPatchWithHistory(
+            syncId = syncId,
+            ownerUid = ownerUid,
+            expectedMutationId = "M_DROP_TEST",
+            newRemoteRevision = 3L,
+            remainingDirtyFields = "PHOTO",
+            confirmedFields = "LOCATION"
+        )
+        assertFalse("confirmedFields incoherente no debe permitir eliminar COMMENT", successWrongConfirmed)
+
+        // Verificar que la cerveza en beers conserva intactos sus dirtyFields originales
+        val beer = beerDao.getBeerBySyncId(syncId, ownerUid)!!
+        assertEquals("COMMENT,PHOTO", beer.dirtyFields)
+        assertEquals(SyncStatus.PENDING, beer.syncStatus)
+        assertEquals(2L, beer.baseRevision)
+        assertEquals(2L, beer.remoteRevision)
+    }
+
+    /**
+     * 19. (Auditoría C4.1B #2) PATCH no puede añadir campos inexistentes o ficticios:
+     * Tokens corruptos, desconocidos o que no formaban parte de los dirtyFields originales deben ser rechazados.
+     */
+    @Test
+    fun patch_cannotAddNonExistentFields() {
+        val syncId = "beer-patch-fictitious"
+        val ownerUid = "user_nicolas"
+
+        beerDao.insertBeer(BeerEntity(
+            type = BeerType.LATA,
+            timestamp = 1000L,
+            syncId = syncId,
+            ownerUid = ownerUid,
+            syncStatus = SyncStatus.PENDING,
+            remoteRevision = 1L,
+            baseRevision = 1L,
+            dirtyFields = "COMMENT",
+            lastMutationId = "M_FICTITIOUS"
+        ))
+        historyDao.insertMutation(LocalMutationHistoryEntity(
+            mutationId = "M_FICTITIOUS",
+            syncId = syncId,
+            ownerUid = ownerUid,
+            timestamp = 1000L,
+            dirtyFields = "COMMENT",
+            baseRevision = 1L,
+            status = MutationStatus.PENDING
+        ))
+
+        // Caso A: Campo inventado no existente en enum BeerDirtyField
+        val successInvented = beerDao.confirmPartialPatchWithHistory(
+            syncId = syncId,
+            ownerUid = ownerUid,
+            expectedMutationId = "M_FICTITIOUS",
+            newRemoteRevision = 2L,
+            remainingDirtyFields = "UNKNOWN_FIELD",
+            confirmedFields = "COMMENT"
+        )
+        assertFalse("Campo ficticio no debe ser aceptado", successInvented)
+
+        // Caso B: Campo válido del enum pero que NO estaba en los dirtyFields originales de la cerveza
+        val successAddedField = beerDao.confirmPartialPatchWithHistory(
+            syncId = syncId,
+            ownerUid = ownerUid,
+            expectedMutationId = "M_FICTITIOUS",
+            newRemoteRevision = 2L,
+            remainingDirtyFields = "LOCATION",
+            confirmedFields = "COMMENT"
+        )
+        assertFalse("Campo no presente originalmente no puede ser añadido vía patch", successAddedField)
+    }
+
+    /**
+     * 20. (Auditoría C4.1B #2) PATCH parcial con campos restantes vacíos no debe generar un PENDING incoherente:
+     * Si remainingDirtyFields está vacío o en blanco, debe rechazarse para evitar un estado PENDING sin dirtyFields.
+     */
+    @Test
+    fun patch_partialWithEmptyRemainingFields_rejectedToAvoidIncoherentPending() {
+        val syncId = "beer-patch-empty-rem"
+        val ownerUid = "user_oscar"
+
+        beerDao.insertBeer(BeerEntity(
+            type = BeerType.LATA,
+            timestamp = 1000L,
+            syncId = syncId,
+            ownerUid = ownerUid,
+            syncStatus = SyncStatus.PENDING,
+            remoteRevision = 1L,
+            baseRevision = 1L,
+            dirtyFields = "COMMENT",
+            lastMutationId = "M_EMPTY_TEST"
+        ))
+        historyDao.insertMutation(LocalMutationHistoryEntity(
+            mutationId = "M_EMPTY_TEST",
+            syncId = syncId,
+            ownerUid = ownerUid,
+            timestamp = 1000L,
+            dirtyFields = "COMMENT",
+            baseRevision = 1L,
+            status = MutationStatus.PENDING
+        ))
+
+        // Intento con remainingDirtyFields vacío
+        val successEmpty = beerDao.confirmPartialPatchWithHistory(
+            syncId = syncId,
+            ownerUid = ownerUid,
+            expectedMutationId = "M_EMPTY_TEST",
+            newRemoteRevision = 2L,
+            remainingDirtyFields = "",
+            confirmedFields = "COMMENT"
+        )
+        assertFalse("remainingDirtyFields vacío debe ser rechazado en la ruta parcial", successEmpty)
+
+        // Intento con remainingDirtyFields en blanco (espacios)
+        val successBlank = beerDao.confirmPartialPatchWithHistory(
+            syncId = syncId,
+            ownerUid = ownerUid,
+            expectedMutationId = "M_EMPTY_TEST",
+            newRemoteRevision = 2L,
+            remainingDirtyFields = "   ",
+            confirmedFields = "COMMENT"
+        )
+        assertFalse("remainingDirtyFields en blanco debe ser rechazado", successBlank)
+
+        val preservedBeer = beerDao.getBeerBySyncId(syncId, ownerUid)!!
+        assertEquals(SyncStatus.PENDING, preservedBeer.syncStatus)
+        assertEquals("COMMENT", preservedBeer.dirtyFields)
+    }
+
+    /**
+     * 21. (Auditoría C4.1B #3) PARTIALLY_CONFIRMED aparece en las consultas de trabajo pendiente:
+     * getPendingMutations debe incluir registros PARTIALLY_CONFIRMED además de PENDING.
+     */
+    @Test
+    fun history_partiallyConfirmedAppearsInPendingWorkQueries() {
+        val ownerUid = "user_pablo"
+
+        val mutPending = LocalMutationHistoryEntity(
+            mutationId = "mut-pending-1",
+            syncId = "beer-pablo-1",
+            ownerUid = ownerUid,
+            timestamp = 1000L,
+            dirtyFields = "TYPE",
+            status = MutationStatus.PENDING
+        )
+        val mutPartial = LocalMutationHistoryEntity(
+            mutationId = "mut-partial-1",
+            syncId = "beer-pablo-2",
+            ownerUid = ownerUid,
+            timestamp = 2000L,
+            dirtyFields = "COMMENT",
+            baseRevision = 1L,
+            status = MutationStatus.PARTIALLY_CONFIRMED,
+            confirmedRevision = 2L
+        )
+        val mutConfirmed = LocalMutationHistoryEntity(
+            mutationId = "mut-confirmed-1",
+            syncId = "beer-pablo-3",
+            ownerUid = ownerUid,
+            timestamp = 3000L,
+            dirtyFields = "PHOTO",
+            baseRevision = 1L,
+            status = MutationStatus.CONFIRMED,
+            confirmedRevision = 2L
+        )
+
+        historyDao.insertMutation(mutPending)
+        historyDao.insertMutation(mutPartial)
+        historyDao.insertMutation(mutConfirmed)
+
+        val pendingWork = historyDao.getPendingMutations(ownerUid)
+        assertEquals(2, pendingWork.size)
+        val pendingIds = pendingWork.map { it.mutationId }.toSet()
+        assertTrue("PENDING debe figurar en trabajo pendiente", pendingIds.contains("mut-pending-1"))
+        assertTrue("PARTIALLY_CONFIRMED debe figurar en trabajo pendiente", pendingIds.contains("mut-partial-1"))
+        assertFalse("CONFIRMED no debe figurar en trabajo pendiente", pendingIds.contains("mut-confirmed-1"))
+    }
+
+    /**
+     * 22. (Auditoría C4.1B #3) Mutación PARTIALLY_CONFIRMED puede pasar a SUPERSEDED cuando corresponda:
+     * Si el usuario realiza una nueva edición local sobre una entidad que tenía una mutación parcialmente confirmada,
+     * esa mutación debe poder transicionar a SUPERSEDED.
+     */
+    @Test
+    fun history_partiallyConfirmedTransitionsToSupersededWhenReplaced() {
+        val syncId = "beer-partial-to-superseded"
+        val ownerUid = "user_quentin"
+
+        val m1 = LocalMutationHistoryEntity(
+            mutationId = "M1_PARTIAL",
+            syncId = syncId,
+            ownerUid = ownerUid,
+            timestamp = 1000L,
+            dirtyFields = "COMMENT,PHOTO",
+            baseRevision = 1L,
+            status = MutationStatus.PARTIALLY_CONFIRMED,
+            confirmedRevision = 2L
+        )
+        val m2 = LocalMutationHistoryEntity(
+            mutationId = "M2_NEW",
+            syncId = syncId,
+            ownerUid = ownerUid,
+            timestamp = 2000L,
+            dirtyFields = "COMMENT",
+            baseRevision = 1L,
+            status = MutationStatus.PENDING
+        )
+        historyDao.insertMutation(m1)
+        historyDao.insertMutation(m2)
+
+        // Caso A: markMutationSuperseded directo
+        val updatedRows = historyDao.markMutationSuperseded("M1_PARTIAL", ownerUid)
+        assertEquals(1, updatedRows)
+
+        val m1Record = historyDao.getMutationById("M1_PARTIAL", ownerUid)!!
+        assertEquals(MutationStatus.SUPERSEDED, m1Record.status)
+        assertEquals(2L, m1Record.confirmedRevision) // Preserva el ACK parcial previo
+
+        // Caso B: supersedePriorPendingMutations
+        val m3 = LocalMutationHistoryEntity(
+            mutationId = "M3_PARTIAL_2",
+            syncId = syncId,
+            ownerUid = ownerUid,
+            timestamp = 3000L,
+            dirtyFields = "TYPE",
+            status = MutationStatus.PARTIALLY_CONFIRMED
+        )
+        historyDao.insertMutation(m3)
+
+        val batchSuperseded = historyDao.supersedePriorPendingMutations(syncId, ownerUid, activeMutationId = "M4_ACTIVE")
+        assertTrue(batchSuperseded >= 1)
+
+        val m3Record = historyDao.getMutationById("M3_PARTIAL_2", ownerUid)!!
+        assertEquals(MutationStatus.SUPERSEDED, m3Record.status)
+
+        // Caso C: beerDao.supersedePriorPendingHistoryRecords
+        val m4 = LocalMutationHistoryEntity(
+            mutationId = "M4_PARTIAL_3",
+            syncId = syncId,
+            ownerUid = ownerUid,
+            timestamp = 4000L,
+            dirtyFields = "LOCATION",
+            status = MutationStatus.PARTIALLY_CONFIRMED
+        )
+        historyDao.insertMutation(m4)
+
+        val daoSuperseded = beerDao.supersedePriorPendingHistoryRecords(syncId, ownerUid, activeMutationId = "M5_FINAL")
+        assertTrue(daoSuperseded >= 1)
+
+        val m4Record = historyDao.getMutationById("M4_PARTIAL_3", ownerUid)!!
+        assertEquals(MutationStatus.SUPERSEDED, m4Record.status)
     }
 }
