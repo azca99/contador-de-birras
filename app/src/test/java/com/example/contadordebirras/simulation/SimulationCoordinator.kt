@@ -198,13 +198,17 @@ class SimulationCoordinator(
                         if (dropPushAck) {
                             PushExecutionResult.AckLost(plan.nextRevision, mutationId)
                         } else {
-                            device.applyFullPushConfirmation(
+                            val ok = device.applyFullPushConfirmation(
                                 syncId = syncId,
                                 expectedMutationId = mutationId,
                                 newRemoteRevision = plan.nextRevision,
                                 remotePhotoUrl = uploadedRemotePhotoUrl
                             )
-                            PushExecutionResult.Success(plan, plan.nextRevision)
+                            if (!ok) {
+                                PushExecutionResult.Blocked("No se pudo aplicar confirmación local para CreateActive: falta registro local")
+                            } else {
+                                PushExecutionResult.Success(plan, plan.nextRevision)
+                            }
                         }
                     }
                     is TransactionResult.Conflict -> {
@@ -266,7 +270,7 @@ class SimulationCoordinator(
                         if (dropPushAck) {
                             PushExecutionResult.AckLost(plan.nextRevision, mutationId)
                         } else {
-                            if (plan.remoteWinsFields.isEmpty()) {
+                            val ok = if (plan.remoteWinsFields.isEmpty()) {
                                 device.applyFullPushConfirmation(
                                     syncId = syncId,
                                     expectedMutationId = mutationId,
@@ -274,16 +278,21 @@ class SimulationCoordinator(
                                     remotePhotoUrl = uploadedRemotePhotoUrl
                                 )
                             } else {
-                                device.applyPartialConfirmation(
+                                device.applyPartialPushConfirmation(
                                     syncId = syncId,
                                     expectedMutationId = mutationId,
                                     newRemoteRevision = plan.nextRevision,
                                     confirmedFields = plan.fieldsToWrite,
-                                    remainingDirtyFields = emptySet(),
+                                    remoteWinsFields = plan.remoteWinsFields,
+                                    remoteDoc = remoteDoc,
                                     remotePhotoUrl = uploadedRemotePhotoUrl
                                 )
                             }
-                            PushExecutionResult.Success(plan, plan.nextRevision)
+                            if (!ok) {
+                                PushExecutionResult.Blocked("No se pudo aplicar confirmación local para ApplyPatch: falta registro local o datos remotos")
+                            } else {
+                                PushExecutionResult.Success(plan, plan.nextRevision)
+                            }
                         }
                     }
                     is TransactionResult.Conflict -> {
@@ -314,8 +323,12 @@ class SimulationCoordinator(
                         if (dropPushAck) {
                             PushExecutionResult.AckLost(txResult.document.revision, mutationId)
                         } else {
-                            device.applyDeleteConfirmation(syncId, mutationId, txResult.document.revision)
-                            PushExecutionResult.Success(plan, txResult.document.revision)
+                            val ok = device.applyDeleteConfirmation(syncId, mutationId, txResult.document.revision)
+                            if (!ok) {
+                                PushExecutionResult.Blocked("No se pudo aplicar confirmación local para WriteTombstone: falta registro local")
+                            } else {
+                                PushExecutionResult.Success(plan, txResult.document.revision)
+                            }
                         }
                     }
                     is TransactionResult.TombstoneAlreadyExists -> {
@@ -338,10 +351,25 @@ class SimulationCoordinator(
             }
 
             is PushPlan.AlreadyApplied -> {
-                remoteDoc?.let {
-                    device.applyFullPushConfirmation(syncId, it.lastMutationId ?: "", it.revision)
+                if (remoteDoc == null) {
+                    PushExecutionResult.Blocked("No se pudo aplicar confirmación para AlreadyApplied: falta remoto")
+                } else {
+                    val payloadMatches = (localBeer.type == remoteDoc.type &&
+                        localBeer.timestamp == remoteDoc.timestamp &&
+                        localBeer.comment == remoteDoc.comment &&
+                        localBeer.latitude == remoteDoc.latitude &&
+                        localBeer.longitude == remoteDoc.longitude)
+                    if (!payloadMatches) {
+                        PushExecutionResult.Blocked("Contradicción de payload en reintento idempotente de AlreadyApplied para $syncId")
+                    } else {
+                        val ok = device.applyFullPushConfirmation(syncId, mutationId, remoteDoc.revision)
+                        if (!ok) {
+                            PushExecutionResult.Blocked("No se pudo aplicar confirmación para AlreadyApplied: falta registro local")
+                        } else {
+                            PushExecutionResult.Success(plan, remoteDoc.revision)
+                        }
+                    }
                 }
-                PushExecutionResult.Success(plan, remoteDoc?.revision ?: 0L)
             }
 
             is PushPlan.RemoteTombstoneWins -> {
@@ -480,13 +508,20 @@ class SimulationCoordinator(
             }
 
             is PullPlan.ConfirmPendingMutation -> {
-                device.applyFullPushConfirmation(
+                val ok = device.applyConfirmPendingMutation(
                     syncId = syncId,
                     expectedMutationId = plan.confirmedMutationId,
                     newRemoteRevision = plan.newRemoteRevision,
-                    remotePhotoUrl = remoteDoc?.photoUrl
+                    confirmedFields = plan.confirmedFields,
+                    remoteWinsFields = plan.remoteWinsFields,
+                    remoteFieldsToApply = plan.remoteFieldsToApply,
+                    remoteDoc = remoteDoc
                 )
-                PullExecutionResult.Applied(plan)
+                if (!ok) {
+                    PullExecutionResult.Blocked("No se pudo aplicar ConfirmPendingMutation: registro local ausente o datos insuficientes")
+                } else {
+                    PullExecutionResult.Applied(plan)
+                }
             }
 
             is PullPlan.MergeWithPending -> {

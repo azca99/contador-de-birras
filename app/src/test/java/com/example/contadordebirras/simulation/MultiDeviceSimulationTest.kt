@@ -1036,35 +1036,135 @@ class MultiDeviceSimulationTest {
     }
 
     /**
-     * Test E: Upload correcto + fallo Firestore + reintento: recuperación idempotente.
+     * Test E: Retry fotográfico end-to-end:
+     * - Upload correcto en Storage.
+     * - Fallo real simulado de transacción Firestore después del upload.
+     * - Entidad local permanece PENDING sin ACK.
+     * - Reintento vía SimulationCoordinator con el mismo mutationId.
+     * - Recuperación idempotente sin sobrescritura en Storage (exactamente 1 objeto almacenado).
+     * - Una sola referencia remota definitiva coherente.
+     * - Resultado local SYNCED solo tras recibir el ACK confirmado.
      */
     @Test
     fun testAuditE_uploadSuccessFirestoreFailureRetry_idempotentRecovery() {
         val syncId = "beer-audit-e"
         val mutationId = "M_PHOTO_RETRY"
+        val localPhotoUri = "content://media/external/images/media/1234"
+
+        // 1. Entidad local-only creada en D1 con fotografía local
+        device1.createBeerLocalOnly(
+            syncId = syncId,
+            photoUri = localPhotoUri,
+            mutationId = mutationId
+        )
+        val initialBeer = device1.getBeer(syncId)!!
+        assertEquals(SyncStatus.PENDING, initialBeer.syncStatus)
+        assertEquals(localPhotoUri, initialBeer.photoUri)
+        assertNull(initialBeer.remotePhotoUrl)
+
+        // 2. Inyectamos fallo simulado en la transacción Firestore posterior a la subida de foto
+        firestore.simulateTransactionError = true
+
+        val pushResult1 = coordinator.executePush(device1, syncId)
+        assertTrue("El primer push debe fallar en Firestore", pushResult1 is PushExecutionResult.Blocked)
+
+        // Verificamos que la foto ya fue subida a Storage
         val photoPath = "users/$userUid/beers/${syncId}_$mutationId.jpg"
-        val photoBytes = "bytes_exactos_foto".toByteArray()
+        assertTrue("La foto debe haberse subido a Storage antes del fallo de Firestore", storage.hasObject(photoPath))
+        assertEquals("Debe existir exactamente 1 objeto en Storage", 1, storage.getObjectCount())
 
-        // 1. Primer intento: el upload de la foto tiene éxito
-        val upload1 = storage.uploadPhoto(photoPath, userUid, photoBytes)
-        assertTrue(upload1.isSuccess)
-        val initialUrl = upload1.getOrThrow()
+        // La entidad local permanece PENDING y no tiene ACK
+        val beerAfterFail = device1.getBeer(syncId)!!
+        assertEquals(SyncStatus.PENDING, beerAfterFail.syncStatus)
+        assertEquals(LOCAL_ONLY_REVISION, beerAfterFail.remoteRevision)
+        assertNull(beerAfterFail.remotePhotoUrl)
+        assertEquals(localPhotoUri, beerAfterFail.photoUri)
 
-        // 2. Reintento: la app reintenta con el mismo mutationId y los mismos bytes
-        val uploadRetry = storage.uploadPhoto(photoPath, userUid, photoBytes)
-        assertTrue("Reintento con mismos bytes debe ser exitoso e idempotente", uploadRetry.isSuccess)
-        assertEquals(initialUrl, uploadRetry.getOrThrow())
+        // 3. Restauramos la red y reintentamos vía SimulationCoordinator con el mismo mutationId
+        firestore.simulateTransactionError = false
 
-        // 3. Completamos Firestore con éxito
-        val newDoc = FakeFirestoreBeerDocument(
+        val pushResult2 = coordinator.executePush(device1, syncId)
+        assertTrue("El reintento debe ser exitoso", pushResult2 is PushExecutionResult.Success)
+
+        // Recuperación sin sobrescritura Storage: sigue habiendo exactamente 1 objeto
+        assertEquals("No debe haber duplicados ni sobrescrituras en Storage", 1, storage.getObjectCount())
+
+        // Una sola referencia remota definitiva
+        val remoteDoc = firestore.getDocument(syncId)!!
+        assertNotNull(remoteDoc.photoUrl)
+        assertTrue(remoteDoc.photoUrl!!.contains(photoPath.replace("/", "%2F")))
+
+        // Resultado local SYNCED solo tras ACK
+        val finalBeer = device1.getBeer(syncId)!!
+        assertEquals(SyncStatus.SYNCED, finalBeer.syncStatus)
+        assertEquals(1L, finalBeer.remoteRevision)
+        assertEquals(1L, finalBeer.baseRevision)
+        assertEquals(remoteDoc.photoUrl, finalBeer.remotePhotoUrl)
+        assertEquals("photoUri local debe preservarse intacto", localPhotoUri, finalBeer.photoUri)
+        assertTrue(finalBeer.dirtyFields.isEmpty())
+    }
+
+    /**
+     * Test de idempotencia CreateActive con contradicción de payload:
+     * Si un documento ya existe con el mismo mutationId y propietario, pero el nuevo intento
+     * presenta un payload incompatible, debe bloquearse (PreconditionFailed).
+     */
+    @Test
+    fun testAuditE2_createActiveSameMutationIdContradictoryPayload_blocked() {
+        val syncId = "beer-payload-mismatch"
+        val mutationId = "M_CREATE_CONTRADICT"
+
+        val originalDoc = FakeFirestoreBeerDocument(
             syncId = syncId,
             userId = userUid,
             revision = 1L,
             lastMutationId = mutationId,
-            photoUrl = uploadRetry.getOrThrow()
+            type = "LATA",
+            timestamp = 1000L,
+            comment = "Cerveza original"
         )
-        val txResult = firestore.executeCreateActiveTransaction(syncId, userUid, newDoc)
-        assertTrue(txResult is TransactionResult.Success)
+        firestore.seedDocument(originalDoc)
+
+        // Intento directo con payload contradictorio (type = JARRA vs LATA)
+        val contradictoryDoc = FakeFirestoreBeerDocument(
+            syncId = syncId,
+            userId = userUid,
+            revision = 1L,
+            lastMutationId = mutationId,
+            type = "JARRA",
+            timestamp = 1000L,
+            comment = "Cerveza original"
+        )
+        val directTx = firestore.executeCreateActiveTransaction(syncId, userUid, contradictoryDoc)
+        assertTrue("Debe fallar por contradicción de payload", directTx is TransactionResult.PreconditionFailed)
+        assertTrue((directTx as TransactionResult.PreconditionFailed).reason.contains("Payload contradiction"))
+
+        // Intento vía coordinator: D1 tiene cerveza local con payload incompatible
+        device1.insertBeerDirect(SimulatedBeer(
+            syncId = syncId,
+            ownerUid = userUid,
+            type = "JARRA",
+            timestamp = 1000L,
+            comment = "Cerveza original",
+            syncStatus = SyncStatus.PENDING,
+            remoteRevision = LOCAL_ONLY_REVISION,
+            baseRevision = LOCAL_ONLY_REVISION,
+            dirtyFields = BeerDirtyFieldsCodec.ALL_FIELDS,
+            lastMutationId = mutationId
+        ))
+        device1.insertMutationRecord(SimulatedMutationRecord(
+            mutationId = mutationId,
+            syncId = syncId,
+            ownerUid = userUid,
+            timestamp = 1000L,
+            dirtyFields = BeerDirtyFieldsCodec.ALL_FIELDS,
+            baseRevision = LOCAL_ONLY_REVISION,
+            status = MutationStatus.PENDING
+        ))
+
+        // Si se intenta CreateActive en Firestore, la precondición falla y el push se bloquea
+        val pushResult = coordinator.executePush(device1, syncId)
+        assertTrue("El push debe quedar bloqueado por contradicción de payload", pushResult is PushExecutionResult.Blocked)
     }
 
     /**
@@ -1222,5 +1322,278 @@ class MultiDeviceSimulationTest {
         assertEquals(1, history.size)
         assertEquals("M_DURABLE_CRASH", history[0].mutationId)
         assertEquals(MutationStatus.PENDING, history[0].status)
+    }
+
+    /**
+     * Test de Regresión 3A: ACK perdido de ApplyPatch:
+     * COMMENT confirmado, TYPE ganado por remoto.
+     * El resultado local debe coincidir con los campos remotos autorizados y no conservar TYPE obsoleto,
+     * preservando además photoUri intacto.
+     */
+    @Test
+    fun testRegression3A_lostAckApplyPatch_commentConfirmedTypeRemoteWins() {
+        val syncId = "beer-regr-3a"
+        val mutationId = "M_D1_PATCH"
+        val localPhoto = "content://media/external/images/local_beer.jpg"
+
+        // Estado remoto: D2 ya escribió TYPE="IPA" en revision 2
+        val remoteDoc = FakeFirestoreBeerDocument(
+            syncId = syncId,
+            userId = userUid,
+            revision = 3L,
+            lastMutationId = mutationId,
+            type = "IPA",
+            comment = "Nuevo comentario confirmado D1",
+            photoUrl = "https://storage.googleapis.com/photo.jpg",
+            fieldRevisions = mapOf(
+                BeerDirtyField.TYPE to 2L,
+                BeerDirtyField.COMMENT to 3L
+            )
+        )
+        firestore.seedDocument(remoteDoc)
+
+        // D1 tenía baseRevision=1, remoteRevision=1, y modificó TYPE="STOUT" y COMMENT
+        val localBeer = SimulatedBeer(
+            syncId = syncId,
+            ownerUid = userUid,
+            type = "STOUT",
+            comment = "Nuevo comentario confirmado D1",
+            photoUri = localPhoto,
+            syncStatus = SyncStatus.PENDING,
+            remoteRevision = 1L,
+            baseRevision = 1L,
+            dirtyFields = setOf(BeerDirtyField.COMMENT, BeerDirtyField.TYPE),
+            lastMutationId = mutationId
+        )
+        device1.insertBeerDirect(localBeer)
+        device1.insertMutationRecord(SimulatedMutationRecord(
+            mutationId = mutationId,
+            syncId = syncId,
+            ownerUid = userUid,
+            timestamp = System.currentTimeMillis(),
+            dirtyFields = setOf(BeerDirtyField.COMMENT, BeerDirtyField.TYPE),
+            baseRevision = 1L,
+            status = MutationStatus.PENDING
+        ))
+
+        // D1 ejecuta PULL para recuperar el ACK perdido
+        val pullResult = coordinator.executePull(device1, syncId)
+        assertTrue("PULL debe aplicar ConfirmPendingMutation", pullResult is PullExecutionResult.Applied)
+        val plan = (pullResult as PullExecutionResult.Applied).plan
+        assertTrue("El plan debe ser ConfirmPendingMutation", plan is PullPlan.ConfirmPendingMutation)
+
+        val updatedBeer = device1.getBeer(syncId)!!
+        assertEquals("Debe incorporar el TYPE ganador de remoto ('IPA') en lugar del local obsoleto ('STOUT')", "IPA", updatedBeer.type)
+        assertEquals("Debe confirmar el COMMENT local", "Nuevo comentario confirmado D1", updatedBeer.comment)
+        assertEquals("photoUri local debe preservarse intacto", localPhoto, updatedBeer.photoUri)
+        assertEquals("https://storage.googleapis.com/photo.jpg", updatedBeer.remotePhotoUrl)
+        assertEquals(SyncStatus.SYNCED, updatedBeer.syncStatus)
+        assertEquals(3L, updatedBeer.remoteRevision)
+        assertEquals(3L, updatedBeer.baseRevision)
+        assertTrue("Los dirtyFields deben quedar limpios", updatedBeer.dirtyFields.isEmpty())
+
+        val mutation = device1.getMutationHistory().last { it.mutationId == mutationId }
+        assertEquals(MutationStatus.CONFIRMED, mutation.status)
+        assertEquals(3L, mutation.confirmedRevision)
+    }
+
+    /**
+     * Test de Regresión 3B: PUSH con campos remotos ganadores:
+     * Ningún campo puede desaparecer sin incorporar su valor definitivo.
+     */
+    @Test
+    fun testRegression3B_pushWithRemoteWinsFields_incorporatesDefinitiveRemoteValue() {
+        val syncId = "beer-regr-3b"
+        val mutationId = "M_D1_PATCH_B"
+
+        // Remoto tiene TYPE="IPA" escrito en revision 2
+        val remoteDoc = FakeFirestoreBeerDocument(
+            syncId = syncId,
+            userId = userUid,
+            revision = 2L,
+            lastMutationId = "M_D2_INIT",
+            type = "IPA",
+            comment = "Comentario antiguo",
+            fieldRevisions = mapOf(
+                BeerDirtyField.TYPE to 2L,
+                BeerDirtyField.COMMENT to 1L
+            )
+        )
+        firestore.seedDocument(remoteDoc)
+
+        // D1 tiene baseRevision=1 y pretende actualizar COMMENT y TYPE="LAGER"
+        val localBeer = SimulatedBeer(
+            syncId = syncId,
+            ownerUid = userUid,
+            type = "LAGER",
+            comment = "Comentario definitivo D1",
+            syncStatus = SyncStatus.PENDING,
+            remoteRevision = 2L,
+            baseRevision = 1L,
+            dirtyFields = setOf(BeerDirtyField.COMMENT, BeerDirtyField.TYPE),
+            lastMutationId = mutationId
+        )
+        device1.insertBeerDirect(localBeer)
+        device1.insertMutationRecord(SimulatedMutationRecord(
+            mutationId = mutationId,
+            syncId = syncId,
+            ownerUid = userUid,
+            timestamp = System.currentTimeMillis(),
+            dirtyFields = setOf(BeerDirtyField.COMMENT, BeerDirtyField.TYPE),
+            baseRevision = 1L,
+            status = MutationStatus.PENDING
+        ))
+
+        // D1 hace PUSH: TYPE pierde ante remoto (rev 2 > base 1), COMMENT gana y se escribe
+        val pushResult = coordinator.executePush(device1, syncId)
+        assertTrue("PUSH debe ser exitoso", pushResult is PushExecutionResult.Success)
+
+        val updatedBeer = device1.getBeer(syncId)!!
+        assertEquals("Debe incorporar el valor ganador definitivo de remoto ('IPA')", "IPA", updatedBeer.type)
+        assertEquals("Debe conservar su valor confirmado para COMMENT", "Comentario definitivo D1", updatedBeer.comment)
+        assertEquals(SyncStatus.SYNCED, updatedBeer.syncStatus)
+        assertEquals(3L, updatedBeer.remoteRevision)
+        assertEquals(3L, updatedBeer.baseRevision)
+        assertTrue("dirtyFields deben quedar vacíos tras incorporar remoto y confirmar push", updatedBeer.dirtyFields.isEmpty())
+
+        val finalRemote = firestore.getDocument(syncId)!!
+        assertEquals("IPA", finalRemote.type)
+        assertEquals("Comentario definitivo D1", finalRemote.comment)
+        assertEquals(3L, finalRemote.revision)
+    }
+
+    /**
+     * Test de Regresión 3C: Falta de registro local necesario para confirmar un ACK:
+     * Si no existe el registro en el historial local, no devolver Applied ni Success falsamente.
+     */
+    @Test
+    fun testRegression3C_missingLocalMutationRecord_doesNotFalselyReturnSuccessOrApplied() {
+        val syncIdPush = "beer-regr-3c-push"
+        val ghostPushMutation = "M_GHOST_PUSH"
+
+        // 1. PUSH con registro local faltante en historial
+        device1.insertBeerDirect(SimulatedBeer(
+            syncId = syncIdPush,
+            ownerUid = userUid,
+            syncStatus = SyncStatus.PENDING,
+            remoteRevision = LOCAL_ONLY_REVISION,
+            baseRevision = LOCAL_ONLY_REVISION,
+            dirtyFields = BeerDirtyFieldsCodec.ALL_FIELDS,
+            lastMutationId = ghostPushMutation
+        ))
+        // NO insertamos registro en mutationHistory
+
+        val pushResult = coordinator.executePush(device1, syncIdPush)
+        assertTrue("Push no debe devolver Success sin registro local", pushResult is PushExecutionResult.Blocked)
+        assertTrue((pushResult as PushExecutionResult.Blocked).reason.contains("falta registro local"))
+        val beerAfterPush = device1.getBeer(syncIdPush)!!
+        assertEquals("La entidad debe conservar PENDING", SyncStatus.PENDING, beerAfterPush.syncStatus)
+
+        // 2. PULL con registro local faltante en historial
+        val syncIdPull = "beer-regr-3c-pull"
+        val ghostPullMutation = "M_GHOST_PULL"
+
+        firestore.seedDocument(FakeFirestoreBeerDocument(
+            syncId = syncIdPull,
+            userId = userUid,
+            revision = 1L,
+            lastMutationId = ghostPullMutation,
+            fieldRevisions = BeerDirtyFieldsCodec.ALL_FIELDS.associateWith { 1L }
+        ))
+
+        device1.insertBeerDirect(SimulatedBeer(
+            syncId = syncIdPull,
+            ownerUid = userUid,
+            syncStatus = SyncStatus.PENDING,
+            remoteRevision = LOCAL_ONLY_REVISION,
+            baseRevision = LOCAL_ONLY_REVISION,
+            dirtyFields = BeerDirtyFieldsCodec.ALL_FIELDS,
+            lastMutationId = ghostPullMutation
+        ))
+        // NO insertamos registro en mutationHistory
+
+        val pullResult = coordinator.executePull(device1, syncIdPull)
+        assertTrue("Pull no debe devolver Applied sin registro local", pullResult is PullExecutionResult.Blocked)
+        assertTrue((pullResult as PullExecutionResult.Blocked).reason.contains("registro local ausente"))
+        val beerAfterPull = device1.getBeer(syncIdPull)!!
+        assertEquals("La entidad debe conservar PENDING", SyncStatus.PENDING, beerAfterPull.syncStatus)
+    }
+
+    /**
+     * Test de Regresión 3D: Sincronización entre dos dispositivos:
+     * Comprobar igualdad estricta de valores, revisiones y estado de sincronización entre D1 y D2.
+     */
+    @Test
+    fun testRegression3D_twoDevicesSync_checksDeepEqualityRevisionsAndSyncStatus() {
+        val syncId = "beer-regr-3d"
+
+        // 1. D1 crea cerveza y sincroniza a rev 1
+        device1.createBeerLocalOnly(
+            syncId = syncId,
+            type = "TRIPLE",
+            comment = "Inicial de D1",
+            latitude = 40.4168,
+            longitude = -3.7038,
+            mutationId = "M_D1_CREATE"
+        )
+        val push1 = coordinator.executePush(device1, syncId)
+        assertTrue(push1 is PushExecutionResult.Success)
+
+        // 2. D2 descarga la cerveza vía PULL
+        val pullD2 = coordinator.executePull(device2, syncId)
+        assertTrue(pullD2 is PullExecutionResult.Applied)
+
+        // 3. D1 edita comentario y hace PUSH a rev 2
+        device1.updateBeerLocal(
+            syncId = syncId,
+            comment = "Comentario actualizado por D1",
+            modifiedFields = setOf(BeerDirtyField.COMMENT),
+            mutationId = "M_D1_EDIT"
+        )
+        val pushD1 = coordinator.executePush(device1, syncId)
+        assertTrue(pushD1 is PushExecutionResult.Success)
+
+        // 4. D2 (desconectado) edita ubicación localmente
+        device2.updateBeerLocal(
+            syncId = syncId,
+            latitude = 41.3851,
+            longitude = 2.1734,
+            modifiedFields = setOf(BeerDirtyField.LOCATION),
+            mutationId = "M_D2_EDIT"
+        )
+
+        // D2 se reconecta: hace PULL (MergeWithPending) y PUSH a rev 3
+        val pullMergeD2 = coordinator.executePull(device2, syncId)
+        assertTrue(pullMergeD2 is PullExecutionResult.Applied)
+        val pushD2 = coordinator.executePush(device2, syncId)
+        assertTrue(pushD2 is PushExecutionResult.Success)
+
+        // 5. D1 hace PULL para recibir los cambios de D2
+        val pullD1 = coordinator.executePull(device1, syncId)
+        assertTrue(pullD1 is PullExecutionResult.Applied)
+
+        // 6. Verificación de convergencia total e igualdad estricta campo por campo
+        val b1 = device1.getBeer(syncId)!!
+        val b2 = device2.getBeer(syncId)!!
+        val remoteDoc = firestore.getDocument(syncId)!!
+
+        assertEquals("Ambos dispositivos deben tener el mismo tipo", b1.type, b2.type)
+        assertEquals("Ambos dispositivos deben tener el mismo comentario", b1.comment, b2.comment)
+        assertEquals("Ambos dispositivos deben tener la misma latitud", b1.latitude, b2.latitude)
+        assertEquals("Ambos dispositivos deben tener la misma longitud", b1.longitude, b2.longitude)
+        assertEquals("Ambos dispositivos deben tener la misma remoteRevision", b1.remoteRevision, b2.remoteRevision)
+        assertEquals("Ambos dispositivos deben tener la misma baseRevision", b1.baseRevision, b2.baseRevision)
+        assertEquals("Ambos dispositivos deben estar SYNCED", SyncStatus.SYNCED, b1.syncStatus)
+        assertEquals("Ambos dispositivos deben estar SYNCED", SyncStatus.SYNCED, b2.syncStatus)
+        assertTrue("D1 debe tener dirtyFields limpios", b1.dirtyFields.isEmpty())
+        assertTrue("D2 debe tener dirtyFields limpios", b2.dirtyFields.isEmpty())
+
+        // Coherencia con el documento remoto
+        assertEquals(remoteDoc.type, b1.type)
+        assertEquals(remoteDoc.comment, b1.comment)
+        assertEquals(remoteDoc.latitude, b1.latitude)
+        assertEquals(remoteDoc.longitude, b1.longitude)
+        assertEquals(remoteDoc.revision, b1.remoteRevision)
+        assertEquals(3L, b1.remoteRevision)
     }
 }

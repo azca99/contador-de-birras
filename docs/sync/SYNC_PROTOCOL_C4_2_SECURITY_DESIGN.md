@@ -123,8 +123,9 @@ Si las reglas modernas se desplegaran de forma abrupta:
 Permite que clientes legacy sigan operando sobre sus documentos antiguos, pero impide que degraden documentos modernos:
 ```javascript
 allow update: if isBeerOwner() && (
-  // Ruta moderna: Documento moderno avanza monotónicamente
+  // Ruta moderna: Documento moderno avanza monotónicamente e inmutable en userId
   (resource.data.get('revision', 0) >= 1 &&
+   request.resource.data.userId == resource.data.userId &&
    request.resource.data.get('revision', 0) == resource.data.revision + 1 &&
    hasValidModernMetadata())
   ||
@@ -158,7 +159,16 @@ Donde `fileName` tradicionalmente corresponde a `{syncId}.jpg`.
 La ruta de almacenamiento debe evolucionar a:
 `users/{userId}/beers/{syncId}_{mutationId}.jpg`
 
-### 5.3 Reglas Storage Propuestas
+### 5.3 Reglas Storage Propuestas y Clarificación de Compatibilidad Legacy
+> [!WARNING]
+> **Compatibilidad de Storage vs. Clientes Legacy:**
+> Una regla estricta de `allow update: if false;` garantiza la inmutabilidad total de las fotografías versionadas (`{syncId}_{mutationId}.jpg`).
+> Sin embargo, **no debe prometerse compatibilidad transparente con actualizaciones fotográficas de clientes antiguos**: si un cliente antiguo intenta sobreescribir la foto de una cerveza existente en `users/{userId}/beers/{syncId}.jpg`, dicha actualización fallará con `PERMISSION_DENIED`.
+>
+> Durante una ventana de compatibilidad transitoria, existen dos opciones de arquitectura:
+> 1. **Endurecimiento intencional (Recomendado):** Bloquear actualizaciones en Storage (`allow update: if false;`), aceptando que clientes antiguos solo pueden subir fotos al crear cervezas, debiendo actualizar a la versión moderna para editar fotos de forma segura.
+> 2. **Ruta condicional transitoria:** Permitir temporalmente `allow update` únicamente sobre nombres de archivo legacy sin patrón de mutación (`!fileName.matches('.*_mut_.*')`), retirando esta excepción en la Fase 3.
+
 ```javascript
 rules_version = '2';
 service firebase.storage {
@@ -173,6 +183,7 @@ service firebase.storage {
                     && request.resource.contentType.matches('image/.*');
 
       // Inmutabilidad: Una fotografía versionada jamás se sobreescribe
+      // (Nota: Impide actualizaciones in-place de clientes antiguos)
       allow update: if false;
 
       // Borrado físico aplazado a política de purga formal

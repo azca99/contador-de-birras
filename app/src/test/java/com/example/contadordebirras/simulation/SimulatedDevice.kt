@@ -133,6 +133,8 @@ class SimulatedDevice(
         type: String = "LATA",
         comment: String? = null,
         photoUri: String? = null,
+        latitude: Double? = null,
+        longitude: Double? = null,
         mutationId: String = "mut_${deviceId}_${System.currentTimeMillis()}"
     ): SimulatedBeer {
         val beer = SimulatedBeer(
@@ -141,6 +143,8 @@ class SimulatedDevice(
             type = type,
             comment = comment,
             photoUri = photoUri,
+            latitude = latitude,
+            longitude = longitude,
             syncStatus = SyncStatus.PENDING,
             remoteRevision = LOCAL_ONLY_REVISION,
             baseRevision = LOCAL_ONLY_REVISION,
@@ -172,6 +176,8 @@ class SimulatedDevice(
         type: String? = null,
         comment: String? = null,
         photoUri: String? = null,
+        latitude: Double? = null,
+        longitude: Double? = null,
         modifiedFields: Set<BeerDirtyField>,
         mutationId: String = "mut_${deviceId}_${System.currentTimeMillis()}"
     ): SimulatedBeer {
@@ -179,6 +185,8 @@ class SimulatedDevice(
         if (type != null) existing.type = type
         if (comment != null) existing.comment = comment
         if (photoUri != null) existing.photoUri = photoUri
+        if (latitude != null) existing.latitude = latitude
+        if (longitude != null) existing.longitude = longitude
 
         // Acumulación canónica de dirty fields
         val updatedDirty = existing.dirtyFields + modifiedFields
@@ -275,6 +283,9 @@ class SimulatedDevice(
             // Concurrencia: el usuario editó nuevamente mientras el push estaba en vuelo
             return false
         }
+        // Actualizar historial local: exige existencia del registro durable antes de mutar la entidad
+        val record = mutationHistory.lastOrNull { it.mutationId == expectedMutationId } ?: return false
+
         beer.syncStatus = SyncStatus.SYNCED
         beer.remoteRevision = newRemoteRevision
         beer.baseRevision = newRemoteRevision
@@ -284,13 +295,9 @@ class SimulatedDevice(
         }
         commitToDisk(beer)
 
-        // Actualizar historial local
-        val record = mutationHistory.lastOrNull { it.mutationId == expectedMutationId }
-        record?.let {
-            it.status = MutationStatus.CONFIRMED
-            it.confirmedRevision = newRemoteRevision
-            commitHistoryToDisk(it)
-        }
+        record.status = MutationStatus.CONFIRMED
+        record.confirmedRevision = newRemoteRevision
+        commitHistoryToDisk(record)
         return true
     }
 
@@ -304,17 +311,16 @@ class SimulatedDevice(
     ): Boolean {
         val beer = localBeers[syncId] ?: return false
         if (beer.lastMutationId != expectedMutationId) return false
+        val record = mutationHistory.lastOrNull { it.mutationId == expectedMutationId } ?: return false
+
         beer.remoteRevision = newRemoteRevision
         beer.baseRevision = newRemoteRevision
         beer.syncStatus = SyncStatus.DELETED
         commitToDisk(beer)
 
-        val record = mutationHistory.lastOrNull { it.mutationId == expectedMutationId }
-        record?.let {
-            it.status = MutationStatus.CONFIRMED
-            it.confirmedRevision = newRemoteRevision
-            commitHistoryToDisk(it)
-        }
+        record.status = MutationStatus.CONFIRMED
+        record.confirmedRevision = newRemoteRevision
+        commitHistoryToDisk(record)
         return true
     }
 
@@ -349,11 +355,134 @@ class SimulatedDevice(
     }
 
     /**
-     * Aplica una confirmación parcial (algunos campos confirmados, otros continúan dirty o ganados por remoto).
+     * Aplica la confirmación de una mutación pendiente recibida durante PULL (ConfirmPendingMutation).
      *
-     * INVARIANTE CRÍTICA:
-     * Si remainingDirtyFields no está vacío, baseRevision NO avanza y el estado de la mutación en
-     * el historial se marca como PARTIALLY_CONFIRMED (nunca CONFIRMED).
+     * INVARIANTES:
+     * - Exige existencia de la cerveza y coincidencia estricta con expectedMutationId.
+     * - Exige existencia del registro durable en mutationHistory.
+     * - Aplica los campos remotos autorizados (remoteFieldsToApply) desde remoteDoc sin perder photoUri.
+     * - Resta confirmedFields y remoteWinsFields de dirtyFields.
+     * - Si remainingDirtyFields está vacío -> SYNCED, baseRevision avanza a newRemoteRevision.
+     * - Si remainingDirtyFields NO está vacío -> PENDING, baseRevision permanece congelada.
+     */
+    fun applyConfirmPendingMutation(
+        syncId: String,
+        expectedMutationId: String,
+        newRemoteRevision: Long,
+        confirmedFields: Set<BeerDirtyField>,
+        remoteWinsFields: Set<BeerDirtyField>,
+        remoteFieldsToApply: Set<BeerDirtyField>,
+        remoteDoc: FakeFirestoreBeerDocument?
+    ): Boolean {
+        val beer = localBeers[syncId] ?: return false
+        if (beer.lastMutationId != expectedMutationId) return false
+        val record = mutationHistory.lastOrNull { it.mutationId == expectedMutationId } ?: return false
+
+        if (remoteFieldsToApply.isNotEmpty()) {
+            if (remoteDoc == null) return false
+            if (remoteFieldsToApply.contains(BeerDirtyField.TYPE)) beer.type = remoteDoc.type
+            if (remoteFieldsToApply.contains(BeerDirtyField.TIMESTAMP)) beer.timestamp = remoteDoc.timestamp
+            if (remoteFieldsToApply.contains(BeerDirtyField.COMMENT)) beer.comment = remoteDoc.comment
+            if (remoteFieldsToApply.contains(BeerDirtyField.PHOTO)) {
+                beer.remotePhotoUrl = remoteDoc.photoUrl
+                // Preservar photoUri local intacto
+            }
+            if (remoteFieldsToApply.contains(BeerDirtyField.LOCATION)) {
+                beer.latitude = remoteDoc.latitude
+                beer.longitude = remoteDoc.longitude
+            }
+        }
+        if (remoteDoc?.photoUrl != null) {
+            beer.remotePhotoUrl = remoteDoc.photoUrl
+        }
+
+        val remainingDirtyFields = beer.dirtyFields - confirmedFields - remoteWinsFields
+        beer.remoteRevision = newRemoteRevision
+        beer.dirtyFields = remainingDirtyFields
+
+        if (remainingDirtyFields.isEmpty()) {
+            beer.syncStatus = SyncStatus.SYNCED
+            beer.baseRevision = newRemoteRevision
+            record.status = MutationStatus.CONFIRMED
+            record.confirmedRevision = newRemoteRevision
+        } else {
+            beer.syncStatus = SyncStatus.PENDING
+            // baseRevision permanece congelada
+            record.status = MutationStatus.PARTIALLY_CONFIRMED
+            record.confirmedRevision = newRemoteRevision
+        }
+
+        commitToDisk(beer)
+        commitHistoryToDisk(record)
+        return true
+    }
+
+    /**
+     * Aplica confirmación de ApplyPatch durante PUSH, incorporando campos remotos ganadores.
+     *
+     * INVARIANTES:
+     * - Exige existencia de la cerveza y coincidencia con expectedMutationId.
+     * - Exige existencia del registro durable en mutationHistory.
+     * - Si remoteWinsFields no está vacío, exige remoteDoc e incorpora sus valores antes de declarar éxito.
+     * - Preserva photoUri local intacto.
+     * - Si remainingDirtyFields está vacío -> SYNCED, baseRevision avanza a newRemoteRevision.
+     * - Si remainingDirtyFields NO está vacío -> PENDING, baseRevision permanece congelada.
+     */
+    fun applyPartialPushConfirmation(
+        syncId: String,
+        expectedMutationId: String,
+        newRemoteRevision: Long,
+        confirmedFields: Set<BeerDirtyField>,
+        remoteWinsFields: Set<BeerDirtyField>,
+        remoteDoc: FakeFirestoreBeerDocument?,
+        remotePhotoUrl: String? = null
+    ): Boolean {
+        val beer = localBeers[syncId] ?: return false
+        if (beer.lastMutationId != expectedMutationId) return false
+        val record = mutationHistory.lastOrNull { it.mutationId == expectedMutationId } ?: return false
+
+        if (remoteWinsFields.isNotEmpty()) {
+            if (remoteDoc == null) return false
+            if (remoteWinsFields.contains(BeerDirtyField.TYPE)) beer.type = remoteDoc.type
+            if (remoteWinsFields.contains(BeerDirtyField.TIMESTAMP)) beer.timestamp = remoteDoc.timestamp
+            if (remoteWinsFields.contains(BeerDirtyField.COMMENT)) beer.comment = remoteDoc.comment
+            if (remoteWinsFields.contains(BeerDirtyField.PHOTO)) {
+                beer.remotePhotoUrl = remoteDoc.photoUrl
+                // Preservar photoUri local intacto
+            }
+            if (remoteWinsFields.contains(BeerDirtyField.LOCATION)) {
+                beer.latitude = remoteDoc.latitude
+                beer.longitude = remoteDoc.longitude
+            }
+        }
+
+        if (remotePhotoUrl != null) {
+            beer.remotePhotoUrl = remotePhotoUrl
+        }
+
+        val remainingDirtyFields = beer.dirtyFields - confirmedFields - remoteWinsFields
+        beer.remoteRevision = newRemoteRevision
+        beer.dirtyFields = remainingDirtyFields
+
+        if (remainingDirtyFields.isEmpty()) {
+            beer.syncStatus = SyncStatus.SYNCED
+            beer.baseRevision = newRemoteRevision
+            record.status = MutationStatus.CONFIRMED
+            record.confirmedRevision = newRemoteRevision
+        } else {
+            beer.syncStatus = SyncStatus.PENDING
+            // baseRevision permanece congelada
+            record.status = MutationStatus.PARTIALLY_CONFIRMED
+            record.confirmedRevision = newRemoteRevision
+        }
+
+        commitToDisk(beer)
+        commitHistoryToDisk(record)
+        return true
+    }
+
+    /**
+     * Aplica una confirmación parcial directa (algunos campos confirmados, otros continúan dirty).
      */
     fun applyPartialConfirmation(
         syncId: String,
@@ -365,6 +494,7 @@ class SimulatedDevice(
     ): Boolean {
         val beer = localBeers[syncId] ?: return false
         if (beer.lastMutationId != expectedMutationId) return false
+        val record = mutationHistory.lastOrNull { it.mutationId == expectedMutationId } ?: return false
 
         beer.remoteRevision = newRemoteRevision
         beer.dirtyFields = remainingDirtyFields
@@ -380,17 +510,14 @@ class SimulatedDevice(
         }
         commitToDisk(beer)
 
-        val record = mutationHistory.lastOrNull { it.mutationId == expectedMutationId }
-        record?.let {
-            if (remainingDirtyFields.isEmpty()) {
-                it.status = MutationStatus.CONFIRMED
-                it.confirmedRevision = newRemoteRevision
-            } else {
-                it.status = MutationStatus.PARTIALLY_CONFIRMED
-                it.confirmedRevision = newRemoteRevision
-            }
-            commitHistoryToDisk(it)
+        if (remainingDirtyFields.isEmpty()) {
+            record.status = MutationStatus.CONFIRMED
+            record.confirmedRevision = newRemoteRevision
+        } else {
+            record.status = MutationStatus.PARTIALLY_CONFIRMED
+            record.confirmedRevision = newRemoteRevision
         }
+        commitHistoryToDisk(record)
         return true
     }
 }

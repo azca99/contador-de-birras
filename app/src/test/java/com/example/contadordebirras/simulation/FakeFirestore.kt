@@ -76,6 +76,9 @@ class FakeFirestore {
     /** Inyección de timeout de servidor */
     var simulateTimeout: Boolean = false
 
+    /** Inyección de fallo simulado exclusivo en transacciones (después de lecturas/storage) */
+    var simulateTransactionError: Boolean = false
+
     /**
      * Lectura directa simulada de un documento por su ID.
      */
@@ -103,7 +106,7 @@ class FakeFirestore {
         callerUid: String,
         newDocument: FakeFirestoreBeerDocument
     ): TransactionResult {
-        if (simulateNetworkError) return TransactionResult.Error(IOException("Fallo de red en CreateActive"))
+        if (simulateNetworkError || simulateTransactionError) return TransactionResult.Error(IOException("Fallo de red en CreateActive"))
         if (simulateTimeout) return TransactionResult.Error(IOException("Timeout en CreateActive"))
 
         // 1. Verificación de ownership del documento propuesto
@@ -151,8 +154,24 @@ class FakeFirestore {
                         reason = "Existing document with matching mutationId has non-protocol revision ${existing.revision}"
                     )
                 } else {
-                    // Idempotencia verificada: mismo syncId, mismo ownerUid, mismo mutationId no vacío y estado coherente
-                    TransactionResult.Success(existing.copy())
+                    // Verificación de identidad y coherencia de payload:
+                    // FakeFirestore no debe aceptar un ACK idempotente únicamente por coincidencia de propietario
+                    // y mutationId cuando exista contradicción de payload.
+                    val payloadMatches = existing.type == newDocument.type &&
+                        existing.timestamp == newDocument.timestamp &&
+                        existing.comment == newDocument.comment &&
+                        existing.photoUrl == newDocument.photoUrl &&
+                        existing.latitude == newDocument.latitude &&
+                        existing.longitude == newDocument.longitude
+
+                    if (!payloadMatches) {
+                        TransactionResult.PreconditionFailed(
+                            "Payload contradiction for idempotent creation: mutationId ${newDocument.lastMutationId} already exists with incompatible payload content"
+                        )
+                    } else {
+                        // Idempotencia verificada: mismo syncId, mismo ownerUid, mismo mutationId no vacío y payload idéntico coherente
+                        TransactionResult.Success(existing.copy())
+                    }
                 }
             } else {
                 TransactionResult.Conflict(
@@ -194,7 +213,7 @@ class FakeFirestore {
         fieldsToUpdate: Map<String, Any?>,
         newFieldRevisions: Map<BeerDirtyField, Long>
     ): TransactionResult {
-        if (simulateNetworkError) return TransactionResult.Error(IOException("Fallo de red en ApplyPatch"))
+        if (simulateNetworkError || simulateTransactionError) return TransactionResult.Error(IOException("Fallo de red en ApplyPatch"))
         if (simulateTimeout) return TransactionResult.Error(IOException("Timeout en ApplyPatch"))
 
         val existing = documents[syncId]
@@ -213,6 +232,22 @@ class FakeFirestore {
 
         // 2. Verificación de idempotencia por mutationId
         if (existing.lastMutationId == mutationId) {
+            val payloadContradiction = fieldsToUpdate.any { (field, value) ->
+                when (field) {
+                    "type" -> existing.type != value
+                    "timestamp" -> existing.timestamp != value
+                    "comment" -> existing.comment != value
+                    "photoUrl" -> existing.photoUrl != value
+                    "latitude" -> existing.latitude != value
+                    "longitude" -> existing.longitude != value
+                    else -> false
+                }
+            }
+            if (payloadContradiction) {
+                return TransactionResult.PreconditionFailed(
+                    "Payload contradiction in patch retry for mutationId $mutationId"
+                )
+            }
             return TransactionResult.Success(existing.copy())
         }
 
@@ -272,7 +307,7 @@ class FakeFirestore {
         expectedRevision: Long,
         mutationId: String
     ): TransactionResult {
-        if (simulateNetworkError) return TransactionResult.Error(IOException("Fallo de red en WriteTombstone"))
+        if (simulateNetworkError || simulateTransactionError) return TransactionResult.Error(IOException("Fallo de red en WriteTombstone"))
         if (simulateTimeout) return TransactionResult.Error(IOException("Timeout en WriteTombstone"))
 
         val existing = documents[syncId]
