@@ -13,6 +13,7 @@ sealed interface PushExecutionResult {
     data class Blocked(val reason: String) : PushExecutionResult
     data class AckLost(val remoteRevision: Long, val mutationId: String) : PushExecutionResult
     data class StorageUploadFailed(val reason: String) : PushExecutionResult
+    data class TombstoneAlreadyExisted(val currentRemoteRevision: Long) : PushExecutionResult
     data object Offline : PushExecutionResult
     data object NotFound : PushExecutionResult
 }
@@ -59,6 +60,12 @@ class SimulationCoordinator(
         if (!device.isOnline) return PushExecutionResult.Offline
 
         val localBeer = device.getBeer(syncId) ?: return PushExecutionResult.NotFound
+
+        // 0. Exigir mutationId durable (no transitorio) para cualquier operación PUSH
+        if (localBeer.lastMutationId.isNullOrBlank()) {
+            return PushExecutionResult.Blocked("Mutación no durable: falta lastMutationId en la entidad local")
+        }
+        val mutationId = localBeer.lastMutationId!!
 
         // 1. Clasificación Legacy preventiva si está en 0/0
         if (localBeer.remoteRevision == LEGACY_REMOTE_REVISION && localBeer.baseRevision == LEGACY_REMOTE_REVISION) {
@@ -130,6 +137,14 @@ class SimulationCoordinator(
             return PushExecutionResult.Blocked("Error de red al consultar remoto: ${e.message}")
         }
 
+        // Aislamiento estricto de propietario (Ownership):
+        // Un documento remoto ajeno jamás puede confirmar ni planificar mutaciones de este dispositivo.
+        if (remoteDoc != null && remoteDoc.userId != device.ownerUid) {
+            return PushExecutionResult.Blocked(
+                "Ownership mismatch: Document $syncId exists and is owned by ${remoteDoc.userId} (device owner: ${device.ownerUid})"
+            )
+        }
+
         val remoteMetadata = remoteDoc?.toRemoteSyncMetadata()
         val localContext = localBeer.toLocalMutationContext()
 
@@ -139,7 +154,6 @@ class SimulationCoordinator(
         // 4. Ejecución del plan
         return when (plan) {
             is PushPlan.CreateActive -> {
-                val mutationId = localBeer.lastMutationId ?: "mut_create_${System.currentTimeMillis()}"
                 var uploadedRemotePhotoUrl: String? = null
 
                 // Manejo de fotografía si está marcada como dirty y existe URI local
@@ -199,6 +213,9 @@ class SimulationCoordinator(
                     is TransactionResult.PreconditionFailed -> {
                         PushExecutionResult.Blocked("Precondición fallida en CreateActive: ${txResult.reason}")
                     }
+                    is TransactionResult.TombstoneAlreadyExists -> {
+                        PushExecutionResult.Blocked("Documento remoto ya es tombstone")
+                    }
                     is TransactionResult.Error -> {
                         PushExecutionResult.Blocked("Error en CreateActive: ${txResult.exception.message}")
                     }
@@ -206,7 +223,6 @@ class SimulationCoordinator(
             }
 
             is PushPlan.ApplyPatch -> {
-                val mutationId = localBeer.lastMutationId ?: "mut_patch_${System.currentTimeMillis()}"
                 var uploadedRemotePhotoUrl: String? = null
 
                 if (plan.fieldsToWrite.contains(BeerDirtyField.PHOTO) && localBeer.photoUri != null) {
@@ -276,6 +292,9 @@ class SimulationCoordinator(
                     is TransactionResult.PreconditionFailed -> {
                         PushExecutionResult.Blocked("Precondición fallida en ApplyPatch: ${txResult.reason}")
                     }
+                    is TransactionResult.TombstoneAlreadyExists -> {
+                        PushExecutionResult.Blocked("Documento remoto ya es tombstone")
+                    }
                     is TransactionResult.Error -> {
                         PushExecutionResult.Blocked("Error en ApplyPatch: ${txResult.exception.message}")
                     }
@@ -283,7 +302,6 @@ class SimulationCoordinator(
             }
 
             is PushPlan.WriteTombstone -> {
-                val mutationId = localBeer.lastMutationId ?: "mut_del_${System.currentTimeMillis()}"
                 val txResult = firestore.executeWriteTombstoneTransaction(
                     syncId = syncId,
                     callerUid = device.ownerUid,
@@ -294,11 +312,18 @@ class SimulationCoordinator(
                 when (txResult) {
                     is TransactionResult.Success -> {
                         if (dropPushAck) {
-                            PushExecutionResult.AckLost(plan.nextRevision, mutationId)
+                            PushExecutionResult.AckLost(txResult.document.revision, mutationId)
                         } else {
-                            device.applyDeleteConfirmation(syncId, mutationId, plan.nextRevision)
-                            PushExecutionResult.Success(plan, plan.nextRevision)
+                            device.applyDeleteConfirmation(syncId, mutationId, txResult.document.revision)
+                            PushExecutionResult.Success(plan, txResult.document.revision)
                         }
+                    }
+                    is TransactionResult.TombstoneAlreadyExists -> {
+                        // Tombstone preexistente originado por otra mutación:
+                        // No inventar una nueva revisión ni registrar un ACK ficticio.
+                        // Aplicar DELETE WINS sin alterar la revisión histórica real del remoto.
+                        device.applyTombstonePrevailed(syncId, txResult.currentDocument.revision, mutationId)
+                        PushExecutionResult.TombstoneAlreadyExisted(txResult.currentDocument.revision)
                     }
                     is TransactionResult.Conflict -> {
                         PushExecutionResult.Conflict(plan, txResult.currentRevision, txResult.reason)
@@ -371,7 +396,14 @@ class SimulationCoordinator(
             return PullExecutionResult.IncompleteReadIgnored
         }
 
-        // 2. Aislamiento estricto de propietario (Ownership)
+        // 2. Comprobación de garantía de lectura (readScope):
+        // Si no es AUTHORITATIVE_CONFIRMED, se bloquea la aplicación del snapshot completo (incluso si existe Present).
+        // No se confirman ACKs, no se aplican tombstones, no se sobrescriben campos ni se insertan documentos locales.
+        if (scope != RemoteReadScope.AUTHORITATIVE_CONFIRMED) {
+            return PullExecutionResult.IncompleteReadIgnored
+        }
+
+        // 3. Aislamiento estricto de propietario (Ownership)
         if (remoteDoc != null && remoteDoc.userId != device.ownerUid) {
             return PullExecutionResult.Blocked(
                 "Ownership Mismatch: Documento remoto pertenece a ${remoteDoc.userId}, dispositivo es ${device.ownerUid}"
@@ -380,12 +412,7 @@ class SimulationCoordinator(
 
         val remoteState = when {
             remoteDoc != null -> RemotePullState.Present(remoteDoc.toRemoteSyncMetadata())
-            scope == RemoteReadScope.AUTHORITATIVE_CONFIRMED -> RemotePullState.ConfirmedAbsent
-            else -> RemotePullState.IncompleteOrUnconfirmed
-        }
-
-        if (remoteState is RemotePullState.IncompleteOrUnconfirmed) {
-            return PullExecutionResult.IncompleteReadIgnored
+            else -> RemotePullState.ConfirmedAbsent
         }
 
         // 3. Determinación de procedencia (Provenance)

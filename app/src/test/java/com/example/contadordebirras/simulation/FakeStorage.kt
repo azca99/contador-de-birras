@@ -69,11 +69,24 @@ class FakeStorage {
             )
         }
 
-        // 2. Invariante de inmutabilidad: las rutas versionadas no pueden sobrescribirse
-        if (objects.containsKey(path)) {
-            return Result.failure(
-                IllegalStateException("FakeStorage: Infracción de inmutabilidad. La ruta versionada $path ya existe y no puede sobrescribirse.")
-            )
+        // 2. Invariante de inmutabilidad y soporte de reintento idempotente:
+        val existing = objects[path]
+        if (existing != null) {
+            if (existing.ownerUid != ownerUid) {
+                return Result.failure(
+                    SecurityException("FakeStorage: La ruta existente $path pertenece a otro usuario")
+                )
+            }
+            return if (existing.bytes.contentEquals(bytes)) {
+                // Reintento idempotente de la misma mutación fotográfica
+                val downloadUrl = "https://firebasestorage.googleapis.com/v0/b/contador-de-birras.appspot.com/o/${path.replace("/", "%2F")}?alt=media"
+                Result.success(downloadUrl)
+            } else {
+                // Infracción de inmutabilidad: contenido diferente en la misma ruta
+                Result.failure(
+                    IllegalStateException("FakeStorage: Infracción de inmutabilidad. La ruta versionada $path ya existe con contenido diferente y no puede sobrescribirse.")
+                )
+            }
         }
 
         // 3. Verificación de pertenencia del path al usuario

@@ -860,4 +860,367 @@ class MultiDeviceSimulationTest {
         assertTrue("Sobrescritura debe fallar por infracción de inmutabilidad", result2.isFailure)
         assertTrue(result2.exceptionOrNull() is IllegalStateException)
     }
+
+    // =========================================================================
+    // PRUEBAS DE AUDITORÍA CORRECTIVA C4.2 (Casos A a I)
+    // =========================================================================
+
+    /**
+     * Test A: Mismo mutationId pero propietario remoto diferente: bloqueo inmediato.
+     * Un documento ajeno jamás puede producir una confirmación de creación.
+     */
+    @Test
+    fun testAuditA_sameMutationIdDifferentRemoteOwner_blocks() {
+        val syncId = "beer-audit-a"
+        val foreignOwner = "attacker_uid_999"
+        val sharedMutationId = "M_SHARED_COLLISION"
+
+        // Firestore tiene documento con mutationId M_SHARED_COLLISION pero de foreignOwner
+        val existingForeign = FakeFirestoreBeerDocument(
+            syncId = syncId,
+            userId = foreignOwner,
+            revision = 1L,
+            isDeleted = false,
+            lastMutationId = sharedMutationId
+        )
+        firestore.seedDocument(existingForeign)
+
+        // D1 (userUid) tiene una cerveza local-only con el mismo mutationId
+        device1.createBeerLocalOnly(
+            syncId = syncId,
+            mutationId = sharedMutationId
+        )
+
+        // Intento directo en FakeFirestore
+        val txResult = firestore.executeCreateActiveTransaction(
+            syncId = syncId,
+            callerUid = userUid,
+            newDocument = FakeFirestoreBeerDocument(
+                syncId = syncId,
+                userId = userUid,
+                revision = 1L,
+                lastMutationId = sharedMutationId
+            )
+        )
+        assertTrue("CreateActive debe fallar por precondición de ownership", txResult is TransactionResult.PreconditionFailed)
+        assertTrue((txResult as TransactionResult.PreconditionFailed).reason.contains("Ownership mismatch"))
+
+        // Push vía coordinador debe quedar bloqueado
+        val pushResult = coordinator.executePush(device1, syncId)
+        assertTrue("Push debe ser bloqueado por precondición fallida", pushResult is PushExecutionResult.Blocked)
+        assertTrue((pushResult as PushExecutionResult.Blocked).reason.contains("Ownership mismatch"))
+    }
+
+    /**
+     * Test B: mutationId null en creación existente: no reconocer ACK.
+     * No considerar null == null como confirmación ni inventar ACKs sin mutationId verificado.
+     */
+    @Test
+    fun testAuditB_mutationIdNullOnExistingCreation_doesNotRecognizeAck() {
+        val syncId = "beer-audit-b"
+
+        val existingWithoutMutation = FakeFirestoreBeerDocument(
+            syncId = syncId,
+            userId = userUid,
+            revision = 1L,
+            isDeleted = false,
+            lastMutationId = null
+        )
+        firestore.seedDocument(existingWithoutMutation)
+
+        // Intento de CreateActive con mutationId null/blank
+        val txResultNull = firestore.executeCreateActiveTransaction(
+            syncId = syncId,
+            callerUid = userUid,
+            newDocument = FakeFirestoreBeerDocument(
+                syncId = syncId,
+                userId = userUid,
+                revision = 1L,
+                lastMutationId = null
+            )
+        )
+        assertTrue("CreateActive con mutationId null debe fallar", txResultNull is TransactionResult.PreconditionFailed)
+
+        // Intento de CreateActive con mutationId "M_NEW" contra el documento que tiene null
+        val txResultNew = firestore.executeCreateActiveTransaction(
+            syncId = syncId,
+            callerUid = userUid,
+            newDocument = FakeFirestoreBeerDocument(
+                syncId = syncId,
+                userId = userUid,
+                revision = 1L,
+                lastMutationId = "M_NEW"
+            )
+        )
+        assertTrue("CreateActive debe resultar en Conflict y no reconocer ACK ficticio", txResultNew is TransactionResult.Conflict)
+    }
+
+    /**
+     * Test C: Present con lectura no confirmada: no aplicar actualizaciones.
+     * Si readScope no es AUTHORITATIVE_CONFIRMED, bloquear snapshot completo incluso si existe Present.
+     */
+    @Test
+    fun testAuditC_presentWithUnconfirmedRead_doesNotApplyUpdates() {
+        val syncId = "beer-audit-c"
+
+        val localBeer = SimulatedBeer(
+            syncId = syncId,
+            ownerUid = userUid,
+            comment = "Local original",
+            syncStatus = SyncStatus.SYNCED,
+            remoteRevision = 1L,
+            baseRevision = 1L,
+            lastMutationId = "M1"
+        )
+        device1.insertBeerDirect(localBeer)
+
+        val remoteDoc = FakeFirestoreBeerDocument(
+            syncId = syncId,
+            userId = userUid,
+            revision = 2L,
+            isDeleted = false,
+            lastMutationId = "M2_REMOTE",
+            comment = "Comentario remoto más reciente"
+        )
+        firestore.seedDocument(remoteDoc)
+
+        val pullResult = coordinator.executePull(
+            device = device1,
+            syncId = syncId,
+            scope = RemoteReadScope.INCOMPLETE_OR_UNCONFIRMED
+        )
+        assertEquals("Lectura no confirmada debe ser ignorada", PullExecutionResult.IncompleteReadIgnored, pullResult)
+
+        val beerPreserved = device1.getBeer(syncId)!!
+        assertEquals("Local original", beerPreserved.comment)
+        assertEquals(1L, beerPreserved.remoteRevision)
+    }
+
+    /**
+     * Test D: Tombstone Present no confirmado: no aplicar borrado local.
+     */
+    @Test
+    fun testAuditD_tombstonePresentUnconfirmedRead_doesNotApplyLocalDelete() {
+        val syncId = "beer-audit-d"
+
+        val localBeer = SimulatedBeer(
+            syncId = syncId,
+            ownerUid = userUid,
+            comment = "Cerveza activa en local",
+            syncStatus = SyncStatus.SYNCED,
+            remoteRevision = 1L,
+            baseRevision = 1L,
+            lastMutationId = "M1"
+        )
+        device1.insertBeerDirect(localBeer)
+
+        val remoteTombstone = FakeFirestoreBeerDocument(
+            syncId = syncId,
+            userId = userUid,
+            revision = 2L,
+            isDeleted = true,
+            lastMutationId = "M_DEL_REMOTE"
+        )
+        firestore.seedDocument(remoteTombstone)
+
+        val pullResult = coordinator.executePull(
+            device = device1,
+            syncId = syncId,
+            scope = RemoteReadScope.INCOMPLETE_OR_UNCONFIRMED
+        )
+        assertEquals(PullExecutionResult.IncompleteReadIgnored, pullResult)
+
+        val beerPreserved = device1.getBeer(syncId)!!
+        assertEquals(SyncStatus.SYNCED, beerPreserved.syncStatus)
+        assertEquals(1L, beerPreserved.remoteRevision)
+    }
+
+    /**
+     * Test E: Upload correcto + fallo Firestore + reintento: recuperación idempotente.
+     */
+    @Test
+    fun testAuditE_uploadSuccessFirestoreFailureRetry_idempotentRecovery() {
+        val syncId = "beer-audit-e"
+        val mutationId = "M_PHOTO_RETRY"
+        val photoPath = "users/$userUid/beers/${syncId}_$mutationId.jpg"
+        val photoBytes = "bytes_exactos_foto".toByteArray()
+
+        // 1. Primer intento: el upload de la foto tiene éxito
+        val upload1 = storage.uploadPhoto(photoPath, userUid, photoBytes)
+        assertTrue(upload1.isSuccess)
+        val initialUrl = upload1.getOrThrow()
+
+        // 2. Reintento: la app reintenta con el mismo mutationId y los mismos bytes
+        val uploadRetry = storage.uploadPhoto(photoPath, userUid, photoBytes)
+        assertTrue("Reintento con mismos bytes debe ser exitoso e idempotente", uploadRetry.isSuccess)
+        assertEquals(initialUrl, uploadRetry.getOrThrow())
+
+        // 3. Completamos Firestore con éxito
+        val newDoc = FakeFirestoreBeerDocument(
+            syncId = syncId,
+            userId = userUid,
+            revision = 1L,
+            lastMutationId = mutationId,
+            photoUrl = uploadRetry.getOrThrow()
+        )
+        val txResult = firestore.executeCreateActiveTransaction(syncId, userUid, newDoc)
+        assertTrue(txResult is TransactionResult.Success)
+    }
+
+    /**
+     * Test F: Misma ruta fotográfica con bytes diferentes: rechazo estricto.
+     */
+    @Test
+    fun testAuditF_samePhotoPathDifferentBytes_rejected() {
+        val photoPath = "users/$userUid/beers/beer_collision_M1.jpg"
+        val originalBytes = "foto_original_v1".toByteArray()
+        val corruptedBytes = "foto_distinta_v2".toByteArray()
+
+        val upload1 = storage.uploadPhoto(photoPath, userUid, originalBytes)
+        assertTrue(upload1.isSuccess)
+
+        // Intento de escribir bytes diferentes en la misma ruta
+        val upload2 = storage.uploadPhoto(photoPath, userUid, corruptedBytes)
+        assertTrue("Sobrescritura con bytes diferentes debe fallar", upload2.isFailure)
+        assertTrue(upload2.exceptionOrNull() is IllegalStateException)
+        assertTrue(upload2.exceptionOrNull()!!.message!!.contains("Infracción de inmutabilidad"))
+    }
+
+    /**
+     * Test G: Tombstone existente con mutationId diferente: no confirmar revisión falsa.
+     */
+    @Test
+    fun testAuditG_existingTombstoneDifferentMutationId_doesNotConfirmFakeRevision() {
+        val syncId = "beer-audit-g"
+
+        // Caso a: Nueva escritura de tombstone confirmada (rev 4 -> rev 5)
+        val docActive = FakeFirestoreBeerDocument(
+            syncId = syncId,
+            userId = userUid,
+            revision = 4L,
+            isDeleted = false,
+            lastMutationId = "M_INIT"
+        )
+        firestore.seedDocument(docActive)
+
+        val txNew = firestore.executeWriteTombstoneTransaction(
+            syncId = syncId,
+            callerUid = userUid,
+            expectedRevision = 4L,
+            mutationId = "M_FOREIGN_DEL"
+        )
+        assertTrue("Caso a: debe confirmar nueva escritura de tombstone", txNew is TransactionResult.Success)
+        assertEquals(5L, (txNew as TransactionResult.Success).document.revision)
+        assertTrue(txNew.document.isDeleted)
+
+        // Caso b: Reintento de la misma mutación sobre tombstone ya confirmado (idempotencia)
+        val txRetry = firestore.executeWriteTombstoneTransaction(
+            syncId = syncId,
+            callerUid = userUid,
+            expectedRevision = 4L,
+            mutationId = "M_FOREIGN_DEL"
+        )
+        assertTrue("Caso b: reintento debe ser idempotente", txRetry is TransactionResult.Success)
+        assertEquals(5L, (txRetry as TransactionResult.Success).document.revision) // No incrementa a 6
+
+        // Caso c: Tombstone ya existente originado por otra mutación (M_MY_DEL vs M_FOREIGN_DEL)
+        val txConflict = firestore.executeWriteTombstoneTransaction(
+            syncId = syncId,
+            callerUid = userUid,
+            expectedRevision = 4L,
+            mutationId = "M_MY_DEL"
+        )
+        assertTrue("Caso c: no debe devolver éxito de nueva escritura", txConflict is TransactionResult.TombstoneAlreadyExists)
+        assertEquals(5L, (txConflict as TransactionResult.TombstoneAlreadyExists).currentDocument.revision)
+
+        // Verificación en SimulatedDevice: aplicar DELETE WINS sin alterar la revisión histórica real
+        val localBeer = SimulatedBeer(
+            syncId = syncId,
+            ownerUid = userUid,
+            syncStatus = SyncStatus.DELETED,
+            remoteRevision = 4L,
+            baseRevision = 4L,
+            lastMutationId = "M_MY_DEL"
+        )
+        device1.insertBeerDirect(localBeer)
+        device1.insertMutationRecord(SimulatedMutationRecord(
+            mutationId = "M_MY_DEL",
+            syncId = syncId,
+            ownerUid = userUid,
+            timestamp = System.currentTimeMillis(),
+            dirtyFields = emptySet(),
+            baseRevision = 4L,
+            status = MutationStatus.PENDING
+        ))
+
+        device1.applyTombstonePrevailed(syncId, 5L, "M_MY_DEL")
+
+        val beerOnD1 = device1.getBeer(syncId)!!
+        assertEquals("Debe quedar en DELETED", SyncStatus.DELETED, beerOnD1.syncStatus)
+        assertEquals("Debe adoptar la revisión remota existente 5L (no 6L)", 5L, beerOnD1.remoteRevision)
+        assertEquals("baseRevision debe adoptar 5L", 5L, beerOnD1.baseRevision)
+
+        val myMutation = device1.getMutationHistory().last { it.mutationId == "M_MY_DEL" }
+        assertEquals("Mutación local debe marcarse como SUPERSEDED", MutationStatus.SUPERSEDED, myMutation.status)
+        assertNull("confirmedRevision no debe ser asignada a una mutación no escrita", myMutation.confirmedRevision)
+        assertEquals("Firestore no debe haber incrementado su revisión", 5L, firestore.getDocument(syncId)!!.revision)
+    }
+
+    /**
+     * Test H: mutationId local ausente: operación bloqueada.
+     */
+    @Test
+    fun testAuditH_localMutationIdAbsent_operationBlocked() {
+        val syncId = "beer-audit-h"
+
+        val invalidBeer = SimulatedBeer(
+            syncId = syncId,
+            ownerUid = userUid,
+            syncStatus = SyncStatus.PENDING,
+            remoteRevision = 1L,
+            baseRevision = 1L,
+            dirtyFields = setOf(BeerDirtyField.COMMENT),
+            lastMutationId = null
+        )
+        device1.insertBeerDirect(invalidBeer)
+
+        val pushResult = coordinator.executePush(device1, syncId)
+        assertTrue("Push debe ser bloqueado por falta de mutationId durable", pushResult is PushExecutionResult.Blocked)
+        assertTrue((pushResult as PushExecutionResult.Blocked).reason.contains("Mutación no durable"))
+        assertNull(firestore.getDocument(syncId))
+    }
+
+    /**
+     * Test I: Crash sin shutdown: recuperación de mutaciones durables.
+     */
+    @Test
+    fun testAuditI_crashWithoutShutdown_recoversDurableMutations() {
+        val syncId = "beer-audit-i"
+
+        device1.createBeerLocalOnly(
+            syncId = syncId,
+            comment = "Cerveza antes del crash abrupto",
+            mutationId = "M_DURABLE_CRASH"
+        )
+
+        // Muerte de proceso inesperada (crash) SIN llamar a shutdown()
+        device1.crash()
+
+        // Memoria volátil vacía
+        assertNull(device1.getBeer(syncId))
+
+        // Reinicio leyendo del almacenamiento persistente en disco
+        device1.restart()
+
+        val recoveredBeer = device1.getBeer(syncId)
+        assertNotNull("La mutación durable debió sobrevivir al crash sin shutdown", recoveredBeer)
+        assertEquals("Cerveza antes del crash abrupto", recoveredBeer!!.comment)
+        assertEquals("M_DURABLE_CRASH", recoveredBeer.lastMutationId)
+        assertEquals(SyncStatus.PENDING, recoveredBeer.syncStatus)
+
+        val history = device1.getMutationHistory()
+        assertEquals(1, history.size)
+        assertEquals("M_DURABLE_CRASH", history[0].mutationId)
+        assertEquals(MutationStatus.PENDING, history[0].status)
+    }
 }

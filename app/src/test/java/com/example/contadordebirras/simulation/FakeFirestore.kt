@@ -50,6 +50,7 @@ sealed interface TransactionResult {
     data class Success(val document: FakeFirestoreBeerDocument) : TransactionResult
     data class Conflict(val currentRevision: Long, val reason: String) : TransactionResult
     data class PreconditionFailed(val reason: String) : TransactionResult
+    data class TombstoneAlreadyExists(val currentDocument: FakeFirestoreBeerDocument) : TransactionResult
     data class Error(val exception: Throwable) : TransactionResult
 }
 
@@ -105,23 +106,58 @@ class FakeFirestore {
         if (simulateNetworkError) return TransactionResult.Error(IOException("Fallo de red en CreateActive"))
         if (simulateTimeout) return TransactionResult.Error(IOException("Timeout en CreateActive"))
 
-        // 1. Verificación de ownership
+        // 1. Verificación de ownership del documento propuesto
         if (newDocument.userId != callerUid) {
             return TransactionResult.PreconditionFailed(
                 "Ownership mismatch: caller $callerUid cannot create document owned by ${newDocument.userId}"
             )
         }
 
-        // 2. Comprobación de precondición: debe estar ausente
+        // 2. Validación de mutationId no nulo ni en blanco
+        if (newDocument.lastMutationId.isNullOrBlank()) {
+            return TransactionResult.PreconditionFailed(
+                "mutationId must not be null or blank for CreateActive"
+            )
+        }
+
+        // 3. Comprobación de precondición: debe estar ausente
         val existing = documents[syncId]
         if (existing != null) {
+            // Un documento existente perteneciente a otro usuario jamás puede confirmarse
+            if (existing.userId != callerUid) {
+                return TransactionResult.PreconditionFailed(
+                    "Ownership mismatch: Document $syncId exists and is owned by a different user (${existing.userId} vs caller $callerUid)"
+                )
+            }
+
+            // Si el documento existente carece de mutationId, no se puede inferir ACK
+            if (existing.lastMutationId.isNullOrBlank()) {
+                return TransactionResult.Conflict(
+                    currentRevision = existing.revision,
+                    reason = "Existing document has no mutationId; cannot confirm idempotent creation"
+                )
+            }
+
+            // Coherencia con la mutación previamente aplicada
             return if (existing.lastMutationId == newDocument.lastMutationId) {
-                // Idempotencia: ya aplicado con el mismo mutationId
-                TransactionResult.Success(existing.copy())
+                if (existing.isDeleted) {
+                    TransactionResult.Conflict(
+                        currentRevision = existing.revision,
+                        reason = "Existing document with matching mutationId is a tombstone"
+                    )
+                } else if (existing.revision < FIRST_PROTOCOL_REVISION) {
+                    TransactionResult.Conflict(
+                        currentRevision = existing.revision,
+                        reason = "Existing document with matching mutationId has non-protocol revision ${existing.revision}"
+                    )
+                } else {
+                    // Idempotencia verificada: mismo syncId, mismo ownerUid, mismo mutationId no vacío y estado coherente
+                    TransactionResult.Success(existing.copy())
+                }
             } else {
                 TransactionResult.Conflict(
                     currentRevision = existing.revision,
-                    reason = "Document $syncId already exists with revision ${existing.revision}"
+                    reason = "Document $syncId already exists with revision ${existing.revision} and different mutationId ${existing.lastMutationId}"
                 )
             }
         }
@@ -169,6 +205,10 @@ class FakeFirestore {
             return TransactionResult.PreconditionFailed(
                 "Ownership mismatch: caller $callerUid cannot patch document owned by ${existing.userId}"
             )
+        }
+
+        if (mutationId.isBlank()) {
+            return TransactionResult.PreconditionFailed("mutationId must not be blank for ApplyPatch")
         }
 
         // 2. Verificación de idempotencia por mutationId
@@ -242,14 +282,19 @@ class FakeFirestore {
             return TransactionResult.PreconditionFailed("Ownership mismatch for tombstone")
         }
 
-        // Idempotencia
+        if (mutationId.isBlank()) {
+            return TransactionResult.PreconditionFailed("mutationId must not be blank for WriteTombstone")
+        }
+
+        // Idempotencia: reintento de la misma mutación sobre un tombstone ya confirmado
         if (existing.isDeleted && existing.lastMutationId == mutationId) {
             return TransactionResult.Success(existing.copy())
         }
 
+        // Tombstone preexistente originado por otra mutación:
+        // No devolver Success de escritura nueva ni registrar un ACK ficticio.
         if (existing.isDeleted) {
-            // Ya es tombstone con otra mutación
-            return TransactionResult.Success(existing.copy())
+            return TransactionResult.TombstoneAlreadyExists(existing.copy())
         }
 
         if (existing.revision != expectedRevision) {
