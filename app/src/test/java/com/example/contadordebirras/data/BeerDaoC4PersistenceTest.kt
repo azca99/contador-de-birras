@@ -268,9 +268,9 @@ class BeerDaoC4PersistenceTest {
     }
 
     /**
-     * 5. (Auditoría #1) PATCH parcial con base=5, remoto=6:
-     * COMMENT sigue dirty y DEBE conservar su base causal original (baseRevision=5, remoteRevision=6).
-     * No se debe sobrescribir baseRevision = 6 porque ocultaría conflictos remotos para COMMENT.
+     * 5. (Auditoría #1) PATCH parcial aplazado a C4.4:
+     * Ninguna ruta parcial puede modificar beers ni historial; se preservan intactos
+     * baseRevision causal (5L), dirtyFields ("COMMENT,PHOTO") y photoUri ("file:///local/david.jpg").
      */
     @Test
     fun partialPatch_preservesCausalBaseRevisionAndPendingFields() {
@@ -293,7 +293,7 @@ class BeerDaoC4PersistenceTest {
         beerDao.insertBeer(beer)
         historyDao.insertMutation(LocalMutationHistoryEntity("M1", syncId, ownerUid, 1000L, "COMMENT,PHOTO", 5L, MutationStatus.PENDING))
 
-        // ApplyPatch confirma PHOTO en revisión 6, pero COMMENT permanece dirty
+        // Intento de patch parcial vía confirmPartialPatchWithHistory
         val success = beerDao.confirmPartialPatchWithHistory(
             syncId = syncId,
             ownerUid = ownerUid,
@@ -303,22 +303,35 @@ class BeerDaoC4PersistenceTest {
             remainingDirtyFields = "COMMENT",
             newRemotePhotoUrl = "https://storage/david.jpg"
         )
+        assertFalse("El patch parcial debe estar aplazado formalmente hasta C4.4", success)
 
-        assertTrue("El patch parcial debe aplicarse", success)
+        // Intento directo vía confirmPushMutationPartialPatch
+        val rowsDirect = beerDao.confirmPushMutationPartialPatch(
+            syncId = syncId,
+            ownerUid = ownerUid,
+            expectedMutationId = "M1",
+            newRemoteRevision = 6L,
+            remainingDirtyFields = "COMMENT",
+            newRemotePhotoUrl = "https://storage/david.jpg"
+        )
+        assertEquals("confirmPushMutationPartialPatch aplazado debe retornar 0", 0, rowsDirect)
 
         val updatedBeer = beerDao.getBeerBySyncId(syncId, ownerUid)!!
         assertEquals(SyncStatus.PENDING, updatedBeer.syncStatus)
-        assertEquals("remoteRevision debe avanzar a 6L", 6L, updatedBeer.remoteRevision)
+        assertEquals("remoteRevision debe mantenerse en 5L", 5L, updatedBeer.remoteRevision)
         assertEquals("baseRevision DEBE conservar 5L causal", 5L, updatedBeer.baseRevision)
-        assertEquals("COMMENT", updatedBeer.dirtyFields)
+        assertEquals("COMMENT,PHOTO", updatedBeer.dirtyFields)
         assertEquals("M1", updatedBeer.lastMutationId)
-        assertEquals("https://storage/david.jpg", updatedBeer.remotePhotoUrl)
         assertEquals("file:///local/david.jpg", updatedBeer.photoUri)
+
+        val histRecord = historyDao.getMutationById("M1", ownerUid)!!
+        assertEquals(MutationStatus.PENDING, histRecord.status)
+        assertNull(histRecord.confirmedRevision)
     }
 
     /**
-     * 6. (Auditoría #2) PATCH parcial no marca CONFIRMED una mutación que sigue pendiente:
-     * En el historial se marca como PARTIALLY_CONFIRMED, NUNCA como CONFIRMED.
+     * 6. (Auditoría #2) PATCH parcial aplazado no modifica historial ni transiciona prematuramente:
+     * La mutación permanece intacta en estado PENDING.
      */
     @Test
     fun partialPatch_marksHistoryAsPartiallyConfirmedNotFullConfirmed() {
@@ -355,12 +368,11 @@ class BeerDaoC4PersistenceTest {
             confirmedFields = "TYPE",
             remainingDirtyFields = "COMMENT"
         )
-        assertTrue(success)
+        assertFalse("confirmPartialPatchWithHistory aplazado debe retornar false", success)
 
         val histRecord = historyDao.getMutationById("M_PARTIAL", ownerUid)!!
-        assertEquals("El estado en historial debe ser PARTIALLY_CONFIRMED", MutationStatus.PARTIALLY_CONFIRMED, histRecord.status)
-        assertEquals(3L, histRecord.confirmedRevision)
-        assertNotEquals(MutationStatus.CONFIRMED, histRecord.status)
+        assertEquals("El estado en historial debe permanecer PENDING", MutationStatus.PENDING, histRecord.status)
+        assertNull(histRecord.confirmedRevision)
     }
 
     /**
@@ -1287,5 +1299,184 @@ class BeerDaoC4PersistenceTest {
 
         val m4Record = historyDao.getMutationById("M4_PARTIAL_3", ownerUid)!!
         assertEquals(MutationStatus.SUPERSEDED, m4Record.status)
+    }
+
+    /**
+     * 23. (C4.1B Cierre Inseguro #1) Una llamada directa no puede guardar dirtyFields inválidos:
+     * La llamada directa a confirmPushMutationPartialPatch no ejecuta updates SQL sin validación y retorna 0.
+     */
+    @Test
+    fun directCall_cannotSaveInvalidDirtyFields() {
+        val syncId = "beer-direct-invalid"
+        val ownerUid = "user_direct_1"
+
+        beerDao.insertBeer(BeerEntity(
+            type = BeerType.LATA,
+            timestamp = 1000L,
+            syncId = syncId,
+            ownerUid = ownerUid,
+            syncStatus = SyncStatus.PENDING,
+            remoteRevision = 1L,
+            baseRevision = 1L,
+            dirtyFields = "COMMENT",
+            lastMutationId = "M_DIRECT_INV"
+        ))
+
+        val rows = beerDao.confirmPushMutationPartialPatch(
+            syncId = syncId,
+            ownerUid = ownerUid,
+            expectedMutationId = "M_DIRECT_INV",
+            newRemoteRevision = 2L,
+            remainingDirtyFields = "INVALID_CORRUPT_FIELD"
+        )
+        assertEquals("Llamada directa debe retornar 0", 0, rows)
+
+        val preservedBeer = beerDao.getBeerBySyncId(syncId, ownerUid)!!
+        assertEquals("COMMENT", preservedBeer.dirtyFields)
+        assertEquals(1L, preservedBeer.remoteRevision)
+        assertEquals(1L, preservedBeer.baseRevision)
+    }
+
+    /**
+     * 24. (C4.1B Cierre Inseguro #2) Una llamada directa no puede eliminar COMMENT arbitrariamente:
+     * Una entidad con COMMENT,PHOTO no puede ver eliminado COMMENT mediante confirmPushMutationPartialPatch.
+     */
+    @Test
+    fun directCall_cannotArbitrarilyEliminateComment() {
+        val syncId = "beer-direct-drop-comment"
+        val ownerUid = "user_direct_2"
+
+        beerDao.insertBeer(BeerEntity(
+            type = BeerType.LATA,
+            timestamp = 1000L,
+            syncId = syncId,
+            ownerUid = ownerUid,
+            syncStatus = SyncStatus.PENDING,
+            remoteRevision = 2L,
+            baseRevision = 2L,
+            dirtyFields = "COMMENT,PHOTO",
+            lastMutationId = "M_DIRECT_DROP"
+        ))
+
+        // Intento directo de guardar solo PHOTO para eliminar COMMENT
+        val rows = beerDao.confirmPushMutationPartialPatch(
+            syncId = syncId,
+            ownerUid = ownerUid,
+            expectedMutationId = "M_DIRECT_DROP",
+            newRemoteRevision = 3L,
+            remainingDirtyFields = "PHOTO"
+        )
+        assertEquals("Llamada directa debe retornar 0", 0, rows)
+
+        val preservedBeer = beerDao.getBeerBySyncId(syncId, ownerUid)!!
+        assertEquals("COMMENT,PHOTO", preservedBeer.dirtyFields)
+    }
+
+    /**
+     * 25. (C4.1B Cierre Inseguro #3) Una llamada directa no puede operar sin historial o validación necesaria:
+     * Llamadas que carezcan de validación u omitan el contrato transaccional retornan 0 sin tocar beers.
+     */
+    @Test
+    fun directCall_cannotOperateWithoutHistoryOrValidation() {
+        val syncId = "beer-direct-no-hist"
+        val ownerUid = "user_direct_3"
+
+        beerDao.insertBeer(BeerEntity(
+            type = BeerType.LATA,
+            timestamp = 1000L,
+            syncId = syncId,
+            ownerUid = ownerUid,
+            syncStatus = SyncStatus.PENDING,
+            remoteRevision = 1L,
+            baseRevision = 1L,
+            dirtyFields = "LOCATION",
+            lastMutationId = "M_DIRECT_NO_HIST"
+        ))
+        // Sin historial registrado
+
+        val rows = beerDao.confirmPushMutationPartialPatch(
+            syncId = syncId,
+            ownerUid = ownerUid,
+            expectedMutationId = "M_DIRECT_NO_HIST",
+            newRemoteRevision = 2L,
+            remainingDirtyFields = "LOCATION"
+        )
+        assertEquals(0, rows)
+
+        val preserved = beerDao.getBeerBySyncId(syncId, ownerUid)!!
+        assertEquals("LOCATION", preserved.dirtyFields)
+        assertEquals(1L, preserved.remoteRevision)
+    }
+
+    /**
+     * 26. (C4.1B Cierre Inseguro #4) Al aplazar el PATCH, ninguna ruta parcial modifica beers ni historial:
+     * Tanto confirmPushMutationPartialPatch como confirmPartialPatchWithHistory preservan beers e historial intactos.
+     */
+    @Test
+    fun deferredPartialPatch_noPartialRouteModifiesBeersOrHistory() {
+        val syncId = "beer-all-routes-deferred"
+        val ownerUid = "user_direct_4"
+
+        val initialBeer = BeerEntity(
+            type = BeerType.LATA,
+            timestamp = 1000L,
+            comment = "Notas de cata iniciales",
+            photoUri = "file:///local/preserved.jpg",
+            syncId = syncId,
+            ownerUid = ownerUid,
+            syncStatus = SyncStatus.PENDING,
+            remoteRevision = 5L,
+            baseRevision = 5L,
+            dirtyFields = "COMMENT,PHOTO",
+            lastMutationId = "M_DEF_TEST"
+        )
+        beerDao.insertBeer(initialBeer)
+        historyDao.insertMutation(LocalMutationHistoryEntity(
+            mutationId = "M_DEF_TEST",
+            syncId = syncId,
+            ownerUid = ownerUid,
+            timestamp = 1000L,
+            dirtyFields = "COMMENT,PHOTO",
+            baseRevision = 5L,
+            status = MutationStatus.PENDING
+        ))
+
+        // 1. Ruta transaccional aplazada
+        val txResult = beerDao.confirmPartialPatchWithHistory(
+            syncId = syncId,
+            ownerUid = ownerUid,
+            expectedMutationId = "M_DEF_TEST",
+            newRemoteRevision = 6L,
+            confirmedFields = "PHOTO",
+            remainingDirtyFields = "COMMENT",
+            newRemotePhotoUrl = "https://storage/new.jpg"
+        )
+        assertFalse("confirmPartialPatchWithHistory debe retornar false al estar aplazado", txResult)
+
+        // 2. Ruta directa aplazada
+        val directResult = beerDao.confirmPushMutationPartialPatch(
+            syncId = syncId,
+            ownerUid = ownerUid,
+            expectedMutationId = "M_DEF_TEST",
+            newRemoteRevision = 6L,
+            remainingDirtyFields = "COMMENT",
+            newRemotePhotoUrl = "https://storage/new.jpg"
+        )
+        assertEquals("confirmPushMutationPartialPatch debe retornar 0 al estar aplazado", 0, directResult)
+
+        // Verificación de beers intacto
+        val beer = beerDao.getBeerBySyncId(syncId, ownerUid)!!
+        assertEquals(SyncStatus.PENDING, beer.syncStatus)
+        assertEquals("COMMENT,PHOTO", beer.dirtyFields)
+        assertEquals(5L, beer.remoteRevision)
+        assertEquals(5L, beer.baseRevision)
+        assertEquals("Notas de cata iniciales", beer.comment)
+        assertEquals("file:///local/preserved.jpg", beer.photoUri)
+        assertNull(beer.remotePhotoUrl)
+
+        // Verificación de local_mutation_history intacto
+        val hist = historyDao.getMutationById("M_DEF_TEST", ownerUid)!!
+        assertEquals(MutationStatus.PENDING, hist.status)
+        assertNull(hist.confirmedRevision)
     }
 }

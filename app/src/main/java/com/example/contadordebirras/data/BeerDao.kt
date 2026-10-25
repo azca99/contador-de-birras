@@ -193,27 +193,23 @@ interface BeerDao {
      *
      * @return Número de filas actualizadas (1 si fue aplicado, 0 si fue sustituido por otra edición).
      */
-    @Query("""
-        UPDATE beers SET
-            remoteRevision = :newRemoteRevision,
-            dirtyFields = :remainingDirtyFields,
-            remotePhotoUrl = CASE
-                WHEN :clearRemotePhoto = 1 THEN NULL
-                WHEN :newRemotePhotoUrl IS NOT NULL THEN :newRemotePhotoUrl
-                ELSE remotePhotoUrl
-            END,
-            photoSource = CASE
-                WHEN :clearRemotePhoto = 1 THEN NULL
-                WHEN :newPhotoSource IS NOT NULL THEN :newPhotoSource
-                ELSE photoSource
-            END,
-            updatedAt = :updatedAt
-        WHERE syncId = :syncId
-          AND ownerUid = :ownerUid
-          AND syncStatus = 'PENDING'
-          AND lastMutationId = :expectedMutationId
-          AND remoteRevision <= :newRemoteRevision
-    """)
+    /**
+     * OPERACIÓN DE PATCH PARCIAL APLAZADA HASTA C4.4:
+     *
+     * La actualización directa de [dirtyFields] mediante consulta SQL abierta no puede ser encapsulada
+     * de forma segura como método privado/protegido dentro del contrato DAO público de Room, lo que
+     * expondría una vía directa capaz de escribir campos dirty inválidos o eliminar campos pendientes
+     * sin verificación transaccional.
+     *
+     * Además, un String de confirmedFields entregado por el llamador no equivale a prueba remota
+     * de confirmación de Firestore (dicha evidencia de snapshot/transacción remota debe obtenerse
+     * y validarse formalmente en C4.3/C4.4 con el MergeCoordinator).
+     *
+     * Para garantizar que ninguna ruta pública permita un PATCH parcial inseguro, esta primitiva
+     * queda aplazada hasta C4.4 y retorna 0 incondicionalmente sin modificar la tabla `beers`.
+     *
+     * @return 0 incondicionalmente (operación aplazada, ninguna fila modificada).
+     */
     fun confirmPushMutationPartialPatch(
         syncId: String,
         ownerUid: String,
@@ -224,7 +220,7 @@ interface BeerDao {
         newPhotoSource: String? = null,
         clearRemotePhoto: Boolean = false,
         updatedAt: Long = System.currentTimeMillis()
-    ): Int
+    ): Int = 0
 
     /**
      * Aplica una actualización remota más reciente (PULL) sobre un documento localmente [SyncStatus.SYNCED].
@@ -453,42 +449,25 @@ interface BeerDao {
     }
 
     /**
-     * Transacción Room atómica: confirma un ApplyPatch parcial en `beers` y marca el registro
-     * en `local_mutation_history` como [MutationStatus.PARTIALLY_CONFIRMED] (NUNCA como CONFIRMED completo
-     * mientras queden [remainingDirtyFields] pendientes).
+     * ESPECIFICACIÓN DE VALIDACIÓN DE PATCH PARCIAL (Referencia formal para C4.4):
      *
-     * EXIGENCIAS DE VALIDACIÓN ESTRICTA (Auditoría C4.1B):
-     * 1. [remainingDirtyFields] no se acepta arbitrariamente: debe ser no vacío, no blanco, estar bien codificado
-     *    en orden canónico y contener únicamente campos válidos de [BeerDirtyField].
-     * 2. [confirmedFields] debe especificarse explícitamente y estar bien codificado. No se autoriza eliminar campos
-     *    sin confirmación o resolución explícita. Si no se dispone de evidencia de confirmación, la operación se
-     *    rechaza (retorna false) y se aplaza a C4.4.
-     * 3. Relación verificable exacta: [remainingDirtyFields] y [confirmedFields] deben ser disjuntos
-     *    y su unión debe ser idéntica al conjunto original de dirtyFields de la entidad.
-     *    Cualquier campo nuevo ficticio, campo no presente originalmente o eliminación arbitraria de campos
-     *    provoca el rechazo inmediato (retorna false).
-     * 4. Invariante causal: preserva la [baseRevision] causal original intacta en `beers`.
-     * 5. Preservación inmutable de [photoUri] estrictamente local.
+     * Valida formalmente los conjuntos de campos confirmados y restantes frente a los campos
+     * dirty originales de la entidad, garantizando que:
+     * 1. [remainingDirtyFields] no esté en blanco, sea un CSV canónico y contenga solo campos de [BeerDirtyField].
+     * 2. [confirmedFields] no esté en blanco, sea un CSV canónico y contenga solo campos de [BeerDirtyField].
+     * 3. [remainingSet] y [confirmedSet] sean disjuntos.
+     * 4. [remainingSet] ∪ [confirmedSet] == [originalSet] (partición exacta sobre los dirtyFields originales).
+     *
+     * @return true si la partición es matemáticamente exacta y válida; false en cualquier otro caso.
      */
-    @androidx.room.Transaction
-    fun confirmPartialPatchWithHistory(
-        syncId: String,
-        ownerUid: String,
-        expectedMutationId: String,
-        newRemoteRevision: Long,
-        remainingDirtyFields: String,
-        confirmedFields: String? = null,
-        newRemotePhotoUrl: String? = null,
-        newPhotoSource: String? = null,
-        clearRemotePhoto: Boolean = false,
-        updatedAt: Long = System.currentTimeMillis()
+    fun validatePartialPatchSpecification(
+        originalDirtyFields: String?,
+        confirmedFields: String?,
+        remainingDirtyFields: String?
     ): Boolean {
-        // 1. Verificación de campos restantes no vacíos
-        if (remainingDirtyFields.isBlank()) {
+        if (remainingDirtyFields.isNullOrBlank() || confirmedFields.isNullOrBlank() || originalDirtyFields.isNullOrBlank()) {
             return false
         }
-
-        // 2. Validación de codificación y campos válidos en remainingDirtyFields
         val rawRemainingTokens = remainingDirtyFields.split(',')
         val remainingSet = LinkedHashSet<BeerDirtyField>()
         for (token in rawRemainingTokens) {
@@ -497,20 +476,14 @@ interface BeerDao {
             val field = try {
                 BeerDirtyField.valueOf(trimmed)
             } catch (e: IllegalArgumentException) {
-                return false // Campo ficticio o desconocido
+                return false
             }
-            if (!remainingSet.add(field)) return false // Duplicado
+            if (!remainingSet.add(field)) return false
         }
-        if (remainingSet.isEmpty()) return false
-        if (BeerDirtyFieldsCodec.encode(remainingSet) != remainingDirtyFields) {
-            return false // No cumple formato canónico CSV
-        }
-
-        // 3. Verificación de evidencia explícita de campos confirmados
-        if (confirmedFields.isNullOrBlank()) {
-            // Sin evidencia explícita de los campos confirmados, no se permite eliminar campos arbitrariamente.
+        if (remainingSet.isEmpty() || BeerDirtyFieldsCodec.encode(remainingSet) != remainingDirtyFields) {
             return false
         }
+
         val rawConfirmedTokens = confirmedFields.split(',')
         val confirmedSet = LinkedHashSet<BeerDirtyField>()
         for (token in rawConfirmedTokens) {
@@ -523,72 +496,49 @@ interface BeerDao {
             }
             if (!confirmedSet.add(field)) return false
         }
-        if (confirmedSet.isEmpty()) return false
-        if (BeerDirtyFieldsCodec.encode(confirmedSet) != confirmedFields) {
+        if (confirmedSet.isEmpty() || BeerDirtyFieldsCodec.encode(confirmedSet) != confirmedFields) {
             return false
         }
 
-        // 4. Verificación de disyunción: ningún campo puede estar confirmado y pendiente a la vez
         if (remainingSet.any { confirmedSet.contains(it) }) {
             return false
         }
 
-        // 5. Carga y verificación del documento en beers
-        val beer = getBeerBySyncId(syncId, ownerUid) ?: return false
-        if (beer.syncStatus != SyncStatus.PENDING ||
-            beer.lastMutationId != expectedMutationId ||
-            beer.remoteRevision > newRemoteRevision
-        ) {
-            return false
-        }
-
-        // 6. Verificación de partición exacta sobre los dirtyFields originales
-        val originalDirtyRaw = beer.dirtyFields ?: return false
-        val originalSet = BeerDirtyFieldsCodec.decode(originalDirtyRaw)
+        val originalSet = BeerDirtyFieldsCodec.decode(originalDirtyFields)
         if (originalSet.isEmpty()) return false
 
-        // La unión de confirmed y remaining debe coincidir exactamente con los originales
-        if (remainingSet + confirmedSet != originalSet) {
-            return false // Eliminación arbitraria o campos añadidos no presentes originalmente
-        }
+        return remainingSet + confirmedSet == originalSet
+    }
 
-        // 7. Verificación del registro en local_mutation_history
-        val history = getHistoryRecordById(expectedMutationId, ownerUid) ?: return false
-        if (history.syncId != syncId ||
-            (history.status != MutationStatus.PENDING && history.status != MutationStatus.PARTIALLY_CONFIRMED)
-        ) {
-            return false
-        }
-
-        // 8. Aplicación en beers preservando baseRevision y actualizando remoteRevision
-        val beerUpdated = confirmPushMutationPartialPatch(
-            syncId = syncId,
-            ownerUid = ownerUid,
-            expectedMutationId = expectedMutationId,
-            newRemoteRevision = newRemoteRevision,
-            remainingDirtyFields = remainingDirtyFields,
-            newRemotePhotoUrl = newRemotePhotoUrl,
-            newPhotoSource = newPhotoSource,
-            clearRemotePhoto = clearRemotePhoto,
-            updatedAt = updatedAt
-        )
-
-        // 9. Actualización en historial durable a PARTIALLY_CONFIRMED
-        val histUpdated = markHistoryRecordPartiallyConfirmed(
-            mutationId = expectedMutationId,
-            syncId = syncId,
-            ownerUid = ownerUid,
-            confirmedRevision = newRemoteRevision,
-            confirmedAt = updatedAt
-        )
-
-        if (beerUpdated != 1 || histUpdated != 1) {
-            throw IllegalStateException(
-                "Atomic partial patch failed: beerUpdated=$beerUpdated, histUpdated=$histUpdated for mutation $expectedMutationId"
-            )
-        }
-
-        return true
+    /**
+     * OPERACIÓN DE PATCH PARCIAL APLAZADA HASTA C4.4:
+     *
+     * Para impedir que cualquier ruta pública ejecute un PATCH parcial sin validación transaccional
+     * o sin prueba verificable de Firestore, esta operación se aplaza formalmente a la Fase C4.4.
+     *
+     * Un String `confirmedFields` no equivale a prueba remota de confirmación de Firestore; dicha
+     * evidencia de confirmación remota deberá obtenerse y validarse formalmente en C4.3/C4.4 junto al
+     * MergeCoordinator.
+     *
+     * Retorna false incondicionalmente y garantiza que ninguna entidad en `beers` ni registro en
+     * `local_mutation_history` sea alterado en esta fase.
+     *
+     * @return false incondicionalmente (operación aplazada, sin modificación de datos).
+     */
+    fun confirmPartialPatchWithHistory(
+        syncId: String,
+        ownerUid: String,
+        expectedMutationId: String,
+        newRemoteRevision: Long,
+        remainingDirtyFields: String,
+        confirmedFields: String? = null,
+        newRemotePhotoUrl: String? = null,
+        newPhotoSource: String? = null,
+        clearRemotePhoto: Boolean = false,
+        updatedAt: Long = System.currentTimeMillis()
+    ): Boolean {
+        // Aplazado formalmente a C4.4: ninguna ruta parcial modifica beers ni historial en C4.1B
+        return false
     }
 
     /**
