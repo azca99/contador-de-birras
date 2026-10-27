@@ -1,0 +1,26 @@
+// =============================================================================
+// [FIXTURE C4.3 - NO DESPLEGABLE EN PRODUCCION]
+// Perfil A: BASELINE STORAGE - Copia exacta de storage.rules actual
+// Se utiliza para auditar qué operaciones inseguras permite el esquema actual.
+// =============================================================================
+
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /users/{userId}/beers/{fileName} {
+      function isFriend() {
+        let id1 = request.auth.uid;
+        let id2 = userId;
+        let friendshipId = id1 < id2 ? (id1 + '_' + id2) : (id2 + '_' + id1);
+        let doc = firestore.get(/databases/(default)/documents/friendships/$(friendshipId));
+        return doc != null && doc.data.status == 'ACCEPTED';
+      }
+      allow read: if request.auth != null && (request.auth.uid == userId || isFriend());
+      allow create: if request.auth != null
+                    && request.auth.uid == userId
+                    && request.resource.size < 5 * 1024 * 1024
+                    && request.resource.contentType.matches('image/.*');
+      allow update, delete: if request.auth != null && request.auth.uid == userId;
+    }
+  }
+}

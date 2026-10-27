@@ -1,0 +1,46 @@
+// =============================================================================
+// [FIXTURE C4.3 - NO DESPLEGABLE EN PRODUCCION]
+// Perfil C: MODERN STRICT PROTOCOL STORAGE - Reglas finales C4.3
+// Exige nombrado de fotos versionadas (syncId_mutationId.ext), inmutabilidad
+// absoluta (no update, no delete, no overwrite) y control estricto de tamaño y tipo.
+// =============================================================================
+
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /users/{userId}/beers/{fileName} {
+      function isFriend() {
+        let id1 = request.auth.uid;
+        let id2 = userId;
+        let friendshipId = id1 < id2 ? (id1 + '_' + id2) : (id2 + '_' + id1);
+        let doc = firestore.get(/databases/(default)/documents/friendships/$(friendshipId));
+        return doc != null && doc.data.status == 'ACCEPTED';
+      }
+
+      function isOwner() {
+        return request.auth != null && request.auth.uid == userId;
+      }
+
+      function isValidImage() {
+        return request.resource.size < 5 * 1024 * 1024
+            && request.resource.contentType.matches('image/.*');
+      }
+
+      // Strictly enforce versioned format: syncId_mutationId.ext
+      function isVersionedFormat() {
+        return fileName.matches('^[a-zA-Z0-9_-]+_[a-zA-Z0-9_-]+\\.(jpg|jpeg|png|webp)$');
+      }
+
+      // Read allowed for owner or accepted friend
+      allow read: if request.auth != null && (request.auth.uid == userId || isFriend());
+
+      // Upload allowed only for owner, only versioned filenames, within 5MB image limit,
+      // and ONLY if the file does not already exist (resource == null, preventing overwrites)
+      allow create: if resource == null && isOwner() && isVersionedFormat() && isValidImage();
+
+      // Updates and physical deletes are strictly forbidden for all photos in modern protocol
+      allow update: if false;
+      allow delete: if false;
+    }
+  }
+}
