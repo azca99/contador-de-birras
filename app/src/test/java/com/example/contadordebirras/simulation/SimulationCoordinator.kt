@@ -1,5 +1,6 @@
 package com.example.contadordebirras.simulation
 
+import com.example.contadordebirras.data.MutationStatus
 import com.example.contadordebirras.data.SyncStatus
 import com.example.contadordebirras.domain.*
 import java.io.IOException
@@ -154,6 +155,9 @@ class SimulationCoordinator(
         // 4. Ejecución del plan
         return when (plan) {
             is PushPlan.CreateActive -> {
+                val historyError = validateDurableHistoryBeforePush(device, syncId, mutationId)
+                if (historyError != null) return historyError
+
                 var uploadedRemotePhotoUrl: String? = null
 
                 // Manejo de fotografía si está marcada como dirty y existe URI local
@@ -227,6 +231,9 @@ class SimulationCoordinator(
             }
 
             is PushPlan.ApplyPatch -> {
+                val historyError = validateDurableHistoryBeforePush(device, syncId, mutationId)
+                if (historyError != null) return historyError
+
                 var uploadedRemotePhotoUrl: String? = null
 
                 if (plan.fieldsToWrite.contains(BeerDirtyField.PHOTO) && localBeer.photoUri != null) {
@@ -311,6 +318,9 @@ class SimulationCoordinator(
             }
 
             is PushPlan.WriteTombstone -> {
+                val historyError = validateDurableHistoryBeforePush(device, syncId, mutationId)
+                if (historyError != null) return historyError
+
                 val txResult = firestore.executeWriteTombstoneTransaction(
                     syncId = syncId,
                     callerUid = device.ownerUid,
@@ -351,6 +361,9 @@ class SimulationCoordinator(
             }
 
             is PushPlan.AlreadyApplied -> {
+                val historyError = validateDurableHistoryBeforePush(device, syncId, mutationId, allowConfirmed = true)
+                if (historyError != null) return historyError
+
                 if (remoteDoc == null) {
                     PushExecutionResult.Blocked("No se pudo aplicar confirmación para AlreadyApplied: falta remoto")
                 } else {
@@ -373,10 +386,12 @@ class SimulationCoordinator(
             }
 
             is PushPlan.RemoteTombstoneWins -> {
-                remoteDoc?.let {
-                    device.applyDeleteConfirmation(syncId, localBeer.lastMutationId ?: "", it.revision)
+                if (remoteDoc != null) {
+                    device.applyTombstonePrevailed(syncId, remoteDoc.revision, localBeer.lastMutationId)
+                    PushExecutionResult.Success(plan, remoteDoc.revision)
+                } else {
+                    PushExecutionResult.Blocked("RemoteTombstoneWins sin documento remoto")
                 }
-                PushExecutionResult.Success(plan, remoteDoc?.revision ?: 0L)
             }
 
             is PushPlan.DeleteAlreadySatisfied -> {
@@ -615,5 +630,49 @@ class SimulationCoordinator(
                 PullExecutionResult.Blocked("Metadata inválida: ${plan.reason}")
             }
         }
+    }
+
+    /**
+     * Valida la existencia y coherencia estricta del registro de mutación en el historial durable
+     * local antes de publicar cualquier mutación a la red (Storage o Firestore).
+     *
+     * INVARIANTES:
+     * - Exige registro durable de lastMutationId.
+     * - Verifica ownerUid, syncId y estado (PENDING o PARTIALLY_CONFIRMED).
+     * - Rechaza registros pertenecientes a otra cerveza o a otro propietario.
+     */
+    private fun validateDurableHistoryBeforePush(
+        device: SimulatedDevice,
+        syncId: String,
+        mutationId: String,
+        allowConfirmed: Boolean = false
+    ): PushExecutionResult.Blocked? {
+        val record = device.getMutationHistory().lastOrNull { it.mutationId == mutationId }
+            ?: return PushExecutionResult.Blocked("Mutación no durable: falta registro local en historial para $mutationId")
+
+        if (record.syncId != syncId) {
+            return PushExecutionResult.Blocked(
+                "Incoherencia en historial: el registro $mutationId pertenece a la cerveza ${record.syncId}, no a $syncId"
+            )
+        }
+        if (record.ownerUid != device.ownerUid) {
+            return PushExecutionResult.Blocked(
+                "Incoherencia en historial: ownerUid ${record.ownerUid} en registro $mutationId no coincide con dispositivo ${device.ownerUid}"
+            )
+        }
+        val isStatusValid = if (allowConfirmed) {
+            record.status == MutationStatus.PENDING ||
+                record.status == MutationStatus.PARTIALLY_CONFIRMED ||
+                record.status == MutationStatus.CONFIRMED
+        } else {
+            record.status == MutationStatus.PENDING ||
+                record.status == MutationStatus.PARTIALLY_CONFIRMED
+        }
+        if (!isStatusValid) {
+            return PushExecutionResult.Blocked(
+                "Estado inválido en historial para $mutationId: ${record.status} (se esperaba PENDING o PARTIALLY_CONFIRMED)"
+            )
+        }
+        return null
     }
 }

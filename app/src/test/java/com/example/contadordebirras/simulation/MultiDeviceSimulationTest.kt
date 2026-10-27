@@ -1470,11 +1470,13 @@ class MultiDeviceSimulationTest {
     fun testRegression3C_missingLocalMutationRecord_doesNotFalselyReturnSuccessOrApplied() {
         val syncIdPush = "beer-regr-3c-push"
         val ghostPushMutation = "M_GHOST_PUSH"
+        val localPhoto = "content://media/external/images/ghost_push.jpg"
 
         // 1. PUSH con registro local faltante en historial
         device1.insertBeerDirect(SimulatedBeer(
             syncId = syncIdPush,
             ownerUid = userUid,
+            photoUri = localPhoto,
             syncStatus = SyncStatus.PENDING,
             remoteRevision = LOCAL_ONLY_REVISION,
             baseRevision = LOCAL_ONLY_REVISION,
@@ -1486,8 +1488,12 @@ class MultiDeviceSimulationTest {
         val pushResult = coordinator.executePush(device1, syncIdPush)
         assertTrue("Push no debe devolver Success sin registro local", pushResult is PushExecutionResult.Blocked)
         assertTrue((pushResult as PushExecutionResult.Blocked).reason.contains("falta registro local"))
+        assertNull("Firestore debe permanecer intacto tras push bloqueado", firestore.getDocument(syncIdPush))
+        assertEquals("Storage debe permanecer intacto: ninguna foto debe subirse", 0, storage.getObjectCount())
         val beerAfterPush = device1.getBeer(syncIdPush)!!
         assertEquals("La entidad debe conservar PENDING", SyncStatus.PENDING, beerAfterPush.syncStatus)
+        assertEquals(localPhoto, beerAfterPush.photoUri)
+        assertEquals(BeerDirtyFieldsCodec.ALL_FIELDS, beerAfterPush.dirtyFields)
 
         // 2. PULL con registro local faltante en historial
         val syncIdPull = "beer-regr-3c-pull"
@@ -1517,6 +1523,321 @@ class MultiDeviceSimulationTest {
         assertTrue((pullResult as PullExecutionResult.Blocked).reason.contains("registro local ausente"))
         val beerAfterPull = device1.getBeer(syncIdPull)!!
         assertEquals("La entidad debe conservar PENDING", SyncStatus.PENDING, beerAfterPull.syncStatus)
+    }
+
+    /**
+     * Prueba equivalente de ApplyPatch con historial ausente y remoto existente.
+     * Garantiza que si falta el registro durable en mutationHistory:
+     * - El push es Blocked.
+     * - Firestore permanece intacto.
+     * - Storage permanece intacto (no se sube foto).
+     * - La cerveza local permanece PENDING.
+     */
+    @Test
+    fun testApplyPatch_missingLocalMutationHistory_blockedAndRemoteAndStorageUntouched() {
+        val syncId = "beer-applypatch-ghost"
+        val ghostMutationId = "M_GHOST_PATCH"
+
+        // Remoto existe en Firestore en revision 1
+        val remoteDoc = FakeFirestoreBeerDocument(
+            syncId = syncId,
+            userId = userUid,
+            revision = 1L,
+            lastMutationId = "M_INIT",
+            type = "LATA",
+            comment = "Comentario inicial remoto"
+        )
+        firestore.seedDocument(remoteDoc)
+
+        // Cerveza local con cambios pendientes (COMMENT y PHOTO) pero SIN historial durable
+        val localBeer = SimulatedBeer(
+            syncId = syncId,
+            ownerUid = userUid,
+            type = "LATA",
+            comment = "Nuevo comentario local que no debe publicarse",
+            photoUri = "content://media/external/images/ghost_patch.jpg",
+            syncStatus = SyncStatus.PENDING,
+            remoteRevision = 1L,
+            baseRevision = 1L,
+            dirtyFields = setOf(BeerDirtyField.COMMENT, BeerDirtyField.PHOTO),
+            lastMutationId = ghostMutationId
+        )
+        device1.insertBeerDirect(localBeer)
+        // NO insertamos registro en mutationHistory para ghostMutationId
+
+        val pushResult = coordinator.executePush(device1, syncId)
+        assertTrue("ApplyPatch debe bloquearse si falta registro durable en historial", pushResult is PushExecutionResult.Blocked)
+        assertTrue((pushResult as PushExecutionResult.Blocked).reason.contains("falta registro local"))
+
+        // Firestore permanece completamente intacto
+        val docInFirestore = firestore.getDocument(syncId)!!
+        assertEquals("Revisión remota debe permanecer intacta", 1L, docInFirestore.revision)
+        assertEquals("lastMutationId remoto no debe cambiar", "M_INIT", docInFirestore.lastMutationId)
+        assertEquals("Comentario inicial remoto", docInFirestore.comment)
+        assertNull(docInFirestore.photoUrl)
+
+        // Storage permanece intacto (no se sube ninguna foto)
+        assertEquals("Storage no debe contener ninguna foto subida", 0, storage.getObjectCount())
+
+        // Cerveza local permanece PENDING y conserva sus campos intactos
+        val beerAfter = device1.getBeer(syncId)!!
+        assertEquals(SyncStatus.PENDING, beerAfter.syncStatus)
+        assertEquals("Nuevo comentario local que no debe publicarse", beerAfter.comment)
+        assertEquals("content://media/external/images/ghost_patch.jpg", beerAfter.photoUri)
+        assertEquals(setOf(BeerDirtyField.COMMENT, BeerDirtyField.PHOTO), beerAfter.dirtyFields)
+    }
+
+    /**
+     * Prueba que un registro de mutación perteneciente a otra cerveza NO es aceptado.
+     */
+    @Test
+    fun testPush_mutationRecordBelongsToDifferentBeer_blocked() {
+        val syncIdTarget = "beer-target-diff"
+        val syncIdOther = "beer-other-diff"
+        val mutationId = "M_CROSS_BEER"
+
+        device1.insertBeerDirect(SimulatedBeer(
+            syncId = syncIdTarget,
+            ownerUid = userUid,
+            syncStatus = SyncStatus.PENDING,
+            remoteRevision = LOCAL_ONLY_REVISION,
+            baseRevision = LOCAL_ONLY_REVISION,
+            dirtyFields = BeerDirtyFieldsCodec.ALL_FIELDS,
+            lastMutationId = mutationId
+        ))
+        // El registro en historial pertenece a syncIdOther, no a syncIdTarget
+        device1.insertMutationRecord(SimulatedMutationRecord(
+            mutationId = mutationId,
+            syncId = syncIdOther,
+            ownerUid = userUid,
+            timestamp = 1000L,
+            dirtyFields = BeerDirtyFieldsCodec.ALL_FIELDS,
+            baseRevision = LOCAL_ONLY_REVISION,
+            status = MutationStatus.PENDING
+        ))
+
+        val pushResult = coordinator.executePush(device1, syncIdTarget)
+        assertTrue("Push debe ser bloqueado por incoherencia de cerveza en historial", pushResult is PushExecutionResult.Blocked)
+        assertTrue((pushResult as PushExecutionResult.Blocked).reason.contains("pertenece a la cerveza"))
+        assertNull("Firestore no debe haber recibido documento", firestore.getDocument(syncIdTarget))
+        assertEquals("Storage no debe haber recibido fotos", 0, storage.getObjectCount())
+    }
+
+    /**
+     * Requisito 1: Ejecución directa de executePush frente a tombstone remoto sin realizar PULL previo.
+     * Garantiza que:
+     * - Aplica la semántica de applyTombstonePrevailed.
+     * - Adopta la revisión real del tombstone remoto.
+     * - Marca la mutación local desplazada como SUPERSEDED (nunca CONFIRMED) con confirmedRevision null.
+     * - Mantiene DELETED y evita resurrecciones (dirtyFields limpios).
+     * - Preserva el historial causal.
+     */
+    @Test
+    fun testRemoteTombstoneWins_executePushDirectly_adoptsTombstoneAndSupersedesLocalMutation() {
+        val syncId = "beer-remote-tombstone-wins-direct"
+        val localMutationId = "M_D1_ACTIVE_EDIT"
+
+        // Estado remoto: ya es un tombstone en revision 4 originado por otra mutación (M_D2_DEL)
+        val remoteTombstone = FakeFirestoreBeerDocument(
+            syncId = syncId,
+            userId = userUid,
+            revision = 4L,
+            isDeleted = true,
+            lastMutationId = "M_D2_DEL"
+        )
+        firestore.seedDocument(remoteTombstone)
+
+        // D1 tiene una edición local activa PENDING en baseRevision 1
+        val localBeer = SimulatedBeer(
+            syncId = syncId,
+            ownerUid = userUid,
+            type = "JARRA",
+            comment = "Edición local que perderá contra el tombstone",
+            syncStatus = SyncStatus.PENDING,
+            remoteRevision = 1L,
+            baseRevision = 1L,
+            dirtyFields = setOf(BeerDirtyField.COMMENT, BeerDirtyField.TYPE),
+            lastMutationId = localMutationId
+        )
+        device1.insertBeerDirect(localBeer)
+        device1.insertMutationRecord(SimulatedMutationRecord(
+            mutationId = localMutationId,
+            syncId = syncId,
+            ownerUid = userUid,
+            timestamp = 1500L,
+            dirtyFields = setOf(BeerDirtyField.COMMENT, BeerDirtyField.TYPE),
+            baseRevision = 1L,
+            status = MutationStatus.PENDING
+        ))
+
+        // D1 ejecuta directamente executePush frente al tombstone remoto (SIN PULL previo)
+        val pushResult = coordinator.executePush(device1, syncId)
+        assertTrue("Debe completarse con éxito adoptando RemoteTombstoneWins", pushResult is PushExecutionResult.Success)
+        val plan = (pushResult as PushExecutionResult.Success).plan
+        assertTrue("El plan ejecutado debe ser RemoteTombstoneWins", plan is PushPlan.RemoteTombstoneWins)
+        assertEquals("La revisión adoptada debe ser la del tombstone remoto", 4L, pushResult.newRemoteRevision)
+
+        // Comprobar entidad local: DELETED, revision 4, dirtyFields vacíos
+        val beerAfter = device1.getBeer(syncId)!!
+        assertEquals("La entidad debe transicionar a DELETED", SyncStatus.DELETED, beerAfter.syncStatus)
+        assertEquals(4L, beerAfter.remoteRevision)
+        assertEquals(4L, beerAfter.baseRevision)
+        assertTrue("Los dirtyFields deben limpiarse para evitar resurrección", beerAfter.dirtyFields.isEmpty())
+
+        // Comprobar historial causal local: la mutación desplazada pasa a SUPERSEDED (NUNCA CONFIRMED)
+        val record = device1.getMutationHistory().last { it.mutationId == localMutationId }
+        assertEquals("La mutación local debe marcarse como SUPERSEDED", MutationStatus.SUPERSEDED, record.status)
+        assertNull("La mutación desplazada no debe tener confirmedRevision", record.confirmedRevision)
+
+        // Firestore permanece como tombstone intacto
+        val firestoreDoc = firestore.getDocument(syncId)!!
+        assertTrue(firestoreDoc.isDeleted)
+        assertEquals(4L, firestoreDoc.revision)
+        assertEquals("M_D2_DEL", firestoreDoc.lastMutationId)
+    }
+
+    /**
+     * Requisito 3: ACK perdido de PATCH parcial.
+     * Simula:
+     * 1. Cerveza local dirty COMMENT y TYPE.
+     * 2. TYPE remoto gana conflicto (escrito por D2 en rev 2).
+     * 3. COMMENT local se escribe en Firestore (rev 3).
+     * 4. ACK de PUSH se pierde (dropPushAck = true).
+     * 5. Reintento con mismo mutationId (dropPushAck = false):
+     *    - No se confirma contenido contradictorio (Blocked por payload contradiction).
+     *    - No se inventa una nueva revisión (Firestore permanece en rev 3).
+     *    - No se pierde COMMENT ni TYPE.
+     * 6. Reconciliación mediante PULL:
+     *    - Incorpora TYPE remoto definitivo ('IPA').
+     *    - Confirma COMMENT local ('Comentario definitivo D1').
+     *    - Resultado final coincide con remoto y el historial refleja CONFIRMED.
+     */
+    @Test
+    fun testPartialPatch_lostAck_pushRetryBlocked_pullReconcilesSuccessfully() {
+        val syncId = "beer-partial-ack-lost-sim"
+        val mutationId = "M_D1_PARTIAL_PATCH"
+
+        // 1. Estado inicial en remoto: rev 1
+        val initialDoc = FakeFirestoreBeerDocument(
+            syncId = syncId,
+            userId = userUid,
+            revision = 1L,
+            lastMutationId = "M_INIT",
+            type = "LAGER",
+            comment = "Comentario inicial",
+            fieldRevisions = mapOf(
+                BeerDirtyField.TYPE to 1L,
+                BeerDirtyField.TIMESTAMP to 1L,
+                BeerDirtyField.COMMENT to 1L
+            )
+        )
+        firestore.seedDocument(initialDoc)
+
+        // 2. Otro dispositivo (D2) gana conflicto en TYPE actualizando a "IPA" en rev 2
+        val d2Doc = FakeFirestoreBeerDocument(
+            syncId = syncId,
+            userId = userUid,
+            revision = 2L,
+            lastMutationId = "M_D2",
+            type = "IPA",
+            comment = "Comentario inicial",
+            fieldRevisions = mapOf(
+                BeerDirtyField.TYPE to 2L,
+                BeerDirtyField.TIMESTAMP to 1L,
+                BeerDirtyField.COMMENT to 1L
+            )
+        )
+        firestore.seedDocument(d2Doc)
+
+        // 3. D1 tenía baseRevision=1, remoteRevision=1, y modificó localmente COMMENT y TYPE
+        val localBeer = SimulatedBeer(
+            syncId = syncId,
+            ownerUid = userUid,
+            type = "STOUT",
+            comment = "Comentario definitivo D1",
+            syncStatus = SyncStatus.PENDING,
+            remoteRevision = 1L,
+            baseRevision = 1L,
+            dirtyFields = setOf(BeerDirtyField.COMMENT, BeerDirtyField.TYPE),
+            lastMutationId = mutationId
+        )
+        device1.insertBeerDirect(localBeer)
+        device1.insertMutationRecord(SimulatedMutationRecord(
+            mutationId = mutationId,
+            syncId = syncId,
+            ownerUid = userUid,
+            timestamp = 2000L,
+            dirtyFields = setOf(BeerDirtyField.COMMENT, BeerDirtyField.TYPE),
+            baseRevision = 1L,
+            status = MutationStatus.PENDING
+        ))
+
+        // 4. D1 ejecuta PUSH con caída de ACK simulada (dropPushAck = true)
+        coordinator.dropPushAck = true
+        val pushResult1 = coordinator.executePush(device1, syncId)
+        assertTrue("PUSH debe reportar AckLost", pushResult1 is PushExecutionResult.AckLost)
+        assertEquals(3L, (pushResult1 as PushExecutionResult.AckLost).remoteRevision)
+        assertEquals(mutationId, pushResult1.mutationId)
+
+        // En Firestore se aplicó el COMMENT de D1 y se conservó el TYPE ganador de D2
+        val docInFirestore = firestore.getDocument(syncId)!!
+        assertEquals(3L, docInFirestore.revision)
+        assertEquals(mutationId, docInFirestore.lastMutationId)
+        assertEquals("Comentario definitivo D1", docInFirestore.comment) // Escrito por D1
+        assertEquals("IPA", docInFirestore.type) // TYPE remoto ganador conservado
+        assertEquals(2L, docInFirestore.fieldRevisions[BeerDirtyField.TYPE])
+        assertEquals(3L, docInFirestore.fieldRevisions[BeerDirtyField.COMMENT])
+
+        // En D1 local, la entidad permanece PENDING por falta de ACK
+        val d1BeerAfterAckLost = device1.getBeer(syncId)!!
+        assertEquals(SyncStatus.PENDING, d1BeerAfterAckLost.syncStatus)
+        assertEquals(setOf(BeerDirtyField.COMMENT, BeerDirtyField.TYPE), d1BeerAfterAckLost.dirtyFields)
+        assertEquals("STOUT", d1BeerAfterAckLost.type)
+        assertEquals("Comentario definitivo D1", d1BeerAfterAckLost.comment)
+
+        // 5. Reintento de PUSH con el mismo mutationId (dropPushAck = false)
+        coordinator.dropPushAck = false
+        val pushResult2 = coordinator.executePush(device1, syncId)
+        assertTrue(
+            "El reintento directo de PUSH debe quedar Blocked por contradicción de payload sin inventar revisión",
+            pushResult2 is PushExecutionResult.Blocked
+        )
+        assertTrue((pushResult2 as PushExecutionResult.Blocked).reason.contains("Contradicción de payload"))
+
+        // Verificar que no se inventó una nueva revisión en Firestore
+        val docAfterRetry = firestore.getDocument(syncId)!!
+        assertEquals("Firestore debe conservar exactamente la revision 3", 3L, docAfterRetry.revision)
+        assertEquals("No se debe perder el COMMENT definitivo", "Comentario definitivo D1", docAfterRetry.comment)
+        assertEquals("No se debe perder el TYPE ganador", "IPA", docAfterRetry.type)
+
+        // 6. El dispositivo se reconcilia mediante PULL
+        val pullResult = coordinator.executePull(device1, syncId)
+        assertTrue("PULL debe aplicar ConfirmPendingMutation exitosamente", pullResult is PullExecutionResult.Applied)
+        val pullPlan = (pullResult as PullExecutionResult.Applied).plan
+        assertTrue("El plan debe ser ConfirmPendingMutation", pullPlan is PullPlan.ConfirmPendingMutation)
+        val confirmPlan = pullPlan as PullPlan.ConfirmPendingMutation
+        assertEquals(setOf(BeerDirtyField.COMMENT), confirmPlan.confirmedFields)
+        assertEquals(setOf(BeerDirtyField.TYPE), confirmPlan.remoteWinsFields)
+        assertEquals(setOf(BeerDirtyField.TYPE), confirmPlan.remoteFieldsToApply)
+
+        // 7. Verificación final de convergencia estricta
+        val finalBeer = device1.getBeer(syncId)!!
+        assertEquals(SyncStatus.SYNCED, finalBeer.syncStatus)
+        assertEquals(3L, finalBeer.remoteRevision)
+        assertEquals(3L, finalBeer.baseRevision)
+        assertTrue("Los dirtyFields deben quedar completamente limpios", finalBeer.dirtyFields.isEmpty())
+        assertEquals("Debe incorporar el TYPE definitivo de remoto", "IPA", finalBeer.type)
+        assertEquals("Debe conservar el COMMENT confirmado de D1", "Comentario definitivo D1", finalBeer.comment)
+
+        // El historial causal en D1 refleja la confirmación a rev 3
+        val finalRecord = device1.getMutationHistory().last { it.mutationId == mutationId }
+        assertEquals(MutationStatus.CONFIRMED, finalRecord.status)
+        assertEquals(3L, finalRecord.confirmedRevision)
+
+        // Coincidencia exacta y profunda entre D1 y Firestore
+        assertEquals(docAfterRetry.type, finalBeer.type)
+        assertEquals(docAfterRetry.comment, finalBeer.comment)
+        assertEquals(docAfterRetry.revision, finalBeer.remoteRevision)
     }
 
     /**
