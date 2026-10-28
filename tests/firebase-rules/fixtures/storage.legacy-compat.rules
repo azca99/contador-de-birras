@@ -1,7 +1,7 @@
 // =============================================================================
 // [FIXTURE C4.3 - NO DESPLEGABLE EN PRODUCCION]
 // Perfil B: LEGACY COMPATIBILITY STORAGE - Reglas de transición C4.3
-// Permite actualización/borrado de fotos legacy no versionadas.
+// Permite actualización/borrado de fotos legacy no versionadas (incluso con guiones bajos).
 // Protege fotos versionadas con inmutabilidad estricta (no overwrite, no delete).
 // =============================================================================
 
@@ -26,9 +26,11 @@ service firebase.storage {
             && request.resource.contentType.matches('image/.*');
       }
 
-      // Check if photo is versioned (e.g., syncId_mutationId.ext)
+      // Check if photo is unambiguously versioned:
+      // Requires: (UUID or sync-*)_(UUID or mut-*).(jpg|jpeg|png|webp)
+      // Legacy files like mi_cerveza.jpg or foto_1.jpg do NOT match and remain legacy-compatible.
       function isVersionedPhoto() {
-        return fileName.matches('^[a-zA-Z0-9_-]+_[a-zA-Z0-9_-]+\\.(jpg|jpeg|png|webp)$');
+        return fileName.matches('^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|sync-[a-zA-Z0-9-]+)_([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|mut-[a-zA-Z0-9-]+)\\.(jpg|jpeg|png|webp)$');
       }
 
       allow read: if request.auth != null && (request.auth.uid == userId || isFriend());
@@ -38,7 +40,7 @@ service firebase.storage {
       allow create: if isOwner() && isValidImage() && (isVersionedPhoto() ? resource == null : true);
 
       // Versioned photos are strictly immutable: cannot be updated or overwritten.
-      // Legacy unversioned photos can still be updated or deleted by owner for backwards compatibility.
+      // Legacy unversioned photos (including those with underscores) can still be updated or deleted by owner.
       allow update: if isOwner() && !isVersionedPhoto() && isValidImage();
       allow delete: if isOwner() && !isVersionedPhoto();
     }

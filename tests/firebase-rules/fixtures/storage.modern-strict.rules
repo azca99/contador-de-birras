@@ -1,8 +1,8 @@
 // =============================================================================
 // [FIXTURE C4.3 - NO DESPLEGABLE EN PRODUCCION]
 // Perfil C: MODERN STRICT PROTOCOL STORAGE - Reglas finales C4.3
-// Exige nombrado de fotos versionadas (syncId_mutationId.ext), inmutabilidad
-// absoluta (no update, no delete, no overwrite) y control estricto de tamaño y tipo.
+// Exige nombrado inequívoco de fotos versionadas ((UUID|sync-*)_(UUID|mut-*).ext),
+// inmutabilidad absoluta (no update, no delete, no overwrite) y control estricto de tamaño y tipo.
 // =============================================================================
 
 rules_version = '2';
@@ -26,9 +26,10 @@ service firebase.storage {
             && request.resource.contentType.matches('image/.*');
       }
 
-      // Strictly enforce versioned format: syncId_mutationId.ext
+      // Strictly enforce unambiguous versioned format:
+      // Requires: (UUID or sync-*)_(UUID or mut-*).(jpg|jpeg|png|webp)
       function isVersionedFormat() {
-        return fileName.matches('^[a-zA-Z0-9_-]+_[a-zA-Z0-9_-]+\\.(jpg|jpeg|png|webp)$');
+        return fileName.matches('^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|sync-[a-zA-Z0-9-]+)_([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|mut-[a-zA-Z0-9-]+)\\.(jpg|jpeg|png|webp)$');
       }
 
       // Read allowed for owner or accepted friend

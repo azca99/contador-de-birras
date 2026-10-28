@@ -51,26 +51,30 @@ async function seedDocument(testEnv, docPath, data) {
 }
 
 /**
- * Sample test data helpers
+ * Authentic beer payload helpers matching BeerEntity, BeerSyncEngine, and C3A/C3B/C4.2 contracts.
+ * Corresponds to BeerDirtyField units: TYPE, TIMESTAMP, LOCATION, COMMENT, PHOTO.
  */
 function createModernBeerPayload(userId, overrides = {}) {
   return {
     userId,
-    name: 'IPA Especial',
-    brand: 'Craft Brewery',
-    rating: 4.5,
-    style: 'IPA',
-    alcohol: 6.2,
-    syncId: 'sync-beer-100',
+    type: 'LATA',
+    timestamp: 1729000000000,
+    latitude: 40.4168,
+    longitude: -3.7038,
+    comment: 'Fresquita en terraza',
+    locationName: 'Plaza Mayor',
+    remotePhotoUrl: `users/${userId}/beers/sync-beer-100_mut-1001.jpg`,
+    photoSource: 'CAMERA',
+    updatedAt: 1729000000000,
     revision: 1,
     isDeleted: false,
     lastMutationId: 'mut-1001',
     fieldRevisions: {
-      name: 1,
-      brand: 1,
-      rating: 1,
-      style: 1,
-      alcohol: 1,
+      TYPE: 1,
+      TIMESTAMP: 1,
+      LOCATION: 1,
+      COMMENT: 1,
+      PHOTO: 1,
     },
     ...overrides,
   };
@@ -79,11 +83,15 @@ function createModernBeerPayload(userId, overrides = {}) {
 function createLegacyBeerPayload(userId, overrides = {}) {
   return {
     userId,
-    name: 'Cerveza Clasica',
-    brand: 'Mahou',
-    rating: 3.5,
-    style: 'Lager',
-    alcohol: 5.0,
+    type: 'LATA',
+    timestamp: 1729000000000,
+    latitude: 40.4168,
+    longitude: -3.7038,
+    comment: 'Cerveza clasica',
+    locationName: 'Plaza Mayor',
+    remotePhotoUrl: `users/${userId}/beers/beer-100.jpg`,
+    photoSource: 'GALLERY',
+    updatedAt: 1729000000000,
     ...overrides,
   };
 }

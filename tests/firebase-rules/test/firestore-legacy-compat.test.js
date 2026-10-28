@@ -40,8 +40,8 @@ describe('Profile B: FIRESTORE LEGACY COMPATIBILITY RULES', () => {
       const beerRef = doc(aliceDb, 'beers/beer-leg-2');
 
       await assertSucceeds(updateDoc(beerRef, {
-        name: 'Updated Legacy Name',
-        rating: 4.2,
+        comment: 'Actualizacion legacy sin revision',
+        type: 'BOTELLIN',
       }));
     });
 
@@ -57,7 +57,7 @@ describe('Profile B: FIRESTORE LEGACY COMPATIBILITY RULES', () => {
   });
 
   describe('Modern Client Operations in Compatibility Mode', () => {
-    it('allows modern client to create beer starting at revision 1', async () => {
+    it('allows modern client to create beer starting at revision 1 with authentic schema', async () => {
       const aliceDb = testEnv.authenticatedContext('alice').firestore();
       const beerRef = doc(aliceDb, 'beers/beer-mod-1');
 
@@ -65,28 +65,37 @@ describe('Profile B: FIRESTORE LEGACY COMPATIBILITY RULES', () => {
         revision: 1,
         isDeleted: false,
         lastMutationId: 'mut-mod-1',
+        type: 'JARRA',
+        timestamp: 1729000000000,
+        comment: 'Cerveza moderna en compat',
+        fieldRevisions: { TYPE: 1, TIMESTAMP: 1, LOCATION: 1, COMMENT: 1, PHOTO: 1 },
       })));
     });
 
-    it('enforces monotonic revision update (+1) on modern documents', async () => {
+    it('enforces monotonic revision update (+1) and fieldRevisions consistency on modern documents', async () => {
       await seedDocument(testEnv, 'beers/beer-mod-2', createModernBeerPayload('alice', {
         revision: 1,
+        lastMutationId: 'mut-mod-1',
+        fieldRevisions: { TYPE: 1, TIMESTAMP: 1, LOCATION: 1, COMMENT: 1, PHOTO: 1 },
       }));
 
       const aliceDb = testEnv.authenticatedContext('alice').firestore();
       const beerRef = doc(aliceDb, 'beers/beer-mod-2');
 
-      // Monotonic +1 succeeds
+      // Monotonic +1 with consistent fieldRevisions succeeds
       await assertSucceeds(updateDoc(beerRef, {
         revision: 2,
         lastMutationId: 'mut-mod-2',
-        name: 'Advanced Beer',
+        comment: 'Avanzado a rev 2',
+        'fieldRevisions.COMMENT': 2,
       }));
 
       // Non-monotonic jump (+2) fails
       await assertFails(updateDoc(beerRef, {
         revision: 4,
         lastMutationId: 'mut-mod-4',
+        comment: 'Salto invalido',
+        'fieldRevisions.COMMENT': 4,
       }));
     });
 
@@ -142,16 +151,18 @@ describe('Profile B: FIRESTORE LEGACY COMPATIBILITY RULES', () => {
         revision: 1,
         isDeleted: false,
         lastMutationId: 'mut-upgrade-1',
+        fieldRevisions: { TYPE: 1, TIMESTAMP: 1, LOCATION: 1, COMMENT: 1, PHOTO: 1 },
       })));
 
       // Once upgraded, hard delete is blocked
       await assertFails(deleteDoc(beerRef));
 
-      // Subsequent update must be monotonic revision 2
+      // Subsequent update must be monotonic revision 2 with distinct mutationId
       await assertSucceeds(updateDoc(beerRef, {
         revision: 2,
         lastMutationId: 'mut-upgrade-2',
-        name: 'Upgraded & Refreshed',
+        comment: 'Upgraded & Refreshed',
+        'fieldRevisions.COMMENT': 2,
       }));
     });
   });
@@ -160,6 +171,7 @@ describe('Profile B: FIRESTORE LEGACY COMPATIBILITY RULES', () => {
     it('rejects resurrection of a modern tombstone in compatibility mode', async () => {
       await seedDocument(testEnv, 'beers/beer-tomb-compat', createModernBeerPayload('alice', {
         revision: 2,
+        lastMutationId: 'mut-tomb-compat',
         isDeleted: true,
       }));
 
@@ -171,6 +183,8 @@ describe('Profile B: FIRESTORE LEGACY COMPATIBILITY RULES', () => {
         revision: 3,
         isDeleted: false,
         lastMutationId: 'mut-resurrect',
+        comment: 'Zombie',
+        'fieldRevisions.COMMENT': 3,
       }));
     });
   });

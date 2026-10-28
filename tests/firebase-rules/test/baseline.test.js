@@ -28,15 +28,18 @@ describe('Profile A: BASELINE RULES AUDIT', () => {
     await testEnv.clearStorage();
   });
 
-  describe('Basic Access Control (Baseline)', () => {
-    it('allows owner to read and write own beer', async () => {
+  describe('Basic Access Control (Baseline Beers)', () => {
+    it('allows owner to read and write own beer with authentic schema', async () => {
       const aliceDb = testEnv.authenticatedContext('alice').firestore();
       const beerRef = doc(aliceDb, 'beers/beer-1');
 
       await assertSucceeds(setDoc(beerRef, {
         userId: 'alice',
-        name: 'Mahou 5 Estrellas',
-        rating: 4.0,
+        type: 'LATA',
+        timestamp: 1729000000000,
+        comment: 'Mahou clásica',
+        latitude: 40.4168,
+        longitude: -3.7038,
       }));
 
       const snapshot = await assertSucceeds(getDoc(beerRef));
@@ -48,28 +51,78 @@ describe('Profile A: BASELINE RULES AUDIT', () => {
     it('rejects unauthenticated user from reading or writing', async () => {
       await seedDocument(testEnv, 'beers/beer-1', {
         userId: 'alice',
-        name: 'Mahou 5 Estrellas',
+        type: 'LATA',
+        timestamp: 1729000000000,
       });
 
       const unauthDb = testEnv.unauthenticatedContext().firestore();
       const beerRef = doc(unauthDb, 'beers/beer-1');
 
       await assertFails(getDoc(beerRef));
-      await assertFails(setDoc(beerRef, { userId: 'alice', name: 'Hacked' }));
+      await assertFails(setDoc(beerRef, { userId: 'alice', type: 'COPA', timestamp: 1729000000000 }));
     });
 
     it('rejects foreign user from reading, updating, or deleting another user beer', async () => {
       await seedDocument(testEnv, 'beers/beer-1', {
         userId: 'alice',
-        name: 'Mahou 5 Estrellas',
+        type: 'LATA',
+        timestamp: 1729000000000,
       });
 
       const bobDb = testEnv.authenticatedContext('bob').firestore();
       const beerRef = doc(bobDb, 'beers/beer-1');
 
       await assertFails(getDoc(beerRef));
-      await assertFails(updateDoc(beerRef, { name: 'Bob Hacked' }));
+      await assertFails(updateDoc(beerRef, { comment: 'Bob Hacked' }));
       await assertFails(deleteDoc(beerRef));
+    });
+  });
+
+  describe('Non-Beer Collections Baseline Semantics Reproduction', () => {
+    it('verifies /users/{userId} access rules', async () => {
+      const aliceDb = testEnv.authenticatedContext('alice').firestore();
+      const userRef = doc(aliceDb, 'users/alice');
+      await assertSucceeds(setDoc(userRef, { email: 'alice@test.com' }));
+
+      const bobDb = testEnv.authenticatedContext('bob').firestore();
+      const foreignUserRef = doc(bobDb, 'users/alice');
+      await assertFails(getDoc(foreignUserRef));
+      await assertFails(setDoc(foreignUserRef, { email: 'hacked@test.com' }));
+    });
+
+    it('verifies /publicUsers/{userId} access and delete prohibition', async () => {
+      const aliceDb = testEnv.authenticatedContext('alice').firestore();
+      const pubUserRef = doc(aliceDb, 'publicUsers/alice');
+
+      // Create valid publicUser without username
+      await assertSucceeds(setDoc(pubUserRef, {
+        uid: 'alice',
+        displayName: 'Alice In Chains',
+        createdAt: 1729000000000,
+        updatedAt: 1729000000000,
+      }));
+
+      // Delete forbidden by rules
+      await assertFails(deleteDoc(pubUserRef));
+    });
+
+    it('verifies /friendships/{friendshipId} access rules', async () => {
+      const aliceDb = testEnv.authenticatedContext('alice').firestore();
+      // user1 < user2 -> alice < bob -> alice_bob
+      const friendshipRef = doc(aliceDb, 'friendships/alice_bob');
+
+      await assertSucceeds(setDoc(friendshipRef, {
+        user1: 'alice',
+        user2: 'bob',
+        requester: 'alice',
+        status: 'PENDING',
+        friendshipId: 'alice_bob',
+      }));
+
+      // Stranger charlie cannot read friendship
+      const charlieDb = testEnv.authenticatedContext('charlie').firestore();
+      const charlieView = doc(charlieDb, 'friendships/alice_bob');
+      await assertFails(getDoc(charlieView));
     });
   });
 
@@ -95,7 +148,7 @@ describe('Profile A: BASELINE RULES AUDIT', () => {
       // In baseline, update allows regressing revision backwards
       await assertSucceeds(updateDoc(beerRef, {
         revision: 2,
-        name: 'Regressed Name',
+        comment: 'Regressed Comment',
       }));
     });
 
@@ -111,7 +164,7 @@ describe('Profile A: BASELINE RULES AUDIT', () => {
       // In baseline, nothing prevents resurrecting a tombstone
       await assertSucceeds(updateDoc(beerRef, {
         isDeleted: false,
-        name: 'Resurrected Beer',
+        comment: 'Resurrected Beer',
       }));
     });
 

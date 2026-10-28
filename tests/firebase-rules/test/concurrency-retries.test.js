@@ -25,11 +25,13 @@ describe('Concurrency, Retries & Race Condition Simulations', () => {
       await testEnv.clearFirestore();
       await seedDocument(testEnv, 'beers/beer-race', createModernBeerPayload('alice', {
         revision: 1,
-        name: 'Initial Name',
+        lastMutationId: 'mut-init',
+        comment: 'Initial Comment',
+        fieldRevisions: { TYPE: 1, TIMESTAMP: 1, LOCATION: 1, COMMENT: 1, PHOTO: 1 },
       }));
     });
 
-    it('prevents silent overwrite when two clients attempt to write revision 2 concurrently', async () => {
+    it('prevents silent overwrite during blind concurrent writes (CAS enforced by rules)', async () => {
       const aliceDb1 = testEnv.authenticatedContext('alice').firestore();
       const aliceDb2 = testEnv.authenticatedContext('alice').firestore();
 
@@ -46,76 +48,88 @@ describe('Concurrency, Retries & Race Condition Simulations', () => {
       // Client 1 successfully updates to revision 2
       await assertSucceeds(updateDoc(beerRef1, {
         revision: 2,
-        name: 'Name by Client 1',
+        comment: 'Comment by Client 1',
         lastMutationId: 'mut-client-1',
+        'fieldRevisions.COMMENT': 2,
       }));
 
-      // Client 2 (stale read) attempts to write revision 2 -> MUST BE REJECTED by rules
-      // because resource.data.revision is now 2, and 2 != 2 + 1
+      // Client 2 (holding stale read of revision 1) attempts to write revision 2
+      // Must be rejected by Security Rules (2 != 2 + 1)
       await assertFails(updateDoc(beerRef2, {
         revision: 2,
-        name: 'Name by Client 2',
+        comment: 'Comment by Client 2',
         lastMutationId: 'mut-client-2',
+        'fieldRevisions.COMMENT': 2,
       }));
 
-      // Verify that Client 1's write was preserved intact
+      // Verify that Client 1's write was preserved intact and never silently overwritten
       const finalSnap = await getDoc(beerRef1);
-      if (finalSnap.data().name !== 'Name by Client 1' || finalSnap.data().revision !== 2) {
+      if (finalSnap.data().comment !== 'Comment by Client 1' || finalSnap.data().revision !== 2) {
         throw new Error('Data corrupted or overwritten silently');
       }
     });
 
-    it('prevents silent overwrite during concurrent transactions by rejecting stale revision', async () => {
+    it('handles concurrent read-modify-write safely via Firestore runTransaction', async () => {
       const aliceDb1 = testEnv.authenticatedContext('alice').firestore();
       const aliceDb2 = testEnv.authenticatedContext('alice').firestore();
 
       const beerRef1 = doc(aliceDb1, 'beers/beer-race');
       const beerRef2 = doc(aliceDb2, 'beers/beer-race');
 
-      // Execute concurrent transactions that read current revision and attempt to commit increment
+      // Execute concurrent transactions that read current revision and increment strictly by 1
       const tx1 = runTransaction(aliceDb1, async (transaction) => {
         const snap = await transaction.get(beerRef1);
         const currentRev = snap.data().revision;
+        const currentFr = snap.data().fieldRevisions || {};
         transaction.update(beerRef1, {
           revision: currentRev + 1,
-          name: 'Tx 1 applied',
-          lastMutationId: 'tx-mut-1',
+          comment: `Tx 1 applied at rev ${currentRev + 1}`,
+          lastMutationId: `tx-mut-1-at-${currentRev + 1}`,
+          fieldRevisions: {
+            ...currentFr,
+            COMMENT: currentRev + 1,
+          },
         });
       });
 
       const tx2 = runTransaction(aliceDb2, async (transaction) => {
         const snap = await transaction.get(beerRef2);
         const currentRev = snap.data().revision;
+        const currentFr = snap.data().fieldRevisions || {};
         transaction.update(beerRef2, {
           revision: currentRev + 1,
-          name: 'Tx 2 applied',
-          lastMutationId: 'tx-mut-2',
+          comment: `Tx 2 applied at rev ${currentRev + 1}`,
+          lastMutationId: `tx-mut-2-at-${currentRev + 1}`,
+          fieldRevisions: {
+            ...currentFr,
+            COMMENT: currentRev + 1,
+          },
         });
       });
 
-      // Under rules enforcing strictly revision == resource.data.revision + 1,
-      // the first transaction commits (advancing to rev 2).
-      // The second transaction fails with PERMISSION_DENIED because its prepared write (rev 2)
-      // is no longer monotonic against the updated remote state (rev 2).
-      // This proves that at least one fails and cannot silently overwrite the other.
+      // Both transactions run concurrently.
+      // If the SDK retries on contention, both commit serially (advancing 1 -> 2 -> 3).
+      // If contention is returned as an error, at least one commits and neither overwrites silently.
       const results = await Promise.allSettled([tx1, tx2]);
       const fulfilled = results.filter(r => r.status === 'fulfilled');
-      const rejected = results.filter(r => r.status === 'rejected');
 
       if (fulfilled.length === 0) {
-        throw new Error('Expected at least one transaction to succeed');
-      }
-      if (rejected.length > 0) {
-        const err = rejected[0].reason;
-        if (!err.message.includes('PERMISSION_DENIED')) {
-          throw new Error(`Expected PERMISSION_DENIED on conflicting transaction, got: ${err.message}`);
-        }
+        throw new Error('Expected at least one transaction to commit');
       }
 
-      // Verify the confirmed document was not corrupted
       const finalSnap = await getDoc(beerRef1);
-      if (finalSnap.data().revision !== 2 && finalSnap.data().revision !== 3) {
-        throw new Error(`Unexpected final revision: ${finalSnap.data().revision}`);
+      const finalRev = finalSnap.data().revision;
+
+      if (fulfilled.length === 2) {
+        // Both serialized cleanly via SDK contention retry
+        if (finalRev !== 3) {
+          throw new Error(`Expected revision 3 after two serialized increments, got ${finalRev}`);
+        }
+      } else {
+        // One transaction succeeded; the other failed safely without silent overwrite
+        if (finalRev !== 2) {
+          throw new Error(`Expected revision 2 after single commit, got ${finalRev}`);
+        }
       }
     });
   });
@@ -136,6 +150,8 @@ describe('Concurrency, Retries & Race Condition Simulations', () => {
       await seedDocument(testEnv, 'beers/beer-idempotent', createModernBeerPayload('alice', {
         revision: 1,
         lastMutationId: 'mut-init',
+        comment: 'Comentario original',
+        fieldRevisions: { TYPE: 1, TIMESTAMP: 1, LOCATION: 1, COMMENT: 1, PHOTO: 1 },
       }));
     });
 
@@ -147,8 +163,9 @@ describe('Concurrency, Retries & Race Condition Simulations', () => {
       const pendingMutationId = 'mut-retry-test-42';
       await assertSucceeds(updateDoc(beerRef, {
         revision: 2,
-        name: 'Retryable Name',
+        comment: 'Comentario reintentable',
         lastMutationId: pendingMutationId,
+        'fieldRevisions.COMMENT': 2,
       }));
 
       // 2. Client simulates network timeout before receiving ACK.
@@ -165,12 +182,13 @@ describe('Concurrency, Retries & Race Condition Simulations', () => {
       // If client had blindly re-attempted the same push (rev: 2), rules would reject with PERMISSION_DENIED:
       await assertFails(updateDoc(beerRef, {
         revision: 2,
-        name: 'Retryable Name',
+        comment: 'Comentario reintentable',
         lastMutationId: pendingMutationId,
+        'fieldRevisions.COMMENT': 2,
       }));
 
       // Client avoids error by acknowledging mutation as CONFIRMED via the idempotent read.
-      if (remoteData.revision !== 2 || remoteData.name !== 'Retryable Name') {
+      if (remoteData.revision !== 2 || remoteData.comment !== 'Comentario reintentable') {
         throw new Error('Idempotent state verification failed');
       }
     });
@@ -205,7 +223,7 @@ describe('Concurrency, Retries & Race Condition Simulations', () => {
       await assertFails(updateDoc(beerRef, {
         revision: 2,
         isDeleted: false,
-        name: 'Stale Edit',
+        comment: 'Stale Edit',
         lastMutationId: 'mut-stale-offline',
       }));
     });
@@ -219,8 +237,9 @@ describe('Concurrency, Retries & Race Condition Simulations', () => {
       await assertFails(updateDoc(beerRef, {
         revision: 3,
         isDeleted: false,
-        name: 'Zombie Late Edit',
+        comment: 'Zombie Late Edit',
         lastMutationId: 'mut-zombie-offline',
+        'fieldRevisions.COMMENT': 3,
       }));
 
       // The tombstone remains in place and deleted
@@ -247,8 +266,8 @@ describe('Concurrency, Retries & Race Condition Simulations', () => {
       // Modern document already at revision 3
       await seedDocument(testEnv, 'beers/beer-c4-active', createModernBeerPayload('alice', {
         revision: 3,
-        isDeleted: false,
         lastMutationId: 'mut-c4-active',
+        isDeleted: false,
       }));
     });
 
@@ -258,7 +277,7 @@ describe('Concurrency, Retries & Race Condition Simulations', () => {
 
       // Legacy client without sync protocol attempts legacy overwrite
       await assertFails(setDoc(beerRef, createLegacyBeerPayload('alice', {
-        name: 'Legacy Blind Overwrite',
+        comment: 'Legacy Blind Overwrite',
       })));
 
       // Verify the modern document remains intact with revision 3

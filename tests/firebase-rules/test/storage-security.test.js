@@ -92,40 +92,59 @@ describe('Storage Security Suite across Profiles', () => {
       await testEnv.clearStorage();
     });
 
-    it('allows legacy unversioned photos to be uploaded, overwritten, and deleted', async () => {
+    it('allows legacy photos with underscores (e.g. mi_cerveza.jpg) to be created, overwritten, and deleted', async () => {
       const aliceStorage = testEnv.authenticatedContext('alice').storage();
-      const legacyPhotoRef = ref(aliceStorage, 'users/alice/beers/beer-legacy-10.jpg');
 
-      // Create
-      await assertSucceeds(uploadBytes(legacyPhotoRef, createDummyImageBuffer(100), {
-        contentType: 'image/jpeg',
-      }));
+      // Legacy files with underscores
+      const legacyPhotos = [
+        'users/alice/beers/mi_cerveza.jpg',
+        'users/alice/beers/cerveza_favorita_2024.jpg',
+        'users/alice/beers/foto_1.jpg',
+      ];
 
-      // Overwrite / Update
-      await assertSucceeds(uploadBytes(legacyPhotoRef, createDummyImageBuffer(200), {
-        contentType: 'image/jpeg',
-      }));
+      for (const path of legacyPhotos) {
+        const photoRef = ref(aliceStorage, path);
 
-      // Delete
-      await assertSucceeds(deleteObject(legacyPhotoRef));
+        // 1. Create succeeds
+        await assertSucceeds(uploadBytes(photoRef, createDummyImageBuffer(100), {
+          contentType: 'image/jpeg',
+        }));
+
+        // 2. Overwrite / Update succeeds (true legacy compatibility)
+        await assertSucceeds(uploadBytes(photoRef, createDummyImageBuffer(200), {
+          contentType: 'image/jpeg',
+        }));
+
+        // 3. Delete succeeds
+        await assertSucceeds(deleteObject(photoRef));
+      }
     });
 
     it('ENFORCES STRICT IMMUTABILITY on versioned photos (syncId_mutationId.ext)', async () => {
       const aliceStorage = testEnv.authenticatedContext('alice').storage();
-      const versionedPhotoRef = ref(aliceStorage, 'users/alice/beers/sync-100_mut-1.jpg');
 
-      // Initial create succeeds
-      await assertSucceeds(uploadBytes(versionedPhotoRef, createDummyImageBuffer(100), {
-        contentType: 'image/jpeg',
-      }));
+      // Test both sync-XXX_mut-YYY format and UUID_UUID format
+      const versionedPhotos = [
+        'users/alice/beers/sync-beer-100_mut-1001.jpg',
+        'users/alice/beers/123e4567-e89b-12d3-a456-426614174000_987fcdeb-51a2-43f7-9876-543210987654.jpg',
+      ];
 
-      // Attempted overwrite MUST FAIL
-      await assertFails(uploadBytes(versionedPhotoRef, createDummyImageBuffer(200), {
-        contentType: 'image/jpeg',
-      }));
+      for (const path of versionedPhotos) {
+        const versionedRef = ref(aliceStorage, path);
 
-      // Attempted hard delete MUST FAIL
-      await assertFails(deleteObject(versionedPhotoRef));
+        // Initial create succeeds
+        await assertSucceeds(uploadBytes(versionedRef, createDummyImageBuffer(100), {
+          contentType: 'image/jpeg',
+        }));
+
+        // Attempted overwrite MUST FAIL
+        await assertFails(uploadBytes(versionedRef, createDummyImageBuffer(200), {
+          contentType: 'image/jpeg',
+        }));
+
+        // Attempted hard delete MUST FAIL
+        await assertFails(deleteObject(versionedRef));
+      }
     });
   });
 
@@ -145,16 +164,26 @@ describe('Storage Security Suite across Profiles', () => {
       await testEnv.clearStorage();
     });
 
-    it('rejects unversioned photo upload (requires versioned format)', async () => {
+    it('rejects unversioned and ambiguous photo names in modern protocol', async () => {
       const aliceStorage = testEnv.authenticatedContext('alice').storage();
-      const unversionedRef = ref(aliceStorage, 'users/alice/beers/photo.jpg');
 
-      await assertFails(uploadBytes(unversionedRef, createDummyImageBuffer(100), {
-        contentType: 'image/jpeg',
-      }));
+      const invalidNames = [
+        'users/alice/beers/mi_cerveza.jpg',
+        'users/alice/beers/photo.jpg',
+        'users/alice/beers/sync-beer-100_something.jpg', // Invalid mutation pattern
+        'users/alice/beers/sync-100.jpg', // Missing mutation part
+        'users/alice/beers/sync-100_mut-1.exe', // Non-image extension
+      ];
+
+      for (const path of invalidNames) {
+        const photoRef = ref(aliceStorage, path);
+        await assertFails(uploadBytes(photoRef, createDummyImageBuffer(100), {
+          contentType: 'image/jpeg',
+        }));
+      }
     });
 
-    it('allows valid versioned photo upload and forbids overwrite and deletion', async () => {
+    it('allows valid versioned photo upload and strictly forbids overwrite and deletion', async () => {
       const aliceStorage = testEnv.authenticatedContext('alice').storage();
       const versionedRef = ref(aliceStorage, 'users/alice/beers/sync-beer-200_mut-99.jpg');
 
