@@ -154,6 +154,34 @@ describe('Profile C: FIRESTORE MODERN STRICT PROTOCOL', () => {
         fieldRevisions: 'not-a-map',
       })));
     });
+
+    it('rejects create with empty or incomplete fieldRevisions map (Test C)', async () => {
+      const aliceDb = testEnv.authenticatedContext('alice').firestore();
+
+      // Empty map
+      const beerRefEmpty = doc(aliceDb, 'beers/beer-fr-empty');
+      await assertFails(setDoc(beerRefEmpty, createModernBeerPayload('alice', {
+        fieldRevisions: {},
+      })));
+
+      // Incomplete map (missing PHOTO)
+      const beerRefIncomplete = doc(aliceDb, 'beers/beer-fr-incomplete');
+      await assertFails(setDoc(beerRefIncomplete, createModernBeerPayload('alice', {
+        fieldRevisions: { TYPE: 1, TIMESTAMP: 1, LOCATION: 1, COMMENT: 1 },
+      })));
+
+      // Unknown key
+      const beerRefUnknown = doc(aliceDb, 'beers/beer-fr-unknown-key');
+      await assertFails(setDoc(beerRefUnknown, createModernBeerPayload('alice', {
+        fieldRevisions: { TYPE: 1, TIMESTAMP: 1, LOCATION: 1, COMMENT: 1, PHOTO: 1, EXTRA: 1 },
+      })));
+
+      // Initial revision != 1
+      const beerRefRev2 = doc(aliceDb, 'beers/beer-fr-rev2');
+      await assertFails(setDoc(beerRefRev2, createModernBeerPayload('alice', {
+        fieldRevisions: { TYPE: 2, TIMESTAMP: 1, LOCATION: 1, COMMENT: 1, PHOTO: 1 },
+      })));
+    });
   });
 
   describe('Deep fieldRevisions Integrity Constraints', () => {
@@ -261,6 +289,54 @@ describe('Profile C: FIRESTORE MODERN STRICT PROTOCOL', () => {
         lastMutationId: 'mut-consistent-edit',
         comment: 'Nuevo comentario',
         'fieldRevisions.COMMENT': 2,
+      }));
+    });
+
+    it('rejects deleting existing key in fieldRevisions via FieldValue.delete() (Test A)', async () => {
+      const aliceDb = testEnv.authenticatedContext('alice').firestore();
+      const beerRef = doc(aliceDb, 'beers/beer-fr-test');
+
+      // Negative test: deleteField() on fieldRevisions.TYPE while type remains unchanged -> REJECTED
+      await assertFails(updateDoc(beerRef, {
+        revision: 2,
+        lastMutationId: 'mut-del-type-fr',
+        'fieldRevisions.TYPE': deleteField(),
+      }));
+
+      // Negative test: deleteField() on fieldRevisions.COMMENT -> REJECTED
+      await assertFails(updateDoc(beerRef, {
+        revision: 2,
+        lastMutationId: 'mut-del-comment-fr',
+        'fieldRevisions.COMMENT': deleteField(),
+      }));
+    });
+
+    it('rejects advancing fieldRevision without modifying underlying data (anti-fictitious advance) (Test B)', async () => {
+      await seedDocument(testEnv, 'beers/beer-fictitious', createModernBeerPayload('alice', {
+        revision: 3,
+        lastMutationId: 'mut-prev-3',
+        comment: 'Comentario original',
+        fieldRevisions: { TYPE: 1, TIMESTAMP: 1, LOCATION: 1, COMMENT: 1, PHOTO: 1 },
+      }));
+
+      const aliceDb = testEnv.authenticatedContext('alice').firestore();
+      const beerRef = doc(aliceDb, 'beers/beer-fictitious');
+
+      // Document is at rev 3 with COMMENT rev 1.
+      // Next mutation advances doc to rev 4, but comment is NOT modified.
+      // Attempting to send fieldRevisions.COMMENT = 4 -> MUST BE REJECTED by emulator
+      await assertFails(updateDoc(beerRef, {
+        revision: 4,
+        lastMutationId: 'mut-fictitious-advance',
+        'fieldRevisions.COMMENT': 4,
+      }));
+
+      // If comment IS actually modified, advancing fieldRevisions.COMMENT to 4 SUCCEEDS
+      await assertSucceeds(updateDoc(beerRef, {
+        revision: 4,
+        lastMutationId: 'mut-real-advance',
+        comment: 'Comentario modificado de verdad',
+        'fieldRevisions.COMMENT': 4,
       }));
     });
   });
@@ -463,6 +539,25 @@ describe('Profile C: FIRESTORE MODERN STRICT PROTOCOL', () => {
         revision: 3,
         isDeleted: true,
         lastMutationId: 'mut-tomb-del',
+      }));
+    });
+
+    it('allows applying tombstone with global revision +1 while preserving all fieldRevisions unchanged (Test F)', async () => {
+      await seedDocument(testEnv, 'beers/beer-tomb-fr-test', createModernBeerPayload('alice', {
+        revision: 2,
+        lastMutationId: 'mut-tomb-init',
+        fieldRevisions: { TYPE: 2, TIMESTAMP: 1, LOCATION: 1, COMMENT: 1, PHOTO: 1 },
+        isDeleted: false,
+      }));
+
+      const aliceDb = testEnv.authenticatedContext('alice').firestore();
+      const beerRef = doc(aliceDb, 'beers/beer-tomb-fr-test');
+
+      // Global revision +1, isDeleted: true, no data fields changed, fieldRevisions preserved -> SUCCEEDS
+      await assertSucceeds(updateDoc(beerRef, {
+        revision: 3,
+        isDeleted: true,
+        lastMutationId: 'mut-tomb-ack',
       }));
     });
 

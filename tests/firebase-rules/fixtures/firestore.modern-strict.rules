@@ -2,8 +2,9 @@
 // [FIXTURE C4.3 - NO DESPLEGABLE EN PRODUCCION]
 // Perfil C: MODERN STRICT PROTOCOL - Reglas finales del protocolo C4
 // Exige revisión monotónica (+1), metadatos de sincronización íntegros,
-// integridad estricta de fieldRevisions e isDeleted, prohibición total de
-// borrado físico y protección contra resurrección.
+// integridad causal estricta de fieldRevisions (preservación de 5 claves,
+// no adelanto ficticio sin cambio de datos), prohibición de borrado físico
+// y protección contra resurrección.
 // =============================================================================
 
 rules_version = '2';
@@ -104,75 +105,48 @@ service cloud.firestore {
                request.resource.data.lastMutationId != resource.data.lastMutationId;
       }
 
-      function validKnownFieldRevisionsKeys(fr) {
-        return fr.keys().hasOnly(['TYPE', 'TIMESTAMP', 'LOCATION', 'COMMENT', 'PHOTO']);
-      }
-
-      function isValidFieldRevValue(fr, key, maxRev) {
-        return !(key in fr) || (
-          fr[key] is int &&
-          fr[key] >= 1 &&
-          fr[key] <= maxRev
-        );
-      }
-
-      function areFieldRevisionsValid(fr, maxRev) {
+      // Validacion de fieldRevisions en creacion: todas las 5 unidades deben estar presentes e inicializadas en 1
+      function areCreationFieldRevisionsValid(fr) {
         return fr is map &&
-          fr.size() <= 5 &&
-          validKnownFieldRevisionsKeys(fr) &&
-          isValidFieldRevValue(fr, 'TYPE', maxRev) &&
-          isValidFieldRevValue(fr, 'TIMESTAMP', maxRev) &&
-          isValidFieldRevValue(fr, 'LOCATION', maxRev) &&
-          isValidFieldRevValue(fr, 'COMMENT', maxRev) &&
-          isValidFieldRevValue(fr, 'PHOTO', maxRev);
+          fr.size() == 5 &&
+          fr.keys().hasOnly(['TYPE', 'TIMESTAMP', 'LOCATION', 'COMMENT', 'PHOTO']) &&
+          fr.TYPE == 1 &&
+          fr.TIMESTAMP == 1 &&
+          fr.LOCATION == 1 &&
+          fr.COMMENT == 1 &&
+          fr.PHOTO == 1;
       }
 
-      function isFieldRevNotDecreased(oldFr, newFr, key) {
-        return !(key in oldFr) || !(key in newFr) || (newFr[key] >= oldFr[key]);
+      // Validacion causal estricta de fieldRevisions en actualizacion:
+      // - No permite eliminar ninguna clave existente.
+      // - Si una unidad logica cambio, su revision debe ser exactamente newRev.
+      // - Si una unidad logica NO cambio, debe conservar estrictamente su revision anterior (no adelanto ficticio).
+      function isFieldPreservedOrAdvanced(oldFr, newFr, key, changed, newRev) {
+        return (key in newFr) &&
+          (newFr[key] is int) &&
+          (newFr[key] >= 1) &&
+          (newFr[key] <= newRev) &&
+          (changed ? (newFr[key] == newRev) : (newFr[key] == oldFr.get(key, 1)));
       }
 
-      function areFieldRevisionsNotDecreased(oldFr, newFr) {
-        return isFieldRevNotDecreased(oldFr, newFr, 'TYPE') &&
-               isFieldRevNotDecreased(oldFr, newFr, 'TIMESTAMP') &&
-               isFieldRevNotDecreased(oldFr, newFr, 'LOCATION') &&
-               isFieldRevNotDecreased(oldFr, newFr, 'COMMENT') &&
-               isFieldRevNotDecreased(oldFr, newFr, 'PHOTO');
-      }
+      function areUpdateFieldRevisionsConsistent(oldFr, newFr, newRev) {
+        let typeChanged = request.resource.data.get('type', null) != resource.data.get('type', null);
+        let timestampChanged = request.resource.data.get('timestamp', null) != resource.data.get('timestamp', null);
+        let commentChanged = request.resource.data.get('comment', null) != resource.data.get('comment', null);
+        let locationChanged = (request.resource.data.get('latitude', null) != resource.data.get('latitude', null)) ||
+                              (request.resource.data.get('longitude', null) != resource.data.get('longitude', null)) ||
+                              (request.resource.data.get('locationName', null) != resource.data.get('locationName', null));
+        let photoChanged = (request.resource.data.get('remotePhotoUrl', null) != resource.data.get('remotePhotoUrl', null)) ||
+                           (request.resource.data.get('photoSource', null) != resource.data.get('photoSource', null));
 
-      function isTypeConsistent() {
-        return (request.resource.data.get('type', null) == resource.data.get('type', null)) ||
-               (request.resource.data.fieldRevisions.get('TYPE', 0) == request.resource.data.revision);
-      }
-
-      function isTimestampConsistent() {
-        return (request.resource.data.get('timestamp', null) == resource.data.get('timestamp', null)) ||
-               (request.resource.data.fieldRevisions.get('TIMESTAMP', 0) == request.resource.data.revision);
-      }
-
-      function isCommentConsistent() {
-        return (request.resource.data.get('comment', null) == resource.data.get('comment', null)) ||
-               (request.resource.data.fieldRevisions.get('COMMENT', 0) == request.resource.data.revision);
-      }
-
-      function isLocationConsistent() {
-        let locUnchanged = request.resource.data.get('latitude', null) == resource.data.get('latitude', null) &&
-                           request.resource.data.get('longitude', null) == resource.data.get('longitude', null) &&
-                           request.resource.data.get('locationName', null) == resource.data.get('locationName', null);
-        return locUnchanged || (request.resource.data.fieldRevisions.get('LOCATION', 0) == request.resource.data.revision);
-      }
-
-      function isPhotoConsistent() {
-        let photoUnchanged = request.resource.data.get('remotePhotoUrl', null) == resource.data.get('remotePhotoUrl', null) &&
-                             request.resource.data.get('photoSource', null) == resource.data.get('photoSource', null);
-        return photoUnchanged || (request.resource.data.fieldRevisions.get('PHOTO', 0) == request.resource.data.revision);
-      }
-
-      function areChangedFieldsConsistent() {
-        return isTypeConsistent() &&
-               isTimestampConsistent() &&
-               isCommentConsistent() &&
-               isLocationConsistent() &&
-               isPhotoConsistent();
+        return newFr is map &&
+          newFr.size() == 5 &&
+          newFr.keys().hasOnly(['TYPE', 'TIMESTAMP', 'LOCATION', 'COMMENT', 'PHOTO']) &&
+          isFieldPreservedOrAdvanced(oldFr, newFr, 'TYPE', typeChanged, newRev) &&
+          isFieldPreservedOrAdvanced(oldFr, newFr, 'TIMESTAMP', timestampChanged, newRev) &&
+          isFieldPreservedOrAdvanced(oldFr, newFr, 'LOCATION', locationChanged, newRev) &&
+          isFieldPreservedOrAdvanced(oldFr, newFr, 'COMMENT', commentChanged, newRev) &&
+          isFieldPreservedOrAdvanced(oldFr, newFr, 'PHOTO', photoChanged, newRev);
       }
 
       function isStrictCreate() {
@@ -185,7 +159,7 @@ service cloud.firestore {
           request.resource.data.isDeleted is bool &&
           request.resource.data.isDeleted == false &&
           isValidLastMutationId(request.resource.data.get('lastMutationId', null)) &&
-          areFieldRevisionsValid(request.resource.data.get('fieldRevisions', null), 1);
+          areCreationFieldRevisionsValid(request.resource.data.get('fieldRevisions', null));
       }
 
       function isStrictUpdate() {
@@ -205,9 +179,12 @@ service cloud.firestore {
           // Sync mutation metadata validity
           isValidLastMutationId(request.resource.data.get('lastMutationId', null)) &&
           isMutationIdDistinct() &&
-          areFieldRevisionsValid(request.resource.data.get('fieldRevisions', null), request.resource.data.revision) &&
-          areFieldRevisionsNotDecreased(resource.data.get('fieldRevisions', {}), request.resource.data.fieldRevisions) &&
-          areChangedFieldsConsistent();
+          // Causal integrity of fieldRevisions
+          areUpdateFieldRevisionsConsistent(
+            resource.data.get('fieldRevisions', {}),
+            request.resource.data.get('fieldRevisions', null),
+            request.resource.data.revision
+          );
       }
 
       allow read: if isBeerOwner();

@@ -1,4 +1,4 @@
-const { doc, getDoc, setDoc, updateDoc, deleteDoc } = require('firebase/firestore');
+const { doc, getDoc, setDoc, updateDoc, deleteDoc, deleteField } = require('firebase/firestore');
 const {
   createTestEnv,
   seedDocument,
@@ -163,6 +163,75 @@ describe('Profile B: FIRESTORE LEGACY COMPATIBILITY RULES', () => {
         lastMutationId: 'mut-upgrade-2',
         comment: 'Upgraded & Refreshed',
         'fieldRevisions.COMMENT': 2,
+      }));
+    });
+
+    it('rejects upgrading legacy beer with empty, incomplete, or invalid fieldRevisions map', async () => {
+      await seedDocument(testEnv, 'beers/beer-upgrade-inv', createLegacyBeerPayload('alice'));
+
+      const aliceDb = testEnv.authenticatedContext('alice').firestore();
+      const beerRef = doc(aliceDb, 'beers/beer-upgrade-inv');
+
+      // Empty map
+      await assertFails(setDoc(beerRef, createModernBeerPayload('alice', {
+        revision: 1,
+        lastMutationId: 'mut-upg-empty',
+        fieldRevisions: {},
+      })));
+
+      // Incomplete map
+      await assertFails(setDoc(beerRef, createModernBeerPayload('alice', {
+        revision: 1,
+        lastMutationId: 'mut-upg-incomp',
+        fieldRevisions: { TYPE: 1, TIMESTAMP: 1 },
+      })));
+
+      // Unknown key
+      await assertFails(setDoc(beerRef, createModernBeerPayload('alice', {
+        revision: 1,
+        lastMutationId: 'mut-upg-unknown',
+        fieldRevisions: { TYPE: 1, TIMESTAMP: 1, LOCATION: 1, COMMENT: 1, PHOTO: 1, BRAND: 1 },
+      })));
+
+      // Initial revision != 1
+      await assertFails(setDoc(beerRef, createModernBeerPayload('alice', {
+        revision: 1,
+        lastMutationId: 'mut-upg-rev2',
+        fieldRevisions: { TYPE: 2, TIMESTAMP: 1, LOCATION: 1, COMMENT: 1, PHOTO: 1 },
+      })));
+    });
+
+    it('enforces causal fieldRevisions key preservation and anti-fictitious advance on modern document', async () => {
+      await seedDocument(testEnv, 'beers/beer-compat-fr', createModernBeerPayload('alice', {
+        revision: 2,
+        lastMutationId: 'mut-compat-init',
+        comment: 'Comentario previo',
+        fieldRevisions: { TYPE: 1, TIMESTAMP: 1, LOCATION: 1, COMMENT: 1, PHOTO: 1 },
+      }));
+
+      const aliceDb = testEnv.authenticatedContext('alice').firestore();
+      const beerRef = doc(aliceDb, 'beers/beer-compat-fr');
+
+      // Key deletion via deleteField() is strictly rejected
+      await assertFails(updateDoc(beerRef, {
+        revision: 3,
+        lastMutationId: 'mut-compat-del-key',
+        'fieldRevisions.TYPE': deleteField(),
+      }));
+
+      // Fictitious revision advance without changing comment is strictly rejected
+      await assertFails(updateDoc(beerRef, {
+        revision: 3,
+        lastMutationId: 'mut-compat-fictitious',
+        'fieldRevisions.COMMENT': 3,
+      }));
+
+      // Real update of comment with corresponding fieldRevision succeeds
+      await assertSucceeds(updateDoc(beerRef, {
+        revision: 3,
+        lastMutationId: 'mut-compat-real-change',
+        comment: 'Comentario nuevo',
+        'fieldRevisions.COMMENT': 3,
       }));
     });
   });
