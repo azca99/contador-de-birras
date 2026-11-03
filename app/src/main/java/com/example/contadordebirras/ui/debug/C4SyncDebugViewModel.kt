@@ -210,32 +210,32 @@ class C4SyncDebugViewModel(application: Application) : AndroidViewModel(applicat
         val manager = syncManager ?: return
         viewModelScope.launch {
             try {
-                log("Iniciando PULL de cervezas locales para verificar reconciliación causal...")
-                val currentBeers = manager.getActiveBeers()
-                if (currentBeers.isEmpty()) {
-                    log("PULL: No hay cervezas locales para reconciliar.")
+                log("Iniciando PULL por colección (Descubrimiento remoto desde SERVER)...")
+                val results = manager.pullRemoteCollection()
+                if (results.isEmpty()) {
+                    log("PULL Colección: No se encontraron documentos remotos para el propietario.")
                 } else {
-                    for (beer in currentBeers) {
-                        val result = manager.pullBeer(beer.syncId)
+                    log("PULL Colección: Descubiertos y procesados ${results.size} documentos remotos.")
+                    for ((syncId, result) in results) {
                         when (result) {
                             is C4CoordinatorPullResult.Applied -> {
-                                log("PULL APLICADO [${beer.syncId.take(8)}...]: plan=${result.plan::class.simpleName}")
+                                log("PULL APLICADO [${syncId.take(8)}...]: plan=${result.plan::class.simpleName}")
                             }
                             is C4CoordinatorPullResult.Blocked -> {
-                                log("PULL BLOQUEADO [${beer.syncId.take(8)}...]: ${result.reason}")
+                                log("PULL BLOQUEADO [${syncId.take(8)}...]: ${result.reason}")
                             }
                             C4CoordinatorPullResult.NoOp -> {
-                                log("PULL AL DÍA (NoOp) [${beer.syncId.take(8)}...]")
+                                log("PULL AL DÍA (NoOp) [${syncId.take(8)}...]")
                             }
                             C4CoordinatorPullResult.IncompleteReadIgnored -> {
-                                log("PULL LECTURA INCOMPLETA IGNORADA [${beer.syncId.take(8)}...]")
+                                log("PULL LECTURA INCOMPLETA IGNORADA [${syncId.take(8)}...]")
                             }
                         }
                     }
                 }
                 refreshState()
             } catch (e: Exception) {
-                log("Error durante PULL: ${e.message}")
+                log("Error durante PULL por colección: ${e.message}")
             }
         }
     }

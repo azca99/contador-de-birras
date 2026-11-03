@@ -42,13 +42,56 @@ class FirestoreC4SyncAdapter(
      * Lectura autoritativa remota desde SERVER, omitiendo caché local.
      */
     suspend fun readServerDocument(syncId: String): C4FirestoreDocument? {
-        val snapshot = try {
-            getDocRef(syncId).get(Source.SERVER).await()
-        } catch (e: FirebaseFirestoreException) {
-            if (e.code == FirebaseFirestoreException.Code.NOT_FOUND) return null
-            throw e
+        var lastException: FirebaseFirestoreException? = null
+        for (attempt in 1..3) {
+            try {
+                val snapshot = getDocRef(syncId).get(Source.SERVER).await()
+                return C4FirestoreDocument.fromDocumentSnapshot(syncId, snapshot)
+            } catch (e: FirebaseFirestoreException) {
+                if (e.code == FirebaseFirestoreException.Code.NOT_FOUND) return null
+                lastException = e
+                if (attempt < 3 && (e.code == FirebaseFirestoreException.Code.UNAVAILABLE || e.message?.contains("offline") == true)) {
+                    kotlinx.coroutines.delay(300L * attempt)
+                    continue
+                }
+                throw e
+            }
         }
-        return C4FirestoreDocument.fromDocumentSnapshot(syncId, snapshot)
+        throw lastException ?: IllegalStateException("Error al leer documento $syncId desde SERVER")
+    }
+
+    /**
+     * Consulta autoritativa remota desde SERVER para todos los documentos del propietario.
+     *
+     * INVARIANTES DE SEGURIDAD:
+     * - Utiliza [Source.SERVER] para evitar lecturas de caché desactualizadas o incompletas.
+     * - Filtra estrictamente por `userId == ownerUid` para satisfacer las reglas de seguridad
+     *   y garantizar aislamiento entre usuarios.
+     * - NO captura excepciones: cualquier fallo de red o autenticación se propaga directamente
+     *   al invocador, impidiendo interpretar un error de consulta como colección vacía.
+     */
+    suspend fun queryServerDocuments(ownerUid: String): List<C4FirestoreDocument> {
+        var lastException: Exception? = null
+        for (attempt in 1..3) {
+            try {
+                val querySnapshot = beersCollection
+                    .whereEqualTo("userId", ownerUid)
+                    .get(Source.SERVER)
+                    .await()
+
+                return querySnapshot.documents.mapNotNull { doc ->
+                    C4FirestoreDocument.fromDocumentSnapshot(doc.id, doc)
+                }
+            } catch (e: Exception) {
+                lastException = e
+                if (attempt < 3 && e is FirebaseFirestoreException && (e.code == FirebaseFirestoreException.Code.UNAVAILABLE || e.message?.contains("offline") == true)) {
+                    kotlinx.coroutines.delay(300L * attempt)
+                    continue
+                }
+                throw e
+            }
+        }
+        throw lastException ?: IllegalStateException("Error al consultar documentos del propietario $ownerUid")
     }
 
     /**

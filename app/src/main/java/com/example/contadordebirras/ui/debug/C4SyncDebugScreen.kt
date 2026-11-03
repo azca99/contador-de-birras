@@ -175,7 +175,7 @@ fun C4SyncDebugScreen(
                         ) {
                             Icon(Icons.Filled.CloudDownload, contentDescription = null)
                             Spacer(modifier = Modifier.width(4.dp))
-                            Text("PULL Sync")
+                            Text("PULL (Descubrir)")
                         }
                     }
                 }

@@ -278,6 +278,16 @@ class C4AppSyncManager(
         coordinator.executePull(syncId, ownerUid)
     }
 
+    /**
+     * 7. DESCUBRIMIENTO REMOTO / PULL POR COLECCIÓN:
+     * Descubre y recupera todas las cervezas del propietario desde Firestore Emulator,
+     * procesando creaciones, actualizaciones y tombstones sin necesidad de conocer
+     * previamente sus syncIds.
+     */
+    suspend fun pullRemoteCollection(): Map<String, C4CoordinatorPullResult> = withContext(Dispatchers.IO) {
+        coordinator.executePullCollection(ownerUid)
+    }
+
     override fun close() {
         try {
             database.close()

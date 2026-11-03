@@ -470,14 +470,15 @@ class AndroidC4SyncCoordinator(
         syncId: String,
         ownerUid: String,
         readScope: RemoteReadScope = RemoteReadScope.AUTHORITATIVE_CONFIRMED,
-        provenance: PullProvenance = PullProvenance()
+        provenance: PullProvenance = PullProvenance(),
+        cachedRemoteDoc: C4FirestoreDocument? = null
     ): C4CoordinatorPullResult {
         // Bloquear lecturas no autoritativas
         if (readScope != RemoteReadScope.AUTHORITATIVE_CONFIRMED) {
             return C4CoordinatorPullResult.Blocked("Lectura no autoritativa: scope debe ser AUTHORITATIVE_CONFIRMED")
         }
 
-        val remoteDoc = firestoreAdapter.readServerDocument(syncId)
+        val remoteDoc = cachedRemoteDoc ?: firestoreAdapter.readServerDocument(syncId)
         val localBeer = persistence.beerDao.getBeerBySyncId(syncId, ownerUid)
 
         if (remoteDoc != null && remoteDoc.userId != ownerUid) {
@@ -679,5 +680,51 @@ class AndroidC4SyncCoordinator(
                 C4CoordinatorPullResult.Blocked(plan.reason)
             }
         }
+    }
+
+    /**
+     * Descubrimiento remoto por colección (PULL por colección).
+     *
+     * Consulta Firestore desde [Source.SERVER] para descubrir todos los documentos pertenecientes
+     * a [ownerUid] (tanto activos como tombstones) y aplica el protocolo de reconciliación
+     * C3B de manera granular para cada cerveza.
+     *
+     * INVARIANTES DE ROBUSTEZ:
+     * - Si la consulta remota falla por red o permisos, NO se interpreta como colección vacía;
+     *   la excepción se propaga directamente al invocador.
+     * - Las cervezas nuevas se insertan mediante [PullPlan.InsertLocal].
+     * - Las cervezas existentes se actualizan de forma monotónica causal.
+     * - Los tombstones remotos se respetan aplicando [PullPlan.ApplyRemoteTombstone].
+     * - Las mutaciones locales pendientes nunca se sobrescriben a ciegas (MergeWithPending).
+     * - Se garantiza estricto aislamiento de propiedad (Ownership isolation).
+     */
+    suspend fun executePullCollection(
+        ownerUid: String,
+        readScope: RemoteReadScope = RemoteReadScope.AUTHORITATIVE_CONFIRMED
+    ): Map<String, C4CoordinatorPullResult> {
+        if (readScope != RemoteReadScope.AUTHORITATIVE_CONFIRMED) {
+            throw IllegalArgumentException("Lectura no autoritativa: scope debe ser AUTHORITATIVE_CONFIRMED")
+        }
+
+        val remoteDocs = firestoreAdapter.queryServerDocuments(ownerUid)
+        val results = mutableMapOf<String, C4CoordinatorPullResult>()
+
+        for (remoteDoc in remoteDocs) {
+            if (remoteDoc.userId != ownerUid) {
+                results[remoteDoc.syncId] = C4CoordinatorPullResult.Blocked(
+                    "Ownership mismatch en PULL colección: documento ${remoteDoc.syncId} pertenece a ${remoteDoc.userId} (esperado: $ownerUid)"
+                )
+                continue
+            }
+
+            results[remoteDoc.syncId] = executePull(
+                syncId = remoteDoc.syncId,
+                ownerUid = ownerUid,
+                readScope = readScope,
+                cachedRemoteDoc = remoteDoc
+            )
+        }
+
+        return results
     }
 }
