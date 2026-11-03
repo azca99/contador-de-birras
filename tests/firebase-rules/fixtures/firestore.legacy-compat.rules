@@ -92,7 +92,7 @@ service cloud.firestore {
     // --- BEERS (PERFIL B: TRANSICION LEGACY-COMPAT) ---
     match /beers/{beerId} {
       function isBeerOwner() {
-        return isSignedIn() && request.auth.uid == resource.data.userId;
+        return isSignedIn() && (resource == null || request.auth.uid == resource.data.userId);
       }
 
       function isValidLastMutationId(id) {

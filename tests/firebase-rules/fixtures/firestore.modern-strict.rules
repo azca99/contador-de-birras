@@ -93,7 +93,7 @@ service cloud.firestore {
     // --- BEERS (PERFIL C: MODERN STRICT PROTOCOL) ---
     match /beers/{beerId} {
       function isBeerOwner() {
-        return isSignedIn() && request.auth.uid == resource.data.userId;
+        return isSignedIn() && (resource == null || request.auth.uid == resource.data.userId);
       }
 
       function isValidLastMutationId(id) {
