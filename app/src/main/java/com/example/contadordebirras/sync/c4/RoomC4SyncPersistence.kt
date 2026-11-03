@@ -36,21 +36,29 @@ class RoomC4SyncPersistence(
         isLocalOnlyCreation: Boolean,
         timestamp: Long = System.currentTimeMillis()
     ): Boolean {
-        // Marcar mutaciones previas pendientes como SUPERSEDED
-        beerDao.supersedePriorPendingHistoryRecords(syncId, ownerUid, mutationId)
+        database.beginTransaction()
+        try {
+            // Marcar mutaciones previas pendientes como SUPERSEDED
+            beerDao.supersedePriorPendingHistoryRecords(syncId, ownerUid, mutationId)
 
-        val record = LocalMutationHistoryEntity(
-            mutationId = mutationId,
-            syncId = syncId,
-            ownerUid = ownerUid,
-            timestamp = timestamp,
-            dirtyFields = dirtyFields ?: "",
-            baseRevision = baseRevision,
-            status = MutationStatus.PENDING,
-            isLocalOnlyCreation = isLocalOnlyCreation
-        )
-        val rowId = beerDao.insertHistoryRecord(record)
-        return rowId > 0
+            val record = LocalMutationHistoryEntity(
+                mutationId = mutationId,
+                syncId = syncId,
+                ownerUid = ownerUid,
+                timestamp = timestamp,
+                dirtyFields = dirtyFields ?: "",
+                baseRevision = baseRevision,
+                status = MutationStatus.PENDING,
+                isLocalOnlyCreation = isLocalOnlyCreation
+            )
+            val rowId = beerDao.insertHistoryRecord(record)
+            if (rowId <= 0) return false
+
+            database.setTransactionSuccessful()
+            return true
+        } finally {
+            database.endTransaction()
+        }
     }
 
     /**
@@ -85,6 +93,7 @@ class RoomC4SyncPersistence(
      * al dirtyFields previo en Room.
      * Avanza remoteRevision a newRemoteRevision pero PRESERVA baseRevision en su valor original.
      * Marca local_mutation_history como PARTIALLY_CONFIRMED.
+     * Garantiza rollback atómico si cualquiera de las actualizaciones falla.
      */
     fun confirmPushPartialPatch(
         syncId: String,
@@ -98,66 +107,128 @@ class RoomC4SyncPersistence(
         clearRemotePhoto: Boolean = false,
         updatedAt: Long = System.currentTimeMillis()
     ): Boolean {
-        val beer = beerDao.getBeerBySyncId(syncId, ownerUid) ?: return false
-        if (beer.syncStatus != SyncStatus.PENDING ||
-            beer.lastMutationId != expectedMutationId ||
-            beer.remoteRevision > newRemoteRevision
-        ) {
-            return false
+        database.beginTransaction()
+        try {
+            val beer = beerDao.getBeerBySyncId(syncId, ownerUid) ?: return false
+            if (beer.syncStatus != SyncStatus.PENDING ||
+                beer.lastMutationId != expectedMutationId ||
+                beer.remoteRevision > newRemoteRevision
+            ) {
+                return false
+            }
+
+            // Validación estricta de partición causal matemática
+            val isPartitionValid = beerDao.validatePartialPatchSpecification(
+                originalDirtyFields = beer.dirtyFields,
+                confirmedFields = confirmedFields,
+                remainingDirtyFields = remainingDirtyFields
+            )
+            if (!isPartitionValid) return false
+
+            val history = beerDao.getHistoryRecordById(expectedMutationId, ownerUid) ?: return false
+            if (history.syncId != syncId ||
+                (history.status != MutationStatus.PENDING && history.status != MutationStatus.PARTIALLY_CONFIRMED)
+            ) {
+                return false
+            }
+
+            // Ejecutar actualización directa de los campos restantes y avance de remoteRevision
+            val updatedPhotoUrl = when {
+                clearRemotePhoto -> null
+                newRemotePhotoUrl != null -> newRemotePhotoUrl
+                else -> beer.remotePhotoUrl
+            }
+            val updatedPhotoSource = when {
+                clearRemotePhoto -> null
+                newPhotoSource != null -> newPhotoSource
+                else -> beer.photoSource
+            }
+
+            // Actualización en tabla beers preservando baseRevision y photoUri
+            val updatedBeer = beer.copy(
+                remoteRevision = newRemoteRevision,
+                // INVARIANTE CAUSAL: baseRevision NO se modifica en parche parcial
+                baseRevision = beer.baseRevision,
+                dirtyFields = remainingDirtyFields,
+                remotePhotoUrl = updatedPhotoUrl,
+                photoSource = updatedPhotoSource,
+                updatedAt = updatedAt
+            )
+
+            // Actualizar entidad beers (comprobación estricta de 1 fila afectada)
+            val updateCount = updateBeerEntityDirect(updatedBeer)
+            if (updateCount != 1) return false
+
+            // Actualizar historial durable a PARTIALLY_CONFIRMED
+            val histUpdated = beerDao.markHistoryRecordPartiallyConfirmed(
+                mutationId = expectedMutationId,
+                syncId = syncId,
+                ownerUid = ownerUid,
+                confirmedRevision = newRemoteRevision,
+                confirmedAt = updatedAt
+            )
+            if (histUpdated != 1) return false
+
+            database.setTransactionSuccessful()
+            return true
+        } finally {
+            database.endTransaction()
         }
+    }
 
-        // Validación estricta de partición causal matemática
-        val isPartitionValid = beerDao.validatePartialPatchSpecification(
-            originalDirtyFields = beer.dirtyFields,
-            confirmedFields = confirmedFields,
-            remainingDirtyFields = remainingDirtyFields
-        )
-        if (!isPartitionValid) return false
+    /**
+     * Confirmación atómica de WriteTombstone:
+     * El documento remoto ya fue borrado en Firestore. En Room:
+     * - Permanece en DELETED (sin borrado físico).
+     * - Adopta la nueva remoteRevision y baseRevision remota.
+     * - Limpia dirtyFields y lastMutationId para no volver a emitir un PUSH redundante.
+     * - Transita el registro de mutación en historial a CONFIRMED.
+     */
+    fun confirmTombstonePushSuccess(
+        syncId: String,
+        ownerUid: String,
+        expectedMutationId: String,
+        newRemoteRevision: Long,
+        timestamp: Long = System.currentTimeMillis()
+    ): Boolean {
+        database.beginTransaction()
+        try {
+            val beer = beerDao.getBeerBySyncId(syncId, ownerUid) ?: return false
+            if (beer.syncStatus != SyncStatus.DELETED) {
+                return false
+            }
 
-        val history = beerDao.getHistoryRecordById(expectedMutationId, ownerUid) ?: return false
-        if (history.syncId != syncId ||
-            (history.status != MutationStatus.PENDING && history.status != MutationStatus.PARTIALLY_CONFIRMED)
-        ) {
-            return false
+            val updatedBeer = beer.copy(
+                syncStatus = SyncStatus.DELETED,
+                remoteRevision = newRemoteRevision,
+                baseRevision = newRemoteRevision,
+                dirtyFields = null,
+                lastMutationId = null,
+                deletedAt = beer.deletedAt ?: timestamp,
+                updatedAt = timestamp
+            )
+            val updateCount = updateBeerEntityDirect(updatedBeer)
+            if (updateCount != 1) return false
+
+            val histUpdated = beerDao.confirmHistoryRecord(
+                mutationId = expectedMutationId,
+                syncId = syncId,
+                ownerUid = ownerUid,
+                confirmedRevision = newRemoteRevision,
+                confirmedAt = timestamp
+            )
+            if (histUpdated != 1) {
+                val existingHistory = beerDao.getHistoryRecordById(expectedMutationId, ownerUid)
+                if (existingHistory == null || existingHistory.status != MutationStatus.CONFIRMED) {
+                    return false
+                }
+            }
+
+            database.setTransactionSuccessful()
+            return true
+        } finally {
+            database.endTransaction()
         }
-
-        // Ejecutar actualización directa de los campos restantes y avance de remoteRevision
-        val updatedPhotoUrl = when {
-            clearRemotePhoto -> null
-            newRemotePhotoUrl != null -> newRemotePhotoUrl
-            else -> beer.remotePhotoUrl
-        }
-        val updatedPhotoSource = when {
-            clearRemotePhoto -> null
-            newPhotoSource != null -> newPhotoSource
-            else -> beer.photoSource
-        }
-
-        // Actualización en tabla beers preservando baseRevision y photoUri
-        val updatedBeer = beer.copy(
-            remoteRevision = newRemoteRevision,
-            // INVARIANTE CAUSAL: baseRevision NO se modifica en parche parcial
-            baseRevision = beer.baseRevision,
-            dirtyFields = remainingDirtyFields,
-            remotePhotoUrl = updatedPhotoUrl,
-            photoSource = updatedPhotoSource,
-            updatedAt = updatedAt
-        )
-
-        // Actualizar entidad beers
-        val updateCount = updateBeerEntityDirect(updatedBeer)
-        if (updateCount != 1) return false
-
-        // Actualizar historial durable a PARTIALLY_CONFIRMED
-        val histUpdated = beerDao.markHistoryRecordPartiallyConfirmed(
-            mutationId = expectedMutationId,
-            syncId = syncId,
-            ownerUid = ownerUid,
-            confirmedRevision = newRemoteRevision,
-            confirmedAt = updatedAt
-        )
-
-        return histUpdated == 1
     }
 
     /**
@@ -171,23 +242,30 @@ class RoomC4SyncPersistence(
         remoteTombstoneRevision: Long,
         timestamp: Long = System.currentTimeMillis()
     ): Boolean {
-        val beer = beerDao.getBeerBySyncId(syncId, ownerUid) ?: return false
+        database.beginTransaction()
+        try {
+            val beer = beerDao.getBeerBySyncId(syncId, ownerUid) ?: return false
 
-        val updatedBeer = beer.copy(
-            syncStatus = SyncStatus.DELETED,
-            deletedAt = timestamp,
-            remoteRevision = remoteTombstoneRevision,
-            baseRevision = remoteTombstoneRevision,
-            dirtyFields = null,
-            lastMutationId = null,
-            updatedAt = timestamp
-        )
-        val updateCount = updateBeerEntityDirect(updatedBeer)
-        if (updateCount != 1) return false
+            val updatedBeer = beer.copy(
+                syncStatus = SyncStatus.DELETED,
+                deletedAt = timestamp,
+                remoteRevision = remoteTombstoneRevision,
+                baseRevision = remoteTombstoneRevision,
+                dirtyFields = null,
+                lastMutationId = null,
+                updatedAt = timestamp
+            )
+            val updateCount = updateBeerEntityDirect(updatedBeer)
+            if (updateCount != 1) return false
 
-        // Marcar la mutación como SUPERSEDED en el historial (nunca CONFIRMED)
-        beerDao.supersedePriorPendingHistoryRecords(syncId, ownerUid, activeMutationId = "none")
-        return true
+            // Marcar la mutación como SUPERSEDED en el historial (nunca CONFIRMED)
+            beerDao.supersedePriorPendingHistoryRecords(syncId, ownerUid, activeMutationId = "none")
+
+            database.setTransactionSuccessful()
+            return true
+        } finally {
+            database.endTransaction()
+        }
     }
 
     /**
@@ -283,29 +361,53 @@ class RoomC4SyncPersistence(
         return beerDao.insertBeer(entity)
     }
 
-    private fun updateBeerEntityDirect(beer: BeerEntity): Int {
-        // En base de datos de pruebas o Room, insertamos o actualizamos preservando id
-        database.openHelper.writableDatabase.execSQL("""
+    fun updateBeerEntityDirect(beer: BeerEntity): Int {
+        val sql = """
             UPDATE beers SET
-                type = '${beer.type.name}',
-                timestamp = ${beer.timestamp},
-                latitude = ${beer.latitude ?: "NULL"},
-                longitude = ${beer.longitude ?: "NULL"},
-                photoUri = ${beer.photoUri?.let { "'$it'" } ?: "NULL"},
-                comment = ${beer.comment?.let { "'$it'" } ?: "NULL"},
-                locationName = ${beer.locationName?.let { "'$it'" } ?: "NULL"},
-                syncStatus = '${beer.syncStatus}',
-                remotePhotoUrl = ${beer.remotePhotoUrl?.let { "'$it'" } ?: "NULL"},
-                updatedAt = ${beer.updatedAt},
-                photoSource = ${beer.photoSource?.let { "'$it'" } ?: "NULL"},
-                remoteRevision = ${beer.remoteRevision},
-                baseRevision = ${beer.baseRevision},
-                dirtyFields = ${beer.dirtyFields?.let { "'$it'" } ?: "NULL"},
-                lastMutationId = ${beer.lastMutationId?.let { "'$it'" } ?: "NULL"},
-                deletedAt = ${beer.deletedAt ?: "NULL"}
-            WHERE syncId = '${beer.syncId}' AND ownerUid = '${beer.ownerUid}'
-        """)
-        return 1
+                type = ?,
+                timestamp = ?,
+                latitude = ?,
+                longitude = ?,
+                photoUri = ?,
+                comment = ?,
+                locationName = ?,
+                syncStatus = ?,
+                remotePhotoUrl = ?,
+                updatedAt = ?,
+                photoSource = ?,
+                remoteRevision = ?,
+                baseRevision = ?,
+                dirtyFields = ?,
+                lastMutationId = ?,
+                deletedAt = ?
+            WHERE syncId = ? AND ownerUid = ?
+        """.trimIndent()
+
+        val statement = database.openHelper.writableDatabase.compileStatement(sql)
+        return try {
+            statement.bindString(1, beer.type.name)
+            statement.bindLong(2, beer.timestamp)
+            if (beer.latitude != null) statement.bindDouble(3, beer.latitude) else statement.bindNull(3)
+            if (beer.longitude != null) statement.bindDouble(4, beer.longitude) else statement.bindNull(4)
+            if (beer.photoUri != null) statement.bindString(5, beer.photoUri) else statement.bindNull(5)
+            if (beer.comment != null) statement.bindString(6, beer.comment) else statement.bindNull(6)
+            if (beer.locationName != null) statement.bindString(7, beer.locationName) else statement.bindNull(7)
+            statement.bindString(8, beer.syncStatus)
+            if (beer.remotePhotoUrl != null) statement.bindString(9, beer.remotePhotoUrl) else statement.bindNull(9)
+            statement.bindLong(10, beer.updatedAt)
+            if (beer.photoSource != null) statement.bindString(11, beer.photoSource) else statement.bindNull(11)
+            statement.bindLong(12, beer.remoteRevision)
+            statement.bindLong(13, beer.baseRevision)
+            if (beer.dirtyFields != null) statement.bindString(14, beer.dirtyFields) else statement.bindNull(14)
+            if (beer.lastMutationId != null) statement.bindString(15, beer.lastMutationId) else statement.bindNull(15)
+            if (beer.deletedAt != null) statement.bindLong(16, beer.deletedAt) else statement.bindNull(16)
+            statement.bindString(17, beer.syncId)
+            statement.bindString(18, beer.ownerUid)
+
+            statement.executeUpdateDelete()
+        } finally {
+            statement.close()
+        }
     }
 
     /**
@@ -321,57 +423,65 @@ class RoomC4SyncPersistence(
         localFieldsToPreserve: Set<BeerDirtyField>,
         remoteDoc: C4FirestoreDocument
     ): Boolean {
-        val beer = beerDao.getBeerBySyncId(syncId, ownerUid) ?: return false
-        if (beer.syncStatus != com.example.contadordebirras.data.SyncStatus.PENDING) return false
+        database.beginTransaction()
+        try {
+            val beer = beerDao.getBeerBySyncId(syncId, ownerUid) ?: return false
+            if (beer.syncStatus != com.example.contadordebirras.data.SyncStatus.PENDING) return false
 
-        var updatedType = beer.type
-        var updatedTimestamp = beer.timestamp
-        var updatedLatitude = beer.latitude
-        var updatedLongitude = beer.longitude
-        var updatedLocationName = beer.locationName
-        var updatedComment = beer.comment
-        var updatedRemotePhotoUrl = beer.remotePhotoUrl
-        var updatedPhotoSource = beer.photoSource
+            var updatedType = beer.type
+            var updatedTimestamp = beer.timestamp
+            var updatedLatitude = beer.latitude
+            var updatedLongitude = beer.longitude
+            var updatedLocationName = beer.locationName
+            var updatedComment = beer.comment
+            var updatedRemotePhotoUrl = beer.remotePhotoUrl
+            var updatedPhotoSource = beer.photoSource
 
-        if (fieldsToApplyFromRemote.contains(BeerDirtyField.TYPE)) {
-            updatedType = try {
-                com.example.contadordebirras.domain.BeerType.valueOf(remoteDoc.type)
-            } catch (_: Exception) {
-                beer.type
+            if (fieldsToApplyFromRemote.contains(BeerDirtyField.TYPE)) {
+                updatedType = try {
+                    com.example.contadordebirras.domain.BeerType.valueOf(remoteDoc.type)
+                } catch (_: Exception) {
+                    beer.type
+                }
             }
-        }
-        if (fieldsToApplyFromRemote.contains(BeerDirtyField.TIMESTAMP)) {
-            updatedTimestamp = remoteDoc.timestamp
-        }
-        if (fieldsToApplyFromRemote.contains(BeerDirtyField.LOCATION)) {
-            updatedLatitude = remoteDoc.latitude
-            updatedLongitude = remoteDoc.longitude
-            updatedLocationName = remoteDoc.locationName
-        }
-        if (fieldsToApplyFromRemote.contains(BeerDirtyField.COMMENT)) {
-            updatedComment = remoteDoc.comment
-        }
-        if (fieldsToApplyFromRemote.contains(BeerDirtyField.PHOTO)) {
-            updatedRemotePhotoUrl = remoteDoc.remotePhotoUrl
-            updatedPhotoSource = remoteDoc.photoSource
-        }
+            if (fieldsToApplyFromRemote.contains(BeerDirtyField.TIMESTAMP)) {
+                updatedTimestamp = remoteDoc.timestamp
+            }
+            if (fieldsToApplyFromRemote.contains(BeerDirtyField.LOCATION)) {
+                updatedLatitude = remoteDoc.latitude
+                updatedLongitude = remoteDoc.longitude
+                updatedLocationName = remoteDoc.locationName
+            }
+            if (fieldsToApplyFromRemote.contains(BeerDirtyField.COMMENT)) {
+                updatedComment = remoteDoc.comment
+            }
+            if (fieldsToApplyFromRemote.contains(BeerDirtyField.PHOTO)) {
+                updatedRemotePhotoUrl = remoteDoc.remotePhotoUrl
+                updatedPhotoSource = remoteDoc.photoSource
+            }
 
-        val updatedBeer = beer.copy(
-            type = updatedType,
-            timestamp = updatedTimestamp,
-            latitude = updatedLatitude,
-            longitude = updatedLongitude,
-            locationName = updatedLocationName,
-            comment = updatedComment,
-            remotePhotoUrl = updatedRemotePhotoUrl,
-            photoSource = updatedPhotoSource,
-            remoteRevision = newRemoteRevision,
-            baseRevision = beer.baseRevision,
-            dirtyFields = BeerDirtyFieldsCodec.encode(localFieldsToPreserve),
-            updatedAt = System.currentTimeMillis()
-        )
+            val updatedBeer = beer.copy(
+                type = updatedType,
+                timestamp = updatedTimestamp,
+                latitude = updatedLatitude,
+                longitude = updatedLongitude,
+                locationName = updatedLocationName,
+                comment = updatedComment,
+                remotePhotoUrl = updatedRemotePhotoUrl,
+                photoSource = updatedPhotoSource,
+                remoteRevision = newRemoteRevision,
+                baseRevision = beer.baseRevision,
+                dirtyFields = BeerDirtyFieldsCodec.encode(localFieldsToPreserve),
+                updatedAt = System.currentTimeMillis()
+            )
 
-        val updatedCount = updateBeerEntityDirect(updatedBeer)
-        return updatedCount == 1
+            val updatedCount = updateBeerEntityDirect(updatedBeer)
+            if (updatedCount != 1) return false
+
+            database.setTransactionSuccessful()
+            return true
+        } finally {
+            database.endTransaction()
+        }
     }
 }

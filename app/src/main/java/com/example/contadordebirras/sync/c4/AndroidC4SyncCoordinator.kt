@@ -352,16 +352,21 @@ class AndroidC4SyncCoordinator(
 
                 when (txResult) {
                     is C4TransactionResult.Success -> {
-                        persistence.beerDao.confirmHistoryRecord(
-                            mutationId = mutationId,
+                        persistence.confirmTombstonePushSuccess(
                             syncId = syncId,
                             ownerUid = ownerUid,
-                            confirmedRevision = txResult.newRevision,
-                            confirmedAt = System.currentTimeMillis()
+                            expectedMutationId = mutationId,
+                            newRemoteRevision = txResult.newRevision
                         )
                         C4CoordinatorPushResult.Success(plan, txResult.newRevision)
                     }
                     is C4TransactionResult.IdempotentAck -> {
+                        persistence.confirmTombstonePushSuccess(
+                            syncId = syncId,
+                            ownerUid = ownerUid,
+                            expectedMutationId = mutationId,
+                            newRemoteRevision = txResult.currentRevision
+                        )
                         C4CoordinatorPushResult.IdempotentRecovery(txResult.currentRevision, mutationId)
                     }
                     is C4TransactionResult.Conflict -> {
@@ -379,12 +384,21 @@ class AndroidC4SyncCoordinator(
 
             is PushPlan.AlreadyApplied -> {
                 val currentRemoteRev = remoteDoc?.revision ?: effectiveRemoteRev
-                persistence.confirmPushFullSuccess(
-                    syncId = syncId,
-                    ownerUid = ownerUid,
-                    expectedMutationId = mutationId,
-                    newRemoteRevision = currentRemoteRev
-                )
+                if (localBeer.syncStatus == SyncStatus.DELETED) {
+                    persistence.confirmTombstonePushSuccess(
+                        syncId = syncId,
+                        ownerUid = ownerUid,
+                        expectedMutationId = mutationId,
+                        newRemoteRevision = currentRemoteRev
+                    )
+                } else {
+                    persistence.confirmPushFullSuccess(
+                        syncId = syncId,
+                        ownerUid = ownerUid,
+                        expectedMutationId = mutationId,
+                        newRemoteRevision = currentRemoteRev
+                    )
+                }
                 C4CoordinatorPushResult.IdempotentRecovery(currentRemoteRev, mutationId)
             }
 

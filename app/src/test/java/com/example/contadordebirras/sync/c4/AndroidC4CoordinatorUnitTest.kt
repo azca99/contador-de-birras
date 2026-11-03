@@ -408,6 +408,94 @@ class AndroidC4CoordinatorUnitTest {
     }
 
     // ---------------------------------------------------------------------------------------------
+    // ESCENARIO TOMBSTONE PUSH: Confirmación coherente en Room sin borrado físico e idempotencia
+    // ---------------------------------------------------------------------------------------------
+    @Test
+    fun scenario_pushWriteTombstone_confirmedInRoomWithoutHardDelete() = runBlocking {
+        val syncId = "sync-${UUID.randomUUID()}"
+        val mutDelete = "mut-del-${UUID.randomUUID()}"
+
+        insertLocalBeer(syncId, aliceUid, SyncStatus.DELETED, 1L, 1L, null, mutDelete)
+        persistence.recordDurableMutationBeforeNetwork(syncId, aliceUid, mutDelete, null, 1L, false)
+
+        val activeRemote = C4FirestoreDocument(
+            syncId = syncId,
+            userId = aliceUid,
+            type = "LATA",
+            timestamp = 1000L,
+            revision = 1L,
+            isDeleted = false,
+            lastMutationId = "mut-init",
+            fieldRevisions = mapOf("TYPE" to 1L, "TIMESTAMP" to 1L, "LOCATION" to 1L, "COMMENT" to 1L, "PHOTO" to 1L)
+        )
+        coEvery { firestoreAdapter.readServerDocument(syncId) } returns activeRemote
+        coEvery {
+            firestoreAdapter.executeWriteTombstone(
+                syncId = syncId,
+                ownerUid = aliceUid,
+                mutationId = mutDelete,
+                baseRevision = 1L
+            )
+        } returns C4TransactionResult.Success(newRevision = 2L, mutationId = mutDelete)
+
+        val pushResult = coordinator.executePush(syncId, aliceUid)
+        assertTrue("WriteTombstone push must succeed: $pushResult", pushResult is C4CoordinatorPushResult.Success)
+        assertEquals(2L, (pushResult as C4CoordinatorPushResult.Success).newRemoteRevision)
+
+        // Verificación Room: la entidad NO se elimina físicamente
+        val local = beerDao.getBeerBySyncId(syncId, aliceUid)
+        assertNotNull("La entidad en Room debe persistir como tombstone (sin borrado físico)", local)
+        assertEquals(SyncStatus.DELETED, local!!.syncStatus)
+        assertEquals(2L, local.remoteRevision)
+        assertEquals(2L, local.baseRevision)
+        assertNull("dirtyFields debe estar limpio tras confirmación", local.dirtyFields)
+        assertNull("lastMutationId debe estar limpio para no repetir PUSH", local.lastMutationId)
+        assertNotNull(local.deletedAt)
+
+        // Historial durable confirmado
+        val history = beerDao.getHistoryRecordById(mutDelete, aliceUid)!!
+        assertEquals(MutationStatus.CONFIRMED, history.status)
+        assertEquals(2L, history.confirmedRevision)
+    }
+
+    @Test
+    fun scenario_pushWriteTombstone_idempotentRetryOnLostAck() = runBlocking {
+        val syncId = "sync-${UUID.randomUUID()}"
+        val mutDelete = "mut-del-${UUID.randomUUID()}"
+
+        insertLocalBeer(syncId, aliceUid, SyncStatus.DELETED, 1L, 1L, null, mutDelete)
+        persistence.recordDurableMutationBeforeNetwork(syncId, aliceUid, mutDelete, null, 1L, false)
+
+        // El servidor ya tiene aplicado el tombstone con este mutationId (pérdida de ACK previa)
+        val tombstoneRemote = C4FirestoreDocument(
+            syncId = syncId,
+            userId = aliceUid,
+            type = "LATA",
+            timestamp = 1000L,
+            revision = 2L,
+            isDeleted = true,
+            lastMutationId = mutDelete,
+            fieldRevisions = mapOf("TYPE" to 1L, "TIMESTAMP" to 1L, "LOCATION" to 1L, "COMMENT" to 1L, "PHOTO" to 1L)
+        )
+        coEvery { firestoreAdapter.readServerDocument(syncId) } returns tombstoneRemote
+
+        val retryResult = coordinator.executePush(syncId, aliceUid)
+        assertTrue("El reintento con mutación previa ya aplicada se recupera limpiamente: $retryResult",
+            retryResult is C4CoordinatorPushResult.IdempotentRecovery)
+
+        // Room debe quedar confirmado sin borrado físico
+        val local = beerDao.getBeerBySyncId(syncId, aliceUid)!!
+        assertEquals(SyncStatus.DELETED, local.syncStatus)
+        assertEquals(2L, local.remoteRevision)
+        assertEquals(2L, local.baseRevision)
+        assertNull(local.lastMutationId)
+
+        val history = beerDao.getHistoryRecordById(mutDelete, aliceUid)!!
+        assertEquals(MutationStatus.CONFIRMED, history.status)
+        assertEquals(2L, history.confirmedRevision)
+    }
+
+    // ---------------------------------------------------------------------------------------------
     // ESCENARIO I: Propietario incorrecto (OwnershipMismatch, datos intactos)
     // ---------------------------------------------------------------------------------------------
     @Test

@@ -19,6 +19,25 @@ class StorageC4SyncAdapter(
     val expectedBucket: String = "${C4SyncConstants.DEMO_PROJECT_ID}.appspot.com"
 ) {
 
+    init {
+        val app = storage.app
+        val projectId = app.options.projectId
+        require(projectId == C4SyncConstants.DEMO_PROJECT_ID) {
+            "PROHIBIDO: Intento de inicializar StorageC4SyncAdapter con projectId no autorizado: $projectId (esperado: ${C4SyncConstants.DEMO_PROJECT_ID})"
+        }
+    }
+
+    companion object {
+        fun computeMd5Base64(bytes: ByteArray): String {
+            val digest = java.security.MessageDigest.getInstance("MD5").digest(bytes)
+            return try {
+                android.util.Base64.encodeToString(digest, android.util.Base64.NO_WRAP)
+            } catch (_: Throwable) {
+                java.util.Base64.getEncoder().encodeToString(digest)
+            }
+        }
+    }
+
     /**
      * Sube una fotografía versionada respetando la inmutabilidad y protegiendo contra sobrescrituras.
      */
@@ -41,16 +60,34 @@ class StorageC4SyncAdapter(
         try {
             val existingMeta = storageRef.metadata.await()
             if (existingMeta != null) {
-                // El archivo ya fue subido exitosamente en un intento anterior
-                return C4StorageResult.Success(remotePath = remotePath, alreadyExisted = true)
+                val remoteMd5 = existingMeta.md5Hash
+                val remoteSize = existingMeta.sizeBytes
+                val expectedSize = photoBytes.size.toLong()
+
+                if (remoteMd5 != null) {
+                    val localMd5 = computeMd5Base64(photoBytes)
+                    if (remoteMd5 == localMd5 && remoteSize == expectedSize) {
+                        return C4StorageResult.Success(remotePath = remotePath, alreadyExisted = true)
+                    } else {
+                        return C4StorageResult.OverwriteRejected(
+                            "Archivo remoto existente difiere en contenido o tamaño del esperado (remoteSize=$remoteSize vs expected=$expectedSize). Sobrescritura prohibida."
+                        )
+                    }
+                } else {
+                    // Si no puede validarse la equivalencia sin hash, bloquear el reintento y documentarlo
+                    return C4StorageResult.OverwriteRejected(
+                        "No se puede validar la equivalencia de contenido del archivo existente (md5Hash ausente en metadatos remotos). Reintento bloqueado."
+                    )
+                }
             }
         } catch (e: StorageException) {
-            // Objeto no existe (esperado para primera subida): continuar
+            // Solo tratar OBJECT_NOT_FOUND como autorización para una primera subida
             if (e.errorCode != StorageException.ERROR_OBJECT_NOT_FOUND) {
-                // Si el error no es NOT_FOUND, podría ser falta de permisos u otro fallo de red
+                return C4StorageResult.Error(e)
             }
-        } catch (_: Exception) {
-            // En emuladores o entornos de prueba si no existe puede lanzar excepción
+        } catch (e: Exception) {
+            // Ante cualquier otro error de red o autenticación, devolver Error y detener
+            return C4StorageResult.Error(e)
         }
 
         // 2. Subida atómica por primera vez

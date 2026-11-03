@@ -28,6 +28,10 @@ class FirestoreC4SyncAdapter(
         require(projectId == expectedProjectId) {
             "PROHIBIDO: Intento de inicializar FirestoreC4SyncAdapter con projectId no autorizado: $projectId (esperado: $expectedProjectId)"
         }
+        val host = firestore.firestoreSettings.host
+        require(host.contains("127.0.0.1") || host.contains("10.0.2.2") || host.contains("localhost")) {
+            "PROHIBIDO: Fallback a producción detectado. Firestore debe apuntar a un host de emulador local (127.0.0.1 o 10.0.2.2). Host actual: $host"
+        }
     }
 
     private val beersCollection = firestore.collection(C4SyncConstants.BEERS_COLLECTION)

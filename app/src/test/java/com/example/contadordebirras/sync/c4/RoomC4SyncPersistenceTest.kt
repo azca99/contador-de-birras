@@ -378,4 +378,163 @@ class RoomC4SyncPersistenceTest {
         )
         assertFalse("Monolithic hard deletion must be blocked in Room", hardDeleteResult)
     }
+
+    @Test
+    fun parameterizedUpdate_safelyHandlesApostrophesInComment() {
+        val testSyncId = "sync-apostrophe-${java.util.UUID.randomUUID()}"
+        val initialComment = "O'Donnell's Dry Irish Stout with d'Or hops"
+        val beer = BeerEntity(
+            id = 0,
+            type = BeerType.PINTA,
+            timestamp = 1000L,
+            latitude = 40.4168,
+            longitude = -3.7038,
+            photoUri = "content://photo/1.jpg",
+            comment = initialComment,
+            locationName = "L'Eixample",
+            syncId = testSyncId,
+            syncStatus = SyncStatus.PENDING,
+            ownerUid = ownerAlice,
+            remoteRevision = 1L,
+            baseRevision = 1L,
+            dirtyFields = "COMMENT",
+            lastMutationId = "mut_apostrophe_1"
+        )
+        beerDao.insertBeer(beer)
+        persistence.recordDurableMutationBeforeNetwork(
+            syncId = testSyncId,
+            ownerUid = ownerAlice,
+            mutationId = "mut_apostrophe_1",
+            dirtyFields = "COMMENT",
+            baseRevision = 1L,
+            isLocalOnlyCreation = false
+        )
+
+        // Actualizar directamente con otro apóstrofo
+        val updatedComment = "D'Artagnan's special reserve at l'Aubergine"
+        val updatedBeer = beer.copy(
+            comment = updatedComment,
+            locationName = "L'Hospitalet"
+        )
+        val rows = persistence.updateBeerEntityDirect(updatedBeer)
+        assertEquals("Debe retornar exactamente 1 fila afectada", 1, rows)
+
+        val retrieved = beerDao.getBeerBySyncId(testSyncId, ownerAlice)
+        assertNotNull(retrieved)
+        assertEquals(updatedComment, retrieved!!.comment)
+        assertEquals("L'Hospitalet", retrieved.locationName)
+    }
+
+    @Test
+    fun updateNonExistentRow_returnsZeroRowsAffected() {
+        val nonExistentBeer = BeerEntity(
+            id = 0,
+            type = BeerType.LATA,
+            timestamp = 1000L,
+            syncId = "does-not-exist-${java.util.UUID.randomUUID()}",
+            syncStatus = SyncStatus.PENDING,
+            ownerUid = ownerAlice,
+            remoteRevision = 1L,
+            baseRevision = 1L,
+            dirtyFields = "COMMENT",
+            lastMutationId = "mut_non_existent"
+        )
+        val rows = persistence.updateBeerEntityDirect(nonExistentBeer)
+        assertEquals("Actualizar fila inexistente debe devolver 0 filas afectadas", 0, rows)
+
+        val partialSuccess = persistence.confirmPushPartialPatch(
+            syncId = nonExistentBeer.syncId,
+            ownerUid = ownerAlice,
+            expectedMutationId = "mut_non_existent",
+            newRemoteRevision = 2L,
+            remainingDirtyFields = "TYPE",
+            confirmedFields = "COMMENT"
+        )
+        assertFalse("Confirmación parcial sobre fila inexistente debe fallar", partialSuccess)
+    }
+
+    @Test
+    fun atomicRollback_whenPartialPatchFailsDuringHistoryOrBeerUpdate() {
+        val testSyncId = "sync-rollback-${java.util.UUID.randomUUID()}"
+        val beer = BeerEntity(
+            id = 0,
+            type = BeerType.LATA,
+            timestamp = 1000L,
+            comment = "Pre-patch comment",
+            syncId = testSyncId,
+            syncStatus = SyncStatus.PENDING,
+            ownerUid = ownerAlice,
+            remoteRevision = 1L,
+            baseRevision = 1L,
+            dirtyFields = "COMMENT,TYPE",
+            lastMutationId = "mut_fail_patch"
+        )
+        beerDao.insertBeer(beer)
+
+        // NOTA: No insertamos registro en local_mutation_history para provocar que falle la transacción atómica
+        val partialSuccess = persistence.confirmPushPartialPatch(
+            syncId = testSyncId,
+            ownerUid = ownerAlice,
+            expectedMutationId = "mut_fail_patch",
+            newRemoteRevision = 2L,
+            remainingDirtyFields = "TYPE",
+            confirmedFields = "COMMENT"
+        )
+        assertFalse("Debe fallar al faltar el registro en el historial", partialSuccess)
+
+        // Comprobar que beers NO fue modificada (rollback total)
+        val unmodified = beerDao.getBeerBySyncId(testSyncId, ownerAlice)!!
+        assertEquals("COMMENT,TYPE", unmodified.dirtyFields)
+        assertEquals(1L, unmodified.remoteRevision)
+        assertEquals("Pre-patch comment", unmodified.comment)
+    }
+
+    @Test
+    fun coherenceBetweenBeerAndHistory_onTombstoneAndFullPush() {
+        val testSyncId = "sync-coherence-${java.util.UUID.randomUUID()}"
+        val mutTomb = "mut_tomb_coherence"
+        val beer = BeerEntity(
+            id = 0,
+            type = BeerType.LATA,
+            timestamp = 1000L,
+            syncId = testSyncId,
+            syncStatus = SyncStatus.DELETED,
+            ownerUid = ownerAlice,
+            remoteRevision = 1L,
+            baseRevision = 1L,
+            dirtyFields = null,
+            lastMutationId = mutTomb,
+            deletedAt = 1000L
+        )
+        beerDao.insertBeer(beer)
+        persistence.recordDurableMutationBeforeNetwork(
+            syncId = testSyncId,
+            ownerUid = ownerAlice,
+            mutationId = mutTomb,
+            dirtyFields = null,
+            baseRevision = 1L,
+            isLocalOnlyCreation = false
+        )
+
+        val tombConfirmed = persistence.confirmTombstonePushSuccess(
+            syncId = testSyncId,
+            ownerUid = ownerAlice,
+            expectedMutationId = mutTomb,
+            newRemoteRevision = 2L
+        )
+        assertTrue(tombConfirmed)
+
+        // Coherencia: la cerveza sigue en DELETED pero no requiere PUSH adicional
+        val beerAfter = beerDao.getBeerBySyncId(testSyncId, ownerAlice)!!
+        assertEquals(SyncStatus.DELETED, beerAfter.syncStatus)
+        assertEquals(2L, beerAfter.remoteRevision)
+        assertEquals(2L, beerAfter.baseRevision)
+        assertNull(beerAfter.dirtyFields)
+        assertNull(beerAfter.lastMutationId)
+
+        // Historial correspondiente está estrictamente CONFIRMED en rev 2
+        val historyAfter = beerDao.getHistoryRecordById(mutTomb, ownerAlice)!!
+        assertEquals(MutationStatus.CONFIRMED, historyAfter.status)
+        assertEquals(2L, historyAfter.confirmedRevision)
+    }
 }

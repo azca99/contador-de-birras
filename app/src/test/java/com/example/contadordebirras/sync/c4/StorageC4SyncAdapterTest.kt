@@ -42,4 +42,16 @@ class StorageC4SyncAdapterTest {
         val path = C4SyncConstants.buildVersionedPhotoPath(ownerUid, syncId, mutationId)
         assertEquals("users/user_alice_test/beers/sync-beer-101_mut-init-202.jpg", path)
     }
+
+    @Test
+    fun computeMd5Base64_producesDeterministicHash() {
+        val bytes1 = "hello world".toByteArray(Charsets.UTF_8)
+        val hash1 = StorageC4SyncAdapter.computeMd5Base64(bytes1)
+        val hash2 = StorageC4SyncAdapter.computeMd5Base64(bytes1)
+        assertEquals(hash1, hash2)
+
+        val bytes2 = "different content".toByteArray(Charsets.UTF_8)
+        val hash3 = StorageC4SyncAdapter.computeMd5Base64(bytes2)
+        assertFalse("Different bytes must produce different MD5", hash1 == hash3)
+    }
 }
