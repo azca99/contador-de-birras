@@ -75,9 +75,19 @@ class C4IntegrationInstrumentedTest {
         val context = ApplicationProvider.getApplicationContext<Context>()
 
         // 1. Configuración de emuladores con fábrica aislada y anti-fallback
+        // En AVDs sin ruta de gateway predeterminada, adb reverse permite túnel directo sobre 127.0.0.1
+        val targetHost = try {
+            java.net.Socket().use { socket ->
+                socket.connect(java.net.InetSocketAddress(C4SyncConstants.EMULATOR_HOST_ANDROID, C4SyncConstants.FIRESTORE_PORT), 1000)
+                C4SyncConstants.EMULATOR_HOST_ANDROID
+            }
+        } catch (_: Exception) {
+            C4SyncConstants.EMULATOR_HOST_LOCAL
+        }
+
         val instances = C4TestEnvironmentFactory.createIsolatedInstances(
             context = context,
-            host = C4SyncConstants.EMULATOR_HOST_ANDROID,
+            host = targetHost,
             authPort = 9099,
             firestorePort = C4SyncConstants.FIRESTORE_PORT,
             storagePort = C4SyncConstants.STORAGE_PORT,
