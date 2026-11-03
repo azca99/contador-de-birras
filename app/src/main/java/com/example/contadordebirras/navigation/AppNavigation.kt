@@ -111,7 +111,9 @@ fun AppNavigation(factory: AppViewModelFactory) {
                     ProfileScreen(
                         viewModel = viewModel(factory = factory),
                         onAchievementsClick = { navController.navigate("achievements") },
-                        onC4DebugClick = { navController.navigate("c4_debug") }
+                        onC4DebugClick = if (com.example.contadordebirras.BuildConfig.DEBUG) {
+                            { navController.navigate("c4_debug") }
+                        } else null
                     )
                 }
                 composable("friends") {
@@ -167,12 +169,14 @@ fun AppNavigation(factory: AppViewModelFactory) {
                         onBack = { navController.popBackStack() }
                     )
                 }
-                composable("c4_debug") {
-                    val debugViewModel: com.example.contadordebirras.ui.debug.C4SyncDebugViewModel = viewModel()
-                    com.example.contadordebirras.ui.debug.C4SyncDebugScreen(
-                        viewModel = debugViewModel,
-                        onBack = { navController.popBackStack() }
-                    )
+                if (com.example.contadordebirras.BuildConfig.DEBUG) {
+                    composable("c4_debug") {
+                        val debugViewModel: com.example.contadordebirras.ui.debug.C4SyncDebugViewModel = viewModel()
+                        com.example.contadordebirras.ui.debug.C4SyncDebugScreen(
+                            viewModel = debugViewModel,
+                            onBack = { navController.popBackStack() }
+                        )
+                    }
                 }
             }
             

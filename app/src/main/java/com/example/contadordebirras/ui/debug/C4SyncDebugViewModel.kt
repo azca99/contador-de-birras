@@ -80,14 +80,11 @@ class C4SyncDebugViewModel(application: Application) : AndroidViewModel(applicat
                         projectId = C4SyncConstants.DEMO_PROJECT_ID
                     )
 
-                    val userUid = withContext(Dispatchers.IO) {
-                        try {
-                            val userCred = instances.auth.signInAnonymously().await()
-                            userCred.user?.uid ?: "debug_user_c4"
-                        } catch (e: Exception) {
-                            "debug_user_c4"
-                        }
+                    val userCred = withContext(Dispatchers.IO) {
+                        instances.auth.signInAnonymously().await()
                     }
+                    val userUid = userCred.user?.uid
+                        ?: throw IllegalStateException("Firebase Auth Emulator no devolvió un usuario autenticado válido.")
 
                     syncManager = C4AppSyncManager.createForTesting(
                         context = getApplication(),
@@ -102,8 +99,10 @@ class C4SyncDebugViewModel(application: Application) : AndroidViewModel(applicat
                 } catch (e: Exception) {
                     C4SyncConfig.isEnabled = false
                     isC4Active.value = false
+                    syncManager?.close()
+                    syncManager = null
                     statusMessage.value = "Error al iniciar C4: ${e.message}"
-                    log("ERROR: ${e.message}")
+                    log("ERROR de autenticación / conexión: ${e.message}")
                 }
             } else {
                 C4SyncConfig.isEnabled = false
