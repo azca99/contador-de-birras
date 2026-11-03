@@ -21,7 +21,11 @@ import androidx.compose.ui.graphics.Color
 import android.widget.Toast
 
 @Composable
-fun ProfileScreen(viewModel: ProfileViewModel, onAchievementsClick: () -> Unit) {
+fun ProfileScreen(
+    viewModel: ProfileViewModel,
+    onAchievementsClick: () -> Unit,
+    onC4DebugClick: (() -> Unit)? = null
+) {
     val alias by viewModel.alias.collectAsState(initial = "")
     val isLocationEnabled by viewModel.isLocationEnabled.collectAsState(initial = false)
     val currentUser by viewModel.currentUser.collectAsState()
@@ -151,6 +155,18 @@ fun ProfileScreen(viewModel: ProfileViewModel, onAchievementsClick: () -> Unit) 
             Spacer(modifier = Modifier.height(8.dp))
             Button(onClick = { launcher.launch(googleSignInClient.signInIntent) }) {
                 Text("Iniciar Sesión con Google")
+            }
+        }
+
+        if (com.example.contadordebirras.BuildConfig.DEBUG) {
+            Spacer(modifier = Modifier.height(24.dp))
+            HorizontalDivider()
+            Spacer(modifier = Modifier.height(12.dp))
+            OutlinedButton(
+                onClick = { onC4DebugClick?.invoke() },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("🔬 Panel de Pruebas C4 (Emulator / Base Descartable)")
             }
         }
     }

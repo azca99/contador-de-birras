@@ -91,6 +91,9 @@ interface BeerDao {
     @Query("SELECT * FROM beers WHERE syncStatus != 'DELETED' AND ownerUid = :ownerUid ORDER BY timestamp DESC")
     fun getAllBeers(ownerUid: String): Flow<List<BeerEntity>>
 
+    @Query("SELECT * FROM beers WHERE syncStatus != 'DELETED' AND ownerUid = :ownerUid ORDER BY timestamp DESC")
+    fun getActiveBeersSync(ownerUid: String): List<BeerEntity>
+
     @Query("SELECT COUNT(*) FROM beers WHERE syncStatus != 'DELETED' AND ownerUid = :ownerUid")
     fun getTotalCount(ownerUid: String): Flow<Int>
 

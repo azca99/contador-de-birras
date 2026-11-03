@@ -110,7 +110,8 @@ fun AppNavigation(factory: AppViewModelFactory) {
                 composable("profile") {
                     ProfileScreen(
                         viewModel = viewModel(factory = factory),
-                        onAchievementsClick = { navController.navigate("achievements") }
+                        onAchievementsClick = { navController.navigate("achievements") },
+                        onC4DebugClick = { navController.navigate("c4_debug") }
                     )
                 }
                 composable("friends") {
@@ -163,6 +164,13 @@ fun AppNavigation(factory: AppViewModelFactory) {
                 composable("achievements") {
                     AchievementsScreen(
                         uiState = viewModel<AchievementsViewModel>(factory = factory).uiState.collectAsState().value,
+                        onBack = { navController.popBackStack() }
+                    )
+                }
+                composable("c4_debug") {
+                    val debugViewModel: com.example.contadordebirras.ui.debug.C4SyncDebugViewModel = viewModel()
+                    com.example.contadordebirras.ui.debug.C4SyncDebugScreen(
+                        viewModel = debugViewModel,
                         onBack = { navController.popBackStack() }
                     )
                 }
