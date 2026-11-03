@@ -1,5 +1,5 @@
 # INFORME TÉCNICO DE INTEGRACIÓN ANDROID AISLADA (FASE C4.4A)
-**Integración de Room v10 + Firebase SDK + Protocolo C4: Corrección Final y Demostración**
+**Integración de Room v10 + Firebase SDK + Protocolo C4: Cierre Definitivo de Riesgos**
 **Fecha:** 3 de Noviembre de 2026  
 **Rama:** `feat/sync-protocol-c4-4a-android-integration`  
 **Base Master:** `8ff051fd7177b48b24b264da33c0b30249360836`  
@@ -9,7 +9,7 @@
 
 ## 1. RESUMEN EJECUTIVO
 
-En la Fase C4.4A se ha completado la arquitectura, corrección de defectos y validación de la **integración Android aislada** del Protocolo de Sincronización C4, conectando de forma rigurosa:
+En la Fase C4.4A se ha completado la arquitectura, corrección de defectos, blindaje preventivo y validación de la **integración Android aislada** del Protocolo de Sincronización C4, conectando de forma rigurosa:
 1. La base de datos local **Room v10** (entidades `BeerEntity` y `LocalMutationHistoryEntity`).
 2. Los planificadores puros de sincronización **C3A (`SyncProtocolPushPlanner`)** y **C3B (`SyncProtocolPullPlanner`)**.
 3. El clasificador formal de compatibilidad legacy **C4.1A (`LegacyBeerClassifier`)**.
@@ -19,12 +19,12 @@ En la Fase C4.4A se ha completado la arquitectura, corrección de defectos y val
 > **Aislamiento Absoluto de Producción:**
 > - El motor en ejecución (`BeerSyncEngine.kt`), los workers de sincronización periódica, la interfaz de usuario y las reglas de producción (`firestore.rules`, `storage.rules`, `firebase.json`) han permanecido **100% intactos e inalterados**.
 > - El nuevo orquestador y sus adaptadores residen exclusivamente en el paquete aislado `com.example.contadordebirras.sync.c4`.
-> - Quedó estrictamente prohibida cualquier conexión o fallback hacia entornos de Firebase en producción (`C4TestEnvironmentFactory` verifica explícitamente el host del emulador antes de inicializar).
+> - Quedó estrictamente prohibida cualquier conexión o fallback hacia entornos de Firebase en producción (`C4TestEnvironmentFactory` verifica obligatoriamente antes de instanciar `FirebaseApp` el proyecto `demo-contador-c44`, los puertos 9099, 8888, 9199 y hosts locales autorizados).
 > - No se ejecutó ningún comando sobre el dispositivo físico (`adb devices` desierto; se respetó íntegramente la ausencia de dispositivos físicos).
 
 ---
 
-## 2. ARQUITECTURA DE COMPONENTES IMPLEMENTADOS (8 COMPONENTES AISLADOS)
+## 2. ARQUITECTURA Y BLINDAJE DE COMPONENTES (8 COMPONENTES AISLADOS)
 
 Todos los componentes de producción aislados se ubican en `app/src/main/java/com/example/contadordebirras/sync/c4/`:
 
@@ -40,7 +40,7 @@ app/src/main/java/com/example/contadordebirras/sync/c4/
 └── C4TestEnvironmentFactory.kt  # Factoría hermética para inicializar FirebaseApp contra emuladores locales
 ```
 
-### Detalle de Responsabilidades, Correcciones y Blindaje:
+### Detalle de Responsabilidades y Cierre de Riesgos:
 
 1. **`C4SyncConstants.kt`**:
    - Define los puertos locales (`Firestore 8888`, `Storage 9199`, `Auth 9099`) y anfitriones (`127.0.0.1` para JVM/host y `10.0.2.2` para AVD).
@@ -62,50 +62,42 @@ app/src/main/java/com/example/contadordebirras/sync/c4/
    - Detecta idempotencia por coincidencia de `lastMutationId`, retornando `IdempotentAck`.
    - Ejecuta `executeWriteTombstone` marcando `isDeleted = true` e incrementando la revisión sin alterar `fieldRevisions`.
 
-5. **`StorageC4SyncAdapter.kt` (Corregido y Blindado)**:
+5. **`StorageC4SyncAdapter.kt`**:
    - Valida el formato de nombrado versionado antes de subir.
    - **Verificación de Identidad con MD5 y Tamaño**: Si el archivo ya existe en Storage, obtiene sus metadatos (`md5Hash`, `sizeBytes`) y los compara con el hash MD5 y tamaño del contenido local mediante `computeMd5Base64`. Si coinciden, retorna éxito idempotente (`alreadyExisted = true`); si los hashes no coinciden o no pueden verificarse, retorna formalmente `OverwriteRejected` impidiendo la corrupción de datos.
-   - **Autorización Estricta de Primera Subida**: Ante `StorageException`, **exclusivamente** el código `StorageException.ERROR_OBJECT_NOT_FOUND` se interpreta como permiso para proceder con `putBytes`. Cualquier otro error (fallo de red, autenticación o permisos) aborta de inmediato retornando `C4StorageResult.Error`.
+   - **Autorización Estricta de Primera Subida**: Ante `StorageException`, **exclusivamente** el código `StorageException.ERROR_OBJECT_NOT_FOUND` se interpreta como permiso para proceder con `putBytes`. Cualquier otro error aborta retornando `C4StorageResult.Error`.
 
-6. **`RoomC4SyncPersistence.kt` (Refactorizado con Sentencias Enlazadas y Transacciones Atómicas)**:
-   - **Eliminación Total de Interpolación de Cadenas**: `updateBeerEntityDirect` ha sido refactorizado para usar sentencias SQLite precompiladas (`compileStatement`) con parámetros enlazados explícitos (`bindString`, `bindLong`, `bindDouble`, `bindNull`), resolviendo vulnerabilidades de inyección y asegurando soporte para cadenas con caracteres especiales o apóstrofos (e.g. `"O'Donnell's Pub"`).
-   - **Retorno Real de Filas Modificadas**: Se utiliza `statement.executeUpdateDelete()`, retornando el número real de filas modificadas (1 o 0) en lugar de valores fijos asumidos.
-   - **Transaccionalidad Atómica y Rollback Estricto**: Las operaciones conjuntas sobre `beers` y `local_mutation_history` están encapsuladas dentro de bloques `beginTransaction()`, `setTransactionSuccessful()` y `endTransaction()`. Si la actualización de la entidad o la del historial no afectan exactamente a 1 fila, la transacción no se marca exitosa y hace rollback automático.
-   - **Confirmación Específica de Tombstones (`confirmTombstonePushSuccess`)**: Cuando se confirma un borrado en el servidor, la entidad local se actualiza a `SyncStatus.DELETED` con `remoteRevision = newRemoteRevision`, `baseRevision = newRemoteRevision`, `dirtyFields = null`, `lastMutationId = null` y el historial pasa a `CONFIRMED`. La entidad se **preserva en Room sin borrado físico**, evitando desincronizaciones o reapariciones espurias.
-   - **Partición Causal y Congelación de BaseRevision**: En `confirmPushPartialPatch`, avanza `remoteRevision` y **mantiene congelada `baseRevision`** para los campos que continúan pendientes, evitando saltos de concurrencia.
-   - **Inmutabilidad de `photoUri`**: Se preserva intacta la URI local de la fotografía como puntero seguro del dispositivo.
+6. **`RoomC4SyncPersistence.kt` (Cierre Estricto de Tombstones)**:
+   - **Parámetros Enlazados y Transaccionalidad Total**: `updateBeerEntityDirect` usa sentencias preparadas con parámetros enlazados explícitos y `executeUpdateDelete()`.
+   - **Validación Estricta en `confirmTombstonePushSuccess`**:
+     * Exige que `beer.lastMutationId == expectedMutationId`. Si la mutación cambió, retorna `false` inmediatamente sin modificar datos.
+     * Valida la existencia y estado elegible del historial (`PENDING` o `PARTIALLY_CONFIRMED`) **ANTES** de aplicar cualquier cambio sobre la entidad `beers`.
+     * Se preserva la fila en `DELETED` con `dirtyFields = null` y `lastMutationId = null` **sin borrado físico**.
+     * Si la actualización de la entidad o el historial no afectan exactamente a 1 fila, se ejecuta rollback atómico automático.
 
-7. **`AndroidC4SyncCoordinator.kt`**:
-   - Orquesta el ciclo de vida de sincronización de cada entidad:
-     * Clasificación previa de compatibilidad con `LegacyBeerClassifier`.
-     * Comprobación estricta de aislamiento de usuario (`OwnershipMismatch`).
-     * Planificación determinista con `SyncProtocolPushPlanner` y `SyncProtocolPullPlanner`.
-     * Manejo preventivo de Storage (si falla o rechaza, la transacción de Firestore jamás se emite).
-     * Recuperación idempotente ante pérdida de ACK (tanto para ediciones activas como para tombstones en `PushPlan.AlreadyApplied`).
+7. **`AndroidC4SyncCoordinator.kt` (Verificación de Confirmaciones Locales)**:
+   - **Comprobación del Boolean de Persistencia**: En todas las ramas de `executePush` (`CreateActive`, `ApplyPatch`, `WriteTombstone`, `AlreadyApplied`, `RemoteTombstoneWins`), se evalúa el `Boolean` devuelto por los métodos de Room persistence.
+   - **Prohibición de Falso Éxito**: Si la persistencia local retorna `false`, el coordinador **jamás** devuelve `Success` ni `IdempotentRecovery`, retornando de forma segura `C4CoordinatorPushResult.Blocked`.
+   - **Conservación de Mutaciones Pendientes**: Al abortar la confirmación y hacer rollback en SQLite, la entidad y su registro en historial retienen su estado original (`PENDING`, `lastMutationId`, `dirtyFields`), garantizando reintentos limpios posteriores.
 
-8. **`C4TestEnvironmentFactory.kt`**:
-   - Configura de forma aislada instancias de `FirebaseApp`, `FirebaseFirestore` y `FirebaseStorage` apuntando exclusivamente a los puertos 8888, 9199 y 9099 con el proyecto `demo-contador-c44`.
-   - Verifica que `firestoreSettings.host` apunte a `127.0.0.1:8888` o `10.0.2.2:8888`, lanzando excepción si se detecta cualquier intento de fallback a servidores remotos.
+8. **`C4TestEnvironmentFactory.kt` (Aislamiento de Emuladores Pre-Inicialización)**:
+   - **Validación Previa Incondicional**: Antes de invocar `FirebaseApp.initializeApp`, valida obligatoriamente:
+     * `projectId == "demo-contador-c44"`
+     * `host in setOf("127.0.0.1", "10.0.2.2", "localhost")`
+     * `authPort == 9099`, `firestorePort == 8888`, `storagePort == 9199`
+   - Si cualquiera diverge, lanza `SecurityException` de inmediato impidiendo la creación del contenedor FirebaseApp.
+   - Incluye verificación post-configuración en `firestoreSettings.host` como defensa en profundidad.
 
 ---
 
-## 3. DIAGNÓSTICO Y RESOLUCIÓN DEL BLOQUEO DE FIREBASE AUTH
+## 3. RESOLUCIÓN DEL BLOQUEO DE FIREBASE AUTH
 
-### Causa Raíz Diagnosticada
-Durante las pruebas con emuladores bajo el runner de JVM (Robolectric), la llamada a `FirebaseAuth.signInAnonymously().await()` o `createUserWithEmailAndPassword().await()` ejecutada dentro de un bloque `runBlocking` sobre el hilo de prueba causaba un bloqueo permanente (deadlock).
-
-1. El hilo de ejecución de un test en Robolectric actúa como el **Main Thread** de Android (`Looper.getMainLooper()`).
-2. Las tareas asíncronas de Firebase Auth (`com.google.android.gms.tasks.Task`) programan sus listeners de finalización para ejecutarse a través de un Handler ligado al Looper principal.
-3. Al invocar `runBlocking` en el hilo principal del test, este hilo queda suspendido esperando la finalización del Task; sin embargo, el Task no puede completar su callback porque el Looper del hilo principal está bloqueado por el propio `runBlocking`.
-4. El Auth Emulator en el puerto 9099 respondió correctamente cuando se procesaron las colas del Looper en un hilo secundario (`Result UID: el1BETcnBUkyq6hKYeBtJ7UDKjee`), demostrando que el servicio del emulador es 100% funcional.
-
-### Estrategia de Aislamiento y Resolución
-Siguiendo las restricciones estrictas del proyecto:
-- **No** se descompilaron ni modificaron archivos binarios internos de `firebase-auth-interop.aar`.
-- **No** se recurrió a reflexión sobre APIs privadas para falsificar tokens de autenticación.
-- Se desacopló la suite en dos niveles claros:
-  1. **Nivel JVM Unit Test (`AndroidC4CoordinatorUnitTest.kt`)**: Cobertura exhaustiva de los 13 escenarios del protocolo (A–M), concurrencia, idempotencia, persistencia atómica y Storage desacoplados de llamadas bloqueantes de red mediante `MockK`.
-  2. **Nivel Instrumented Test (`C4IntegrationInstrumentedTest.kt`)**: Suite instrumentada de integración completa compilada en `app/src/androidTest/`, conteniendo el test `instrumented_multiClientFunctionalDemonstration_withoutMocks` para ejecutar sobre un entorno Android nativo con Auth, Firestore y Storage Emulator.
+### Diagnóstico y Desacoplamiento
+Durante las pruebas bajo Robolectric, invocar `FirebaseAuth.signInAnonymously().await()` dentro de `runBlocking` en el hilo de test generaba un deadlock debido a la dependencia de los callbacks de `com.google.android.gms.tasks.Task` sobre el Looper principal.
+- **Sin modificar SDKs**: No se alteraron archivos `firebase-auth-interop.aar` ni se empleó reflexión sobre APIs privadas.
+- **Desacoplamiento Limpio**:
+  1. Suite JVM (`AndroidC4CoordinatorUnitTest.kt`): Cobertura desacoplada mediante dobles de prueba tipados (`MockK`) con verificación de los 13 escenarios del protocolo más regresiones de fallo de confirmación.
+  2. Suite Instrumented (`C4IntegrationInstrumentedTest.kt`): Preparada y compilada para ejecución nativa sobre AVD desacoplado de hilos.
 
 ---
 
@@ -113,83 +105,51 @@ Siguiendo las restricciones estrictas del proyecto:
 
 | Componente / Suite | Alcance | Resultado | Observaciones |
 | :--- | :--- | :--- | :--- |
-| **Persistencia Room v10** | `RoomC4SyncPersistenceTest.kt` (12 tests) | **PASS** | Parámetros enlazados, apóstrofos en comentarios, rollback atómico, persistencia sin borrado físico de tombstones. |
-| **Adaptador Storage C4** | `StorageC4SyncAdapterTest.kt` (4 tests) | **PASS** | Verificación de hash MD5 y tamaño, exclusividad de `ERROR_OBJECT_NOT_FOUND` para primera subida, inmutabilidad versionada. |
-| **Mappers y Esquema C4** | `C4SerializationAndMappersTest.kt` (5 tests) | **PASS** | Serialización completa de las 5 claves canónicas y conversiones a metadatos de sincronización. |
-| **Coordinador C4 (A–M)** | `AndroidC4CoordinatorUnitTest.kt` (17 tests) | **PASS** | 13 escenarios del protocolo C4 + 2 de Storage + confirmación atómica de tombstones + reintento idempotente tras pérdida de ACK. |
-| **Suite Base del Repositorio** | `testDebugUnitTest` completo (382 tests) | **PASS** | Los 344 tests base preexistentes + 38 nuevos tests C4 pasan con 100% de éxito (`BUILD SUCCESSFUL` en 1m 36s). |
-| **Reglas Firebase C4.3** | `tests/firebase-rules` (74 tests) | **PASS** | Ejecución sobre emuladores oficiales (`demo-contador-c43`): 74 passing (16s) al 100%. |
-| **Compilación Instrumented** | `compileDebugAndroidTestKotlin` | **PASS** | Suite instrumentada C4 compila exitosamente (`BUILD SUCCESSFUL`). |
+| **Persistencia Room v10** | `RoomC4SyncPersistenceTest.kt` (14 tests) | **PASS** | Incluye pruebas negativas de mismatch de `lastMutationId` e historial ausente en `confirmTombstonePushSuccess`. |
+| **Adaptador Storage C4** | `StorageC4SyncAdapterTest.kt` (4 tests) | **PASS** | Hash MD5, tamaño, `ERROR_OBJECT_NOT_FOUND` exclusivo, inmutabilidad versionada. |
+| **Mappers y Esquema C4** | `C4SerializationAndMappersTest.kt` (5 tests) | **PASS** | Serialización canónica de 5 claves de `fieldRevisions`. |
+| **Aislamiento Factory** | `C4TestEnvironmentFactoryTest.kt` (5 tests) | **PASS** | Rechazo preventivo de projectIds, hosts o puertos divergentes antes de instanciar FirebaseApp. |
+| **Coordinador C4 (A–M)** | `AndroidC4CoordinatorUnitTest.kt` (18 tests) | **PASS** | 13 escenarios C4 + Storage + Tombstones + Lost ACK + Regresión de fallo en confirmación local. |
+| **Suite Base del Repositorio** | `testDebugUnitTest` completo (390 tests) | **PASS** | **390 tests passing (100% éxito)** en 1m 52s (`BUILD SUCCESSFUL`). |
+| **Reglas Firebase C4.3** | `tests/firebase-rules` (74 tests) | **PASS** | Emuladores oficiales (`demo-contador-c43`): **74/74 passing (100% éxito)** en 15s. |
+| **Compilación Instrumented** | `compileDebugAndroidTestKotlin` | **PASS** | Suite instrumentada C4 compila exitosamente (`BUILD SUCCESSFUL` en 30s). |
 | **Ensamblado Debug APK** | `assembleDebug` | **PASS** | APK de desarrollo compila sin errores de enlace ni dependencias (`BUILD SUCCESSFUL`). |
-| **Demostración Multi-Cliente** | `C4IntegrationInstrumentedTest.kt` | **NO EJECUTADO EN ESTE ENTORNO** | Código completo y compilado sin mocks. No se dispone de AVD activo en el host; se declara transparentemente sin simular un PASS falso. |
+| **Demostración Multi-Cliente** | `C4IntegrationInstrumentedTest.kt` | **NO EJECUTADO EN ESTE ENTORNO** | Código completo y compilado sin mocks. No se dispone de AVD activo en el host (`adb devices` desierto); se declara transparentemente. |
 
 ---
 
-## 5. TRAZABILIDAD DE ESCENARIOS C4 Y GARANTÍAS DE SEGURIDAD
+## 5. TRAZABILIDAD DE ESCENARIOS C4 Y REGRESIONES DE SEGURIDAD
 
-A continuación se detalla la correspondencia y verificación de cada uno de los escenarios requeridos:
-
-| Escenario | Nombre del Test | Garantía Demostrada |
+| Escenario / Prueba | Nombre del Test | Garantía Demostrada |
 | :--- | :--- | :--- |
-| **Escenario A** | `scenarioA_createActive_localOnlyToRemoteRev1` | Local-only (-1/-1) transita a CreateActive en Firestore rev 1; Room confirma a SYNCED (1/1) y registra historial CONFIRMED. |
-| **Escenario B** | `scenarioB_partialPatch_advancesRemoteRevisionAndPreservesLocalBaseRevision` | PATCH parcial avanza `remoteRevision` a 3; la partición matemática de dirtyFields es validada y `baseRevision` se congela intacta en 2. |
-| **Escenario C** | `scenarioC_conflict_obsoleteRemoteRevisionDetected` | Detección de avance remoto por otro dispositivo; la operación local se bloquea como Conflict y el estado local permanece PENDING. |
-| **Escenario D** | `scenarioD_orthogonalFields_convergeDeterministically` | Dos dispositivos modifican campos ortogonales (`TYPE` vs `COMMENT`); local aplica `MergeWithPending` adoptando `TYPE` remoto y conservando su `COMMENT` pendiente. |
-| **Escenario E** | `scenarioE_concurrentConflictSameField_blockedWithoutOverwrite` | Conflicto concurrente sobre el mismo campo (`COMMENT`); el PULL se bloquea impidiendo la sobrescritura ciega de los datos locales. |
-| **Escenario F** | `scenarioF_lostAckRecovery_recoversViaIdempotentRead` | Pérdida simulada de ACK tras commit en Firestore; el reintento detecta coincidencia de `mutationId` y recupera idempotentemente a SYNCED. |
-| **Escenario G** | `scenarioG_remoteTombstoneWins_marksDeletedAndSupersedesLocalMutation` | Remoto es tombstone rev 2 frente a edición local; prevalece DELETE WINS: local transita a DELETED y la mutación desplazada pasa a SUPERSEDED. |
-| **Escenario H** | `scenarioH_resurrectionBlocked_tombstoneCannotBeOverwrittenWithActive` | Intento de crear entidad sobre un tombstone remoto existente; se bloquea formalmente impidiendo la resurrección. |
-| **Escenario I** | `scenarioI_ownershipMismatch_rejectsForeignAccess` | Un usuario intenta modificar una cerveza perteneciente a otro UID; Firestore transaccional y el coordinador rechazan la operación. |
-| **Escenario J** | `scenarioJ_nonAuthoritativeRead_blocked` | Lectura remota con scope no autoritativo (`INCOMPLETE_OR_UNCONFIRMED`); el PULL se rehúsa a aplicar cambios destructivos o inferir ausencias. |
-| **Escenario K** | `scenarioK_legacyDocument_classifiedAndUpgraded` | Detección de documento remoto sin versión o legacy (rev 0); el coordinador bloquea y exige resolución o migración formal. |
-| **Escenario L** | `scenarioL_invalidCausalMetadata_blocked` | Documento remoto con metadatos causales corruptos (menos de 5 claves en `fieldRevisions`); la operación se bloquea. |
-| **Escenario M** | `scenarioM_idempotentRetry_noDuplicateIncrement` | Reintento de mutación ya confirmada; no se produce incremento espurio de revisión y se retorna el estado ya aplicado. |
-| **Tombstone Room** | `scenario_pushWriteTombstone_confirmedInRoomWithoutHardDelete` | Confirmación de tombstone en Room: la entidad no se elimina físicamente, transita a DELETED, limpia `dirtyFields` y `lastMutationId`, y marca el historial en CONFIRMED. |
-| **Tombstone Retry** | `scenario_pushWriteTombstone_idempotentRetryOnLostAck` | Reintento de subida de tombstone con mutación ya aplicada en el servidor (`AlreadyApplied`): se recupera idempotentemente confirmando Room sin borrado físico. |
-| **Storage 1** | `scenarioStorage_versionedUploadAndPhotoUriPreservation` | Subida versionada inmutable a `users/$owner/beers/${syncId}_$mutationId.jpg`; `photoUri` local se preserva intacto como ruta de contenido. |
-| **Storage 2** | `scenarioStorage_failureHaltsPushBeforeFirestoreTransaction` | Si el upload a Storage es rechazado (`OverwriteRejected`), la transacción a Firestore se cancela preventivamente y Room permanece PENDING. |
-| **Room Apostrophe** | `updateBeerEntityDirect_safelyHandlesApostrophesInComment` | Soporte de comentarios con apóstrofos (`O'Donnell's Pub`) sin fallos de sintaxis SQL gracias a sentencias precompiladas. |
-| **Room Missing Row** | `updateBeerEntityDirect_returnsZeroWhenRowDoesNotExist` | Retorno exacto de 0 filas afectadas ante entidades inexistentes. |
-| **Room Rollback** | `confirmPushPartialPatch_rollsBackIfEntityOrHistoryFails` | Rollback atómico completo de la transacción si falla cualquiera de las actualizaciones entre `beers` y `local_mutation_history`. |
+| **Escenario A** | `scenarioA_createActive_localOnlyToRemoteRev1` | Local-only (-1/-1) transita a CreateActive rev 1; Room confirma a SYNCED (1/1) y registra historial CONFIRMED. |
+| **Escenario B** | `scenarioB_partialPatch_advancesRemoteRevisionAndPreservesLocalBaseRevision` | PATCH parcial avanza `remoteRevision` a 3; dirtyFields particionado y `baseRevision` congelada en 2. |
+| **Escenario C** | `scenarioC_conflict_obsoleteRemoteRevisionDetected` | Avance remoto por otro dispositivo; operación local bloqueada como Conflict y estado local permanece PENDING. |
+| **Escenario D** | `scenarioD_orthogonalFields_convergeDeterministically` | Modificaciones ortogonales (`TYPE` vs `COMMENT`); convergencia determinista adoptando remoto y conservando edición local. |
+| **Escenario E** | `scenarioE_concurrentConflictSameField_blockedWithoutOverwrite` | Conflicto concurrente sobre el mismo campo (`COMMENT`); PULL bloqueado sin sobrescritura ciega. |
+| **Escenario F** | `scenarioF_lostAckRecovery_recoversViaIdempotentRead` | Pérdida simulada de ACK tras commit en Firestore; reintento detecta coincidencia de `mutationId` y recupera idempotentemente a SYNCED. |
+| **Escenario G** | `scenarioG_remoteTombstoneWins_marksDeletedAndSupersedesLocalMutation` | Remoto tombstone rev 2 frente a edición local; prevalece DELETE WINS: local transita a DELETED y mutación desplazada a SUPERSEDED. |
+| **Escenario H** | `scenarioH_resurrectionBlocked_tombstoneCannotBeOverwrittenWithActive` | Intento de crear entidad sobre tombstone existente; bloqueado formalmente impidiendo resurrección. |
+| **Escenario I** | `scenarioI_ownershipMismatch_rejectsForeignAccess` | Modificación sobre UID ajeno rechazada por Firestore transaccional y el coordinador. |
+| **Escenario J** | `scenarioJ_nonAuthoritativeRead_blocked` | Lectura remota no autoritativa; PULL se rehúsa a aplicar cambios o inferir ausencias. |
+| **Escenario K** | `scenarioK_legacyDocument_classifiedAndUpgraded` | Detección de documento remoto legacy (rev 0); coordinador exige resolución o migración formal. |
+| **Escenario L** | `scenarioL_invalidCausalMetadata_blocked` | Documento remoto con metadatos causales incompletos; operación bloqueada. |
+| **Escenario M** | `scenarioM_idempotentRetry_noDuplicateIncrement` | Reintento de mutación ya confirmada; no produce incremento espurio de revisión. |
+| **Tombstone Mismatch** | `confirmTombstonePushSuccess_rejectsWhenLastMutationIdMismatchAndLeavesDataIntact` | Si `lastMutationId` local difiere del esperado, rechaza confirmación y no altera datos. |
+| **Tombstone Sin Historial**| `confirmTombstonePushSuccess_rejectsWhenHistoryIsMissingAndLeavesEntityIntact` | Si falta el registro en `local_mutation_history`, rechaza confirmación y preserva la entidad intacta. |
+| **Tombstone Retry** | `scenario_pushWriteTombstone_idempotentRetryOnLostAck` | Reintento de subida de tombstone con mutación ya aplicada en servidor (`AlreadyApplied`): recuperación idempotente sin borrado físico. |
+| **Regresión Confirmación**| `regression_pushFailsGracefully_whenRoomConfirmationFails_preservesPendingMutation` | Si la confirmación en Room falla (devuelve false), el coordinador devuelve Blocked (nunca Success) y la mutación local permanece PENDING. |
+| **Factory Security 1** | `rejects_invalidProjectId_beforeInitializingFirebaseApp` | Lanza SecurityException si projectId != demo-contador-c44 antes de inicializar FirebaseApp. |
+| **Factory Security 2** | `rejects_unauthorizedHost_beforeInitializingFirebaseApp` | Lanza SecurityException si el host no está en la lista blanca local autorizada. |
+| **Factory Security 3** | `rejects_invalidAuthPort_beforeInitializingFirebaseApp` | Lanza SecurityException si el puerto de Auth diverge de 9099. |
+| **Factory Security 4** | `rejects_invalidFirestorePort_beforeInitializingFirebaseApp` | Lanza SecurityException si el puerto de Firestore diverge de 8888. |
+| **Factory Security 5** | `rejects_invalidStoragePort_beforeInitializingFirebaseApp` | Lanza SecurityException si el puerto de Storage diverge de 9199. |
 
 ---
 
-## 6. DEMOSTRACIÓN MULTI-CLIENTE SIN MOCKS (ESPECIFICACIÓN FORMAL)
+## 6. CONTROL DE ALCANCE Y VERIFICACIÓN GIT
 
-La suite instrumentada `app/src/androidTest/java/com/example/contadordebirras/sync/c4/C4IntegrationInstrumentedTest.kt` contiene la implementación completa del flujo concurrente real entre dos clientes independientes sobre emuladores:
-
-```mermaid
-sequenceDiagram
-    autonumber
-    actor Alice as Cliente A (Room DB A)
-    participant Emu as Firebase Emulators (Auth, Firestore 8888, Storage 9199)
-    actor Bob as Cliente B (Room DB B)
-
-    Alice->>Emu: 1. Sube foto versionada inmutable
-    Alice->>Emu: 2. executeCreateActive(syncId, rev 1, 5 claves = 1)
-    Alice->>Alice: 3. Room A transita a SYNCED (rev 1/1, historial CONFIRMED)
-    
-    Bob->>Emu: 4. executePull(syncId) -> Lee rev 1 con 5 claves
-    Bob->>Bob: 5. Room B inserta entidad como SYNCED (rev 1/1)
-    
-    Alice->>Alice: 6. Edita COMMENT localmente (Room A: PENDING, dirty=COMMENT, lastMutationId=mut2)
-    Alice->>Emu: 7. executeApplyPatch(COMMENT, baseRev=1) -> Firestore rev 2 (COMMENT=2, resto=1)
-    Alice->>Alice: 8. Room A transita a SYNCED (rev 2/2, dirty=null, historial CONFIRMED)
-    
-    Bob->>Emu: 9. executePull(syncId) -> Detecta rev 2 remota
-    Bob->>Bob: 10. Room B actualiza COMMENT adoptando rev 2/2 sin modificar photoUri local
-```
-
-### Características de la Demostración:
-1. **Dos bases de datos Room aisladas**: Representando físicamente a dos terminales independientes (`clientA_db` y `clientB_db`).
-2. **Esquema auténtico**: Las 5 unidades canónicas (`TYPE`, `TIMESTAMP`, `LOCATION`, `COMMENT`, `PHOTO`) inicializadas estrictamente en 1.
-3. **No Mocks**: Utiliza instancias reales de `RoomDatabase`, `FirebaseFirestore` y `FirebaseStorage` apuntando a `demo-contador-c44`.
-
----
-
-## 7. CONTROL DE ALCANCE Y VERIFICACIÓN GIT
-
-La rama `feat/sync-protocol-c4-4a-android-integration` contiene exclusivamente los archivos necesarios para la integración aislada:
+La rama `feat/sync-protocol-c4-4a-android-integration` contiene exclusivamente los componentes aislados de la integración C4.4A:
 
 ```
 Nuevos componentes de producción:
@@ -207,6 +167,7 @@ Nuevas pruebas unitarias e instrumentadas:
 - app/src/test/java/com/example/contadordebirras/sync/c4/StorageC4SyncAdapterTest.kt
 - app/src/test/java/com/example/contadordebirras/sync/c4/C4SerializationAndMappersTest.kt
 - app/src/test/java/com/example/contadordebirras/sync/c4/AndroidC4CoordinatorUnitTest.kt
+- app/src/test/java/com/example/contadordebirras/sync/c4/C4TestEnvironmentFactoryTest.kt
 - app/src/androidTest/java/com/example/contadordebirras/sync/c4/C4IntegrationInstrumentedTest.kt
 - tests/firebase.test.json
 
@@ -223,12 +184,11 @@ Documentación técnica:
 
 ---
 
-## 8. CONCLUSIÓN Y SIGUIENTES PASOS
+## 7. CONCLUSIÓN Y CIERRE DEFINITIVO
 
-La Fase C4.4A queda **completada, corregida y demostrada con rigor técnico total**.
-- La persistencia en Room es segura, parametrizada y atómicamente transaccional con rollback garantizado.
-- El adaptador de Storage verifica hashes MD5 y solo procede ante `ERROR_OBJECT_NOT_FOUND`.
-- Los tombstones se confirman en Room preservando la fila en `DELETED` sin borrado físico.
-- 100% de las pruebas unitarias (382 tests), de emulador de reglas (74 tests) y de compilación instrumentada pasan con éxito.
-
-No se realiza merge directo a `master`. El commit se sella sobre `feat/sync-protocol-c4-4a-android-integration` listo para revisión y posterior integración controlada.
+La Fase C4.4A queda **cerrada y blindada de forma definitiva**:
+- Tombstones: verificación estricta de `lastMutationId`, pre-validación de historial, preservación sin borrado físico.
+- Coordinador: verificación obligatoria de persistencia en Room; fallo local bloquea el PUSH y conserva cambios pendientes.
+- Aislamiento: validación estricta de proyecto, host y puertos antes de instanciar FirebaseApp.
+- 100% de éxito en 390 pruebas unitarias JVM, 74 pruebas de emulador de reglas y ensamblado/compilación Android.
+- No se realiza merge a `master`; cambios publicados en `feat/sync-protocol-c4-4a-android-integration`.

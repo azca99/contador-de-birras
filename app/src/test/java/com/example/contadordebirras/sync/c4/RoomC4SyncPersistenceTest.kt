@@ -537,4 +537,89 @@ class RoomC4SyncPersistenceTest {
         assertEquals(MutationStatus.CONFIRMED, historyAfter.status)
         assertEquals(2L, historyAfter.confirmedRevision)
     }
+
+    @Test
+    fun confirmTombstonePushSuccess_rejectsWhenLastMutationIdMismatchAndLeavesDataIntact() {
+        val testSyncId = "sync-mismatch-${java.util.UUID.randomUUID()}"
+        val activeMutation = "mut_active_tomb"
+        val otherMutation = "mut_other_tomb"
+
+        val beer = BeerEntity(
+            id = 0,
+            type = BeerType.LATA,
+            timestamp = 1000L,
+            syncId = testSyncId,
+            syncStatus = SyncStatus.DELETED,
+            ownerUid = ownerAlice,
+            remoteRevision = 1L,
+            baseRevision = 1L,
+            dirtyFields = null,
+            lastMutationId = activeMutation,
+            deletedAt = 1000L
+        )
+        beerDao.insertBeer(beer)
+        persistence.recordDurableMutationBeforeNetwork(
+            syncId = testSyncId,
+            ownerUid = ownerAlice,
+            mutationId = activeMutation,
+            dirtyFields = null,
+            baseRevision = 1L,
+            isLocalOnlyCreation = false
+        )
+
+        // Intento de confirmar con expectedMutationId erróneo
+        val result = persistence.confirmTombstonePushSuccess(
+            syncId = testSyncId,
+            ownerUid = ownerAlice,
+            expectedMutationId = otherMutation,
+            newRemoteRevision = 2L
+        )
+        assertFalse("Debe rechazar confirmación cuando lastMutationId no coincide con expectedMutationId", result)
+
+        // Los datos en beers no deben modificarse
+        val beerAfter = beerDao.getBeerBySyncId(testSyncId, ownerAlice)!!
+        assertEquals(SyncStatus.DELETED, beerAfter.syncStatus)
+        assertEquals(activeMutation, beerAfter.lastMutationId)
+        assertEquals(1L, beerAfter.remoteRevision)
+        assertEquals(1L, beerAfter.baseRevision)
+
+        // El historial debe permanecer en PENDING
+        val history = beerDao.getHistoryRecordById(activeMutation, ownerAlice)!!
+        assertEquals(MutationStatus.PENDING, history.status)
+        assertNull(history.confirmedRevision)
+    }
+
+    @Test
+    fun confirmTombstonePushSuccess_rejectsWhenHistoryIsMissingAndLeavesEntityIntact() {
+        val testSyncId = "sync-nohist-${java.util.UUID.randomUUID()}"
+        val mutTomb = "mut_tomb_nohist"
+
+        val beer = BeerEntity(
+            id = 0,
+            type = BeerType.LATA,
+            timestamp = 1000L,
+            syncId = testSyncId,
+            syncStatus = SyncStatus.DELETED,
+            ownerUid = ownerAlice,
+            remoteRevision = 1L,
+            baseRevision = 1L,
+            dirtyFields = null,
+            lastMutationId = mutTomb,
+            deletedAt = 1000L
+        )
+        beerDao.insertBeer(beer)
+        // No insertamos registro en local_mutation_history
+
+        val result = persistence.confirmTombstonePushSuccess(
+            syncId = testSyncId,
+            ownerUid = ownerAlice,
+            expectedMutationId = mutTomb,
+            newRemoteRevision = 2L
+        )
+        assertFalse("Debe rechazar confirmación cuando el registro de historial está ausente", result)
+
+        val beerAfter = beerDao.getBeerBySyncId(testSyncId, ownerAlice)!!
+        assertEquals(mutTomb, beerAfter.lastMutationId)
+        assertEquals(1L, beerAfter.remoteRevision)
+    }
 }

@@ -188,30 +188,39 @@ class AndroidC4SyncCoordinator(
                         if (simulateAckLoss) {
                             return C4CoordinatorPushResult.Blocked("ACK perdido simulado tras commit exitoso")
                         }
-                        persistence.confirmPushFullSuccess(
+                        val confirmed = persistence.confirmPushFullSuccess(
                             syncId = syncId,
                             ownerUid = ownerUid,
                             expectedMutationId = mutationId,
                             newRemoteRevision = txResult.newRevision,
                             newRemotePhotoUrl = uploadedPhotoUrl
                         )
+                        if (!confirmed) {
+                            return C4CoordinatorPushResult.Blocked("Fallo al confirmar persistencia Room tras CreateActive para mutación $mutationId")
+                        }
                         C4CoordinatorPushResult.Success(plan, txResult.newRevision)
                     }
                     is C4TransactionResult.IdempotentAck -> {
-                        persistence.confirmPushFullSuccess(
+                        val confirmed = persistence.confirmPushFullSuccess(
                             syncId = syncId,
                             ownerUid = ownerUid,
                             expectedMutationId = mutationId,
                             newRemoteRevision = txResult.currentRevision,
                             newRemotePhotoUrl = uploadedPhotoUrl
                         )
+                        if (!confirmed) {
+                            return C4CoordinatorPushResult.Blocked("Fallo al confirmar persistencia Room tras IdempotentAck en CreateActive para mutación $mutationId")
+                        }
                         C4CoordinatorPushResult.IdempotentRecovery(txResult.currentRevision, mutationId)
                     }
                     is C4TransactionResult.Conflict -> {
                         C4CoordinatorPushResult.Conflict(plan, txResult.currentRevision, txResult.reason)
                     }
                     is C4TransactionResult.TombstonePrevailed -> {
-                        persistence.applyTombstonePrevailed(syncId, ownerUid, mutationId, txResult.currentRevision)
+                        val applied = persistence.applyTombstonePrevailed(syncId, ownerUid, mutationId, txResult.currentRevision)
+                        if (!applied) {
+                            return C4CoordinatorPushResult.Blocked("Fallo al persistir tombstone prevalente en Room")
+                        }
                         C4CoordinatorPushResult.Conflict(plan, txResult.currentRevision, "Tombstone remoto prevalente")
                     }
                     is C4TransactionResult.OwnershipMismatch -> {
@@ -276,7 +285,7 @@ class AndroidC4SyncCoordinator(
                             return C4CoordinatorPushResult.Blocked("ACK perdido simulado tras commit de patch")
                         }
                         val remainingFields = localContext.dirtyFields - plan.fieldsToWrite
-                        if (remainingFields.isEmpty()) {
+                        val confirmed = if (remainingFields.isEmpty()) {
                             // Parche completo confirmado
                             persistence.confirmPushFullSuccess(
                                 syncId = syncId,
@@ -299,11 +308,14 @@ class AndroidC4SyncCoordinator(
                                 newRemotePhotoUrl = uploadedPhotoUrl
                             )
                         }
+                        if (!confirmed) {
+                            return C4CoordinatorPushResult.Blocked("Fallo al confirmar persistencia Room tras ApplyPatch para mutación $mutationId")
+                        }
                         C4CoordinatorPushResult.Success(plan, txResult.newRevision)
                     }
                     is C4TransactionResult.IdempotentAck -> {
                         val remainingFields = localContext.dirtyFields - plan.fieldsToWrite
-                        if (remainingFields.isEmpty()) {
+                        val confirmed = if (remainingFields.isEmpty()) {
                             persistence.confirmPushFullSuccess(
                                 syncId = syncId,
                                 ownerUid = ownerUid,
@@ -324,13 +336,19 @@ class AndroidC4SyncCoordinator(
                                 newRemotePhotoUrl = uploadedPhotoUrl
                             )
                         }
+                        if (!confirmed) {
+                            return C4CoordinatorPushResult.Blocked("Fallo al confirmar persistencia Room tras IdempotentAck en ApplyPatch para mutación $mutationId")
+                        }
                         C4CoordinatorPushResult.IdempotentRecovery(txResult.currentRevision, mutationId)
                     }
                     is C4TransactionResult.Conflict -> {
                         C4CoordinatorPushResult.Conflict(plan, txResult.currentRevision, txResult.reason)
                     }
                     is C4TransactionResult.TombstonePrevailed -> {
-                        persistence.applyTombstonePrevailed(syncId, ownerUid, mutationId, txResult.currentRevision)
+                        val applied = persistence.applyTombstonePrevailed(syncId, ownerUid, mutationId, txResult.currentRevision)
+                        if (!applied) {
+                            return C4CoordinatorPushResult.Blocked("Fallo al persistir tombstone prevalente en Room tras ApplyPatch")
+                        }
                         C4CoordinatorPushResult.Conflict(plan, txResult.currentRevision, "Tombstone remoto prevalente")
                     }
                     is C4TransactionResult.OwnershipMismatch -> {
@@ -352,28 +370,37 @@ class AndroidC4SyncCoordinator(
 
                 when (txResult) {
                     is C4TransactionResult.Success -> {
-                        persistence.confirmTombstonePushSuccess(
+                        val confirmed = persistence.confirmTombstonePushSuccess(
                             syncId = syncId,
                             ownerUid = ownerUid,
                             expectedMutationId = mutationId,
                             newRemoteRevision = txResult.newRevision
                         )
+                        if (!confirmed) {
+                            return C4CoordinatorPushResult.Blocked("Fallo al confirmar persistencia de tombstone en Room para mutación $mutationId")
+                        }
                         C4CoordinatorPushResult.Success(plan, txResult.newRevision)
                     }
                     is C4TransactionResult.IdempotentAck -> {
-                        persistence.confirmTombstonePushSuccess(
+                        val confirmed = persistence.confirmTombstonePushSuccess(
                             syncId = syncId,
                             ownerUid = ownerUid,
                             expectedMutationId = mutationId,
                             newRemoteRevision = txResult.currentRevision
                         )
+                        if (!confirmed) {
+                            return C4CoordinatorPushResult.Blocked("Fallo al confirmar persistencia de tombstone en Room para IdempotentAck en mutación $mutationId")
+                        }
                         C4CoordinatorPushResult.IdempotentRecovery(txResult.currentRevision, mutationId)
                     }
                     is C4TransactionResult.Conflict -> {
                         C4CoordinatorPushResult.Conflict(plan, txResult.currentRevision, txResult.reason)
                     }
                     is C4TransactionResult.TombstonePrevailed -> {
-                        persistence.applyTombstonePrevailed(syncId, ownerUid, mutationId, txResult.currentRevision)
+                        val applied = persistence.applyTombstonePrevailed(syncId, ownerUid, mutationId, txResult.currentRevision)
+                        if (!applied) {
+                            return C4CoordinatorPushResult.Blocked("Fallo al persistir tombstone prevalente en Room tras WriteTombstone")
+                        }
                         C4CoordinatorPushResult.Success(plan, txResult.currentRevision)
                     }
                     else -> {
@@ -384,7 +411,7 @@ class AndroidC4SyncCoordinator(
 
             is PushPlan.AlreadyApplied -> {
                 val currentRemoteRev = remoteDoc?.revision ?: effectiveRemoteRev
-                if (localBeer.syncStatus == SyncStatus.DELETED) {
+                val confirmed = if (localBeer.syncStatus == SyncStatus.DELETED) {
                     persistence.confirmTombstonePushSuccess(
                         syncId = syncId,
                         ownerUid = ownerUid,
@@ -399,6 +426,9 @@ class AndroidC4SyncCoordinator(
                         newRemoteRevision = currentRemoteRev
                     )
                 }
+                if (!confirmed) {
+                    return C4CoordinatorPushResult.Blocked("Fallo al confirmar persistencia Room para mutación ya aplicada $mutationId")
+                }
                 C4CoordinatorPushResult.IdempotentRecovery(currentRemoteRev, mutationId)
             }
 
@@ -408,7 +438,10 @@ class AndroidC4SyncCoordinator(
 
             is PushPlan.RemoteTombstoneWins -> {
                 val tombRev = remoteDoc?.revision ?: 0L
-                persistence.applyTombstonePrevailed(syncId, ownerUid, mutationId, tombRev)
+                val applied = persistence.applyTombstonePrevailed(syncId, ownerUid, mutationId, tombRev)
+                if (!applied) {
+                    return C4CoordinatorPushResult.Blocked("Fallo al persistir tombstone prevalente en Room")
+                }
                 C4CoordinatorPushResult.Conflict(plan, tombRev, "Tombstone remoto prevalente")
             }
 

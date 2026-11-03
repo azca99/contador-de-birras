@@ -677,4 +677,33 @@ class AndroidC4CoordinatorUnitTest {
         val local = beerDao.getBeerBySyncId(syncId, aliceUid)!!
         assertEquals(SyncStatus.PENDING, local.syncStatus)
     }
+
+    // ---------------------------------------------------------------------------------------------
+    // REGRESIÓN: Fallo de confirmación en persistencia Room bloquea PUSH y conserva mutación pendiente
+    // ---------------------------------------------------------------------------------------------
+    @Test
+    fun regression_pushFailsGracefully_whenRoomConfirmationFails_preservesPendingMutation() = runBlocking {
+        val syncId = "sync-${UUID.randomUUID()}"
+        val mutInit = "mut-fail-${UUID.randomUUID()}"
+
+        // Creamos la entidad en Room con una revisión previa superior (remoteRevision = 5L)
+        // para forzar que confirmPushFullSuccess falle al violar monotonía (5L > newRemoteRevision = 1L)
+        insertLocalBeer(syncId, aliceUid, SyncStatus.PENDING, 5L, 5L, allFieldsEncoded, mutInit)
+        persistence.recordDurableMutationBeforeNetwork(syncId, aliceUid, mutInit, allFieldsEncoded, 5L, true)
+
+        coEvery { firestoreAdapter.readServerDocument(syncId) } returns null
+        coEvery { firestoreAdapter.executeCreateActive(syncId, aliceUid, any(), mutInit) } returns
+                C4TransactionResult.Success(newRevision = 1L, mutationId = mutInit)
+
+        val pushResult = coordinator.executePush(syncId, aliceUid)
+        assertTrue("No debe devolver Success si Room falla al confirmar: $pushResult",
+            pushResult is C4CoordinatorPushResult.Blocked)
+
+        // Verificamos que la entidad conserva la mutación pendiente intacta
+        val local = beerDao.getBeerBySyncId(syncId, aliceUid)!!
+        assertEquals(SyncStatus.PENDING, local.syncStatus)
+        assertEquals(mutInit, local.lastMutationId)
+        assertEquals(allFieldsEncoded, local.dirtyFields)
+        assertEquals(5L, local.remoteRevision)
+    }
 }

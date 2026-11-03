@@ -194,7 +194,18 @@ class RoomC4SyncPersistence(
         database.beginTransaction()
         try {
             val beer = beerDao.getBeerBySyncId(syncId, ownerUid) ?: return false
-            if (beer.syncStatus != SyncStatus.DELETED) {
+            if (beer.syncStatus != SyncStatus.DELETED || beer.lastMutationId != expectedMutationId) {
+                return false
+            }
+            if (beer.remoteRevision > newRemoteRevision) {
+                return false
+            }
+
+            // Validar el historial antes de modificar la entidad en beers
+            val history = beerDao.getHistoryRecordById(expectedMutationId, ownerUid) ?: return false
+            if (history.syncId != syncId ||
+                (history.status != MutationStatus.PENDING && history.status != MutationStatus.PARTIALLY_CONFIRMED)
+            ) {
                 return false
             }
 
@@ -218,10 +229,7 @@ class RoomC4SyncPersistence(
                 confirmedAt = timestamp
             )
             if (histUpdated != 1) {
-                val existingHistory = beerDao.getHistoryRecordById(expectedMutationId, ownerUid)
-                if (existingHistory == null || existingHistory.status != MutationStatus.CONFIRMED) {
-                    return false
-                }
+                return false
             }
 
             database.setTransactionSuccessful()
