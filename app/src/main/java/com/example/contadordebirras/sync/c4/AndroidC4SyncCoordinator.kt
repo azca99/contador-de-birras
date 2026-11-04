@@ -3,6 +3,7 @@ package com.example.contadordebirras.sync.c4
 import com.example.contadordebirras.data.MutationStatus
 import com.example.contadordebirras.data.SyncStatus
 import com.example.contadordebirras.domain.*
+import com.google.firebase.firestore.FirebaseFirestoreException
 
 /**
  * Coordinador de Integración Android bajo el Protocolo C4 (Fase C4.4A).
@@ -112,7 +113,14 @@ class AndroidC4SyncCoordinator(
         }
 
         // 4. Lectura remota autoritativa desde SERVER
-        val remoteDoc = firestoreAdapter.readServerDocument(syncId)
+        val remoteDoc = try {
+            firestoreAdapter.readServerDocument(syncId)
+        } catch (e: Exception) {
+            if (e is FirebaseFirestoreException && (e.code == FirebaseFirestoreException.Code.UNAVAILABLE || e.message?.contains("offline") == true)) {
+                return C4CoordinatorPushResult.Offline
+            }
+            throw e
+        }
 
         // 5. Aislamiento estricto de propietario (Ownership)
         if (remoteDoc != null && remoteDoc.userId != ownerUid) {
@@ -225,6 +233,14 @@ class AndroidC4SyncCoordinator(
                     }
                     is C4TransactionResult.OwnershipMismatch -> {
                         C4CoordinatorPushResult.Blocked("Ownership mismatch: ${txResult.documentOwner} != ${txResult.callerOwner}")
+                    }
+                    is C4TransactionResult.Error -> {
+                        val cause = txResult.exception
+                        if (cause is FirebaseFirestoreException && (cause.code == FirebaseFirestoreException.Code.UNAVAILABLE || cause.message?.contains("offline") == true)) {
+                            C4CoordinatorPushResult.Offline
+                        } else {
+                            C4CoordinatorPushResult.Blocked("Error en transacción CreateActive: ${cause.message}")
+                        }
                     }
                     else -> {
                         C4CoordinatorPushResult.Blocked("Transacción CreateActive fallida: $txResult")
@@ -354,6 +370,14 @@ class AndroidC4SyncCoordinator(
                     is C4TransactionResult.OwnershipMismatch -> {
                         C4CoordinatorPushResult.Blocked("Ownership mismatch: ${txResult.documentOwner} != ${txResult.callerOwner}")
                     }
+                    is C4TransactionResult.Error -> {
+                        val cause = txResult.exception
+                        if (cause is FirebaseFirestoreException && (cause.code == FirebaseFirestoreException.Code.UNAVAILABLE || cause.message?.contains("offline") == true)) {
+                            C4CoordinatorPushResult.Offline
+                        } else {
+                            C4CoordinatorPushResult.Blocked("Error en transacción ApplyPatch: ${cause.message}")
+                        }
+                    }
                     else -> {
                         C4CoordinatorPushResult.Blocked("Transacción ApplyPatch fallida: $txResult")
                     }
@@ -402,6 +426,14 @@ class AndroidC4SyncCoordinator(
                             return C4CoordinatorPushResult.Blocked("Fallo al persistir tombstone prevalente en Room tras WriteTombstone")
                         }
                         C4CoordinatorPushResult.Success(plan, txResult.currentRevision)
+                    }
+                    is C4TransactionResult.Error -> {
+                        val cause = txResult.exception
+                        if (cause is FirebaseFirestoreException && (cause.code == FirebaseFirestoreException.Code.UNAVAILABLE || cause.message?.contains("offline") == true)) {
+                            C4CoordinatorPushResult.Offline
+                        } else {
+                            C4CoordinatorPushResult.Blocked("Error en transacción WriteTombstone: ${cause.message}")
+                        }
                     }
                     else -> {
                         C4CoordinatorPushResult.Blocked("Transacción WriteTombstone fallida: $txResult")

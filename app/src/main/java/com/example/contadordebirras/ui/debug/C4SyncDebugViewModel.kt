@@ -36,6 +36,7 @@ import java.util.Locale
 class C4SyncDebugViewModel(application: Application) : AndroidViewModel(application) {
 
     val isC4Active = mutableStateOf(C4SyncConfig.isEnabled)
+    val authEmail = mutableStateOf("c4_shared_user@demo-contador-c44.test")
     val statusMessage = mutableStateOf("Motor C4 inactivo. Activa el toggle para conectar al entorno aislado.")
     val beersList = mutableStateListOf<BeerEntity>()
     val mutationHistory = mutableStateListOf<LocalMutationHistoryEntity>()
@@ -80,8 +81,15 @@ class C4SyncDebugViewModel(application: Application) : AndroidViewModel(applicat
                         projectId = C4SyncConstants.DEMO_PROJECT_ID
                     )
 
+                    val targetEmail = authEmail.value.trim().ifBlank { "c4_shared_user@demo-contador-c44.test" }
+                    val targetPassword = "password123456"
+
                     val userCred = withContext(Dispatchers.IO) {
-                        instances.auth.signInAnonymously().await()
+                        try {
+                            instances.auth.signInWithEmailAndPassword(targetEmail, targetPassword).await()
+                        } catch (_: Exception) {
+                            instances.auth.createUserWithEmailAndPassword(targetEmail, targetPassword).await()
+                        }
                     }
                     val userUid = userCred.user?.uid
                         ?: throw IllegalStateException("Firebase Auth Emulator no devolvió un usuario autenticado válido.")
@@ -90,11 +98,12 @@ class C4SyncDebugViewModel(application: Application) : AndroidViewModel(applicat
                         context = getApplication(),
                         ownerUid = userUid,
                         host = resolvedHost,
-                        inMemory = true,
+                        inMemory = false,
+                        dbName = "c4_debug_disposable.db",
                         instances = instances
                     )
-                    statusMessage.value = "Conectado a Firebase Emulator ($resolvedHost) | UID: ${userUid.take(8)}... | Base Room Descartable"
-                    log("C4 inicializado con éxito en $resolvedHost (proyecto: ${C4SyncConstants.DEMO_PROJECT_ID}, authUid: $userUid)")
+                    statusMessage.value = "Conectado a Firebase Emulator ($resolvedHost) | UID: ${userUid.take(8)}... | Email: $targetEmail"
+                    log("C4 inicializado con éxito en $resolvedHost (proyecto: ${C4SyncConstants.DEMO_PROJECT_ID}, authUid: $userUid, user: $targetEmail)")
                     refreshState()
                 } catch (e: Exception) {
                     C4SyncConfig.isEnabled = false
@@ -114,6 +123,17 @@ class C4SyncDebugViewModel(application: Application) : AndroidViewModel(applicat
                 statusMessage.value = "Motor C4 desactivado. Motor legacy activo para producción."
                 log("C4 desactivado. Base descartable cerrada.")
             }
+        }
+    }
+
+    fun clearLocalDatabase() {
+        val manager = syncManager ?: return
+        viewModelScope.launch {
+            withContext(Dispatchers.IO) {
+                manager.database.clearAllTables()
+            }
+            log("Base Room local reiniciada (tablas vaciadas).")
+            refreshState()
         }
     }
 

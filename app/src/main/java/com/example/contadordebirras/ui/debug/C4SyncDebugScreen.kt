@@ -104,6 +104,24 @@ fun C4SyncDebugScreen(
                             )
                         }
 
+                        if (!isC4Active) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            OutlinedTextField(
+                                value = viewModel.authEmail.value,
+                                onValueChange = { viewModel.authEmail.value = it },
+                                label = { Text("Email Test Auth (Auth Emulator)") },
+                                modifier = Modifier.fillMaxWidth(),
+                                singleLine = true
+                            )
+                        } else {
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = "Cuenta: ${viewModel.authEmail.value}",
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+
                         Spacer(modifier = Modifier.height(8.dp))
                         Text(
                             text = statusMessage,
@@ -152,30 +170,46 @@ fun C4SyncDebugScreen(
                     }
                 }
 
-                // 3. Acciones PUSH y PULL
+                // 3. Acciones PUSH, PULL y Limpieza
                 item {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        Button(
-                            onClick = { viewModel.executePush() },
-                            modifier = Modifier.weight(1f),
-                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
                         ) {
-                            Icon(Icons.Filled.CloudUpload, contentDescription = null)
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("PUSH Sync")
+                            Button(
+                                onClick = { viewModel.executePush() },
+                                modifier = Modifier.weight(1f),
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                            ) {
+                                Icon(Icons.Filled.CloudUpload, contentDescription = null)
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("PUSH Sync")
+                            }
+
+                            Button(
+                                onClick = { viewModel.executePull() },
+                                modifier = Modifier.weight(1f),
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
+                            ) {
+                                Icon(Icons.Filled.CloudDownload, contentDescription = null)
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("PULL (Descubrir)")
+                            }
                         }
 
-                        Button(
-                            onClick = { viewModel.executePull() },
-                            modifier = Modifier.weight(1f),
-                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.End
                         ) {
-                            Icon(Icons.Filled.CloudDownload, contentDescription = null)
-                            Spacer(modifier = Modifier.width(4.dp))
-                            Text("PULL (Descubrir)")
+                            TextButton(
+                                onClick = { viewModel.clearLocalDatabase() },
+                                colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                            ) {
+                                Icon(Icons.Filled.Delete, contentDescription = null, modifier = Modifier.size(16.dp))
+                                Spacer(modifier = Modifier.width(4.dp))
+                                Text("Limpiar Base Room Local")
+                            }
                         }
                     }
                 }
