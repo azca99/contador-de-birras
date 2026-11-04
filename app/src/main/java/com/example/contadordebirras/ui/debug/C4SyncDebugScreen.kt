@@ -214,7 +214,62 @@ fun C4SyncDebugScreen(
                     }
                 }
 
-                // 4. Lista de Cervezas Locales
+                // 4. Panel de Transición y Staging Cutover (Fase C4.5)
+                item {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.tertiaryContainer)
+                    ) {
+                        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(
+                                text = "Transición Legacy a C4 (Fase C4.5)",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onTertiaryContainer
+                            )
+                            Text(
+                                text = "Prueba de migración idempotente sin pérdida de datos en entorno aislado.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onTertiaryContainer
+                            )
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Button(
+                                    onClick = { viewModel.seedLegacyScenario() },
+                                    modifier = Modifier.weight(1f),
+                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.tertiary)
+                                ) {
+                                    Text("1. Sembrar Legacy", fontSize = 12.sp)
+                                }
+
+                                Button(
+                                    onClick = { viewModel.executeCutover() },
+                                    modifier = Modifier.weight(1f),
+                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                                ) {
+                                    Text("2. Ejecutar Cutover", fontSize = 12.sp)
+                                }
+                            }
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.End
+                            ) {
+                                TextButton(
+                                    onClick = { viewModel.rollbackToLegacy() },
+                                    colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                                ) {
+                                    Text("3. Revertir a Legacy (Rollback)", fontSize = 12.sp)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 5. Lista de Cervezas Locales
                 item {
                     Text(
                         text = "Cervezas en Base Descartable (${beers.size})",
@@ -274,7 +329,7 @@ fun C4SyncDebugScreen(
                                 ) {
                                     IconButton(onClick = {
                                         editingSyncId = beer.syncId
-                                        editedCommentText = beer.comment.orEmpty()
+                                        editedCommentText = (beer.comment.orEmpty().ifBlank { "Birra" }) + " (Editada a Rev 2)"
                                     }) {
                                         Icon(Icons.Filled.Edit, contentDescription = "Editar comentario", tint = MaterialTheme.colorScheme.primary)
                                     }

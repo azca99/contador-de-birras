@@ -7,13 +7,17 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.contadordebirras.data.BeerEntity
 import com.example.contadordebirras.data.LocalMutationHistoryEntity
+import com.example.contadordebirras.data.SyncStatus
 import com.example.contadordebirras.domain.BeerType
 import com.example.contadordebirras.sync.c4.C4AppSyncManager
 import com.example.contadordebirras.sync.c4.C4CoordinatorPullResult
 import com.example.contadordebirras.sync.c4.C4CoordinatorPushResult
+import com.example.contadordebirras.sync.c4.C4StagingCutoverManager
 import com.example.contadordebirras.sync.c4.C4SyncConfig
 import com.example.contadordebirras.sync.c4.C4SyncConstants
 import com.example.contadordebirras.sync.c4.C4TestEnvironmentFactory
+import com.example.contadordebirras.sync.c4.CutoverResult
+import com.example.contadordebirras.sync.c4.LegacyBeerFixtures
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -23,6 +27,7 @@ import java.net.Socket
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.UUID
 
 /**
  * ViewModel para el Panel de Control y Pruebas DEBUG del Protocolo C4 (Fase C4.4B).
@@ -44,6 +49,12 @@ class C4SyncDebugViewModel(application: Application) : AndroidViewModel(applicat
 
     private var syncManager: C4AppSyncManager? = null
     private val timeFormat = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
+
+    init {
+        if (C4SyncConfig.isEnabled) {
+            toggleC4(true)
+        }
+    }
 
     private fun log(message: String) {
         val timestamp = timeFormat.format(Date())
@@ -256,6 +267,138 @@ class C4SyncDebugViewModel(application: Application) : AndroidViewModel(applicat
                 refreshState()
             } catch (e: Exception) {
                 log("Error durante PULL por colección: ${e.message}")
+            }
+        }
+    }
+
+    fun seedLegacyScenario() {
+        val manager = syncManager ?: return
+        viewModelScope.launch {
+            try {
+                log("Sembrando escenario legacy (Fase C4.5)...")
+                withContext(Dispatchers.IO) {
+                    val uid = manager.ownerUid
+                    manager.database.clearAllTables()
+
+                    // 1. Cerveza 1: SYNCED 0/0 en Room y en Firestore (con foto)
+                    val beer1SyncId = UUID.randomUUID().toString()
+                    val beer1 = LegacyBeerFixtures.createLegacyRoomBeer(
+                        ownerUid = uid,
+                        syncId = beer1SyncId,
+                        syncStatus = SyncStatus.SYNCED,
+                        comment = "Legacy Birra 1 Sincronizada",
+                        hasRemotePhoto = true
+                    )
+                    manager.database.beerDao().insertBeer(beer1)
+
+                    val doc1Payload = LegacyBeerFixtures.createLegacyFirestorePayload(
+                        userId = uid,
+                        syncId = beer1SyncId,
+                        comment = "Legacy Birra 1 Sincronizada",
+                        hasPhoto = true
+                    )
+                    manager.coordinator.firestoreAdapter.getDocRef(beer1SyncId).set(doc1Payload).await()
+
+                    // 2. Cerveza 2: PENDING 0/0 en Room (creada offline bajo legacy)
+                    val beer2SyncId = UUID.randomUUID().toString()
+                    val beer2 = LegacyBeerFixtures.createLegacyRoomBeer(
+                        ownerUid = uid,
+                        syncId = beer2SyncId,
+                        syncStatus = SyncStatus.PENDING,
+                        comment = "Legacy Birra 2 Offline"
+                    )
+                    manager.database.beerDao().insertBeer(beer2)
+
+                    // 3. Cerveza 3: DELETED 0/0 en Room (borrada offline bajo legacy)
+                    val beer3SyncId = UUID.randomUUID().toString()
+                    val beer3 = LegacyBeerFixtures.createLegacyRoomBeer(
+                        ownerUid = uid,
+                        syncId = beer3SyncId,
+                        syncStatus = SyncStatus.DELETED,
+                        comment = "Legacy Birra 3 Borrada"
+                    )
+                    manager.database.beerDao().insertBeer(beer3)
+                    val doc3Payload = LegacyBeerFixtures.createLegacyFirestorePayload(
+                        userId = uid,
+                        syncId = beer3SyncId,
+                        comment = "Legacy Birra 3 Borrada"
+                    )
+                    manager.coordinator.firestoreAdapter.getDocRef(beer3SyncId).set(doc3Payload).await()
+
+                    // 4. Cerveza 4: En Firestore solamente (creada en otro dispositivo bajo legacy)
+                    val beer4SyncId = UUID.randomUUID().toString()
+                    val doc4Payload = LegacyBeerFixtures.createLegacyFirestorePayload(
+                        userId = uid,
+                        syncId = beer4SyncId,
+                        comment = "Legacy Birra 4 Remota Otro Dispositivo"
+                    )
+                    manager.coordinator.firestoreAdapter.getDocRef(beer4SyncId).set(doc4Payload).await()
+                }
+                log("Escenario legacy sembrado con éxito:")
+                log(" • Room: 1 SYNCED (con foto), 1 PENDING offline, 1 DELETED offline (todos 0/0)")
+                log(" • Firestore: 3 docs legacy sin revisión (Beer 1, Beer 3, Beer 4)")
+                refreshState()
+            } catch (e: Exception) {
+                log("Error al sembrar escenario legacy: ${e.message}")
+            }
+        }
+    }
+
+    fun executeCutover() {
+        val manager = syncManager ?: return
+        viewModelScope.launch {
+            try {
+                log("Iniciando Staging Cutover a Protocolo C4...")
+                val cutoverManager = C4StagingCutoverManager(
+                    coordinator = manager.coordinator,
+                    persistence = manager.persistence,
+                    firestoreAdapter = manager.coordinator.firestoreAdapter
+                )
+                val result = cutoverManager.executeCutover(manager.ownerUid)
+                when (result) {
+                    is CutoverResult.Success -> {
+                        log("Cutover COMPLETADO con éxito:")
+                        log(" • Remotos ascendidos a rev 1: ${result.upgradedRemoteCount}")
+                        log(" • Locales alineadas a moderna: ${result.localAlignedCount}")
+                        log(" • Locales offline promovidas a C4: ${result.localPromotedCount}")
+                        log(" • Tombstones locales procesados: ${result.localTombstonesCount}")
+                        log(" • Remotas descubiertas: ${result.remoteDiscoveredCount}")
+                        log(" • PUSH pendientes confirmados: ${result.pushedPendingCount}")
+                        result.details.forEach { log("   $it") }
+                    }
+                    is CutoverResult.AlreadyUpToDate -> {
+                        log("Cutover ya estaba al día (idempotente): ${result.message} (Total activas: ${result.totalActiveBeers})")
+                    }
+                    is CutoverResult.Blocked -> {
+                        log("Cutover BLOQUEADO: ${result.reason}")
+                    }
+                    is CutoverResult.Error -> {
+                        log("ERROR durante cutover: ${result.exception.message}")
+                    }
+                }
+                refreshState()
+            } catch (e: Exception) {
+                log("Excepción durante cutover: ${e.message}")
+            }
+        }
+    }
+
+    fun rollbackToLegacy() {
+        val manager = syncManager ?: return
+        viewModelScope.launch {
+            try {
+                val cutoverManager = C4StagingCutoverManager(
+                    coordinator = manager.coordinator,
+                    persistence = manager.persistence,
+                    firestoreAdapter = manager.coordinator.firestoreAdapter
+                )
+                cutoverManager.rollbackToLegacy()
+                isC4Active.value = false
+                statusMessage.value = "Motor C4 desactivado por Rollback. Motor legacy activo para producción."
+                log("Rollback ejecutado: Motor C4 desactivado, modo revertido a LEGACY. Base Room intacta.")
+                refreshState()
+            } catch (e: Exception) {
+                log("Error al revertir a legacy: ${e.message}")
             }
         }
     }

@@ -492,4 +492,151 @@ class RoomC4SyncPersistence(
             database.endTransaction()
         }
     }
+
+    /**
+     * Prepara una fila local PENDING legacy (0/0) para su transición segura a local-only (-1/-1).
+     * Registra de forma durable la mutación en local_mutation_history para emitir CreateActive.
+     */
+    fun prepareLegacyPendingForLocalOnlyCreation(
+        syncId: String,
+        ownerUid: String,
+        initialMutationId: String,
+        dirtyFields: String
+    ): Boolean {
+        database.beginTransaction()
+        try {
+            val beer = beerDao.getBeerBySyncId(syncId, ownerUid) ?: return false
+            if (beer.syncStatus != SyncStatus.PENDING || beer.remoteRevision != 0L || beer.baseRevision != 0L) {
+                return false
+            }
+
+            val updatedBeer = beer.copy(
+                remoteRevision = -1L,
+                baseRevision = -1L,
+                dirtyFields = dirtyFields,
+                lastMutationId = initialMutationId
+            )
+            val updated = updateBeerEntityDirect(updatedBeer)
+            if (updated != 1) return false
+
+            val record = LocalMutationHistoryEntity(
+                mutationId = initialMutationId,
+                syncId = syncId,
+                ownerUid = ownerUid,
+                timestamp = beer.updatedAt,
+                dirtyFields = dirtyFields,
+                baseRevision = -1L,
+                status = MutationStatus.PENDING,
+                isLocalOnlyCreation = true
+            )
+            val rowId = beerDao.insertHistoryRecord(record)
+            if (rowId <= 0) return false
+
+            database.setTransactionSuccessful()
+            return true
+        } finally {
+            database.endTransaction()
+        }
+    }
+
+    /**
+     * Alinea una fila SYNCED legacy con la revisión moderna remota confirmada.
+     */
+    fun alignLegacySyncedToModern(
+        syncId: String,
+        ownerUid: String,
+        modernRevision: Long
+    ): Boolean {
+        database.beginTransaction()
+        try {
+            val beer = beerDao.getBeerBySyncId(syncId, ownerUid) ?: return false
+            if (beer.syncStatus != SyncStatus.SYNCED) return false
+
+            val updatedBeer = beer.copy(
+                remoteRevision = modernRevision,
+                baseRevision = modernRevision,
+                dirtyFields = null,
+                lastMutationId = null
+            )
+            val updated = updateBeerEntityDirect(updatedBeer)
+            if (updated != 1) return false
+
+            database.setTransactionSuccessful()
+            return true
+        } finally {
+            database.endTransaction()
+        }
+    }
+
+    /**
+     * Prepara una fila local DELETED legacy (0/0) para emitir WriteTombstone bajo el protocolo C4.
+     */
+    fun prepareLegacyDeletedForTombstone(
+        syncId: String,
+        ownerUid: String,
+        tombstoneMutationId: String,
+        baseRevision: Long = 0L
+    ): Boolean {
+        database.beginTransaction()
+        try {
+            val beer = beerDao.getBeerBySyncId(syncId, ownerUid) ?: return false
+            if (beer.syncStatus != SyncStatus.DELETED) return false
+
+            val effectiveBaseRev = if (baseRevision > 0L) baseRevision else beer.baseRevision
+            val updatedBeer = beer.copy(
+                remoteRevision = effectiveBaseRev,
+                baseRevision = effectiveBaseRev,
+                lastMutationId = tombstoneMutationId,
+                deletedAt = beer.deletedAt ?: System.currentTimeMillis()
+            )
+            val updated = updateBeerEntityDirect(updatedBeer)
+            if (updated != 1) return false
+
+            val record = LocalMutationHistoryEntity(
+                mutationId = tombstoneMutationId,
+                syncId = syncId,
+                ownerUid = ownerUid,
+                timestamp = updatedBeer.deletedAt ?: System.currentTimeMillis(),
+                dirtyFields = "",
+                baseRevision = effectiveBaseRev,
+                status = MutationStatus.PENDING,
+                isLocalOnlyCreation = false
+            )
+            val rowId = beerDao.insertHistoryRecord(record)
+            if (rowId <= 0) return false
+
+            database.setTransactionSuccessful()
+            return true
+        } finally {
+            database.endTransaction()
+        }
+    }
+
+    /**
+     * Marca una fila legacy local previamente SYNCED como DELETED al detectarse que el documento
+     * remoto fue eliminado físicamente en la era legacy. Anti-resurrección.
+     */
+    fun markLegacyAbsentAsDeleted(
+        syncId: String,
+        ownerUid: String,
+        deletedAt: Long = System.currentTimeMillis()
+    ): Boolean {
+        database.beginTransaction()
+        try {
+            val beer = beerDao.getBeerBySyncId(syncId, ownerUid) ?: return false
+            val updatedBeer = beer.copy(
+                syncStatus = SyncStatus.DELETED,
+                deletedAt = deletedAt,
+                dirtyFields = null,
+                lastMutationId = null
+            )
+            val updated = updateBeerEntityDirect(updatedBeer)
+            if (updated != 1) return false
+
+            database.setTransactionSuccessful()
+            return true
+        } finally {
+            database.endTransaction()
+        }
+    }
 }

@@ -1,9 +1,9 @@
 {
   "firestore": {
-    "rules": "firebase-rules/fixtures/firestore.modern-strict.rules"
+    "rules": "firebase-rules/fixtures/firestore.legacy-compat.rules"
   },
   "storage": {
-    "rules": "firebase-rules/fixtures/storage.modern-strict.rules"
+    "rules": "firebase-rules/fixtures/storage.legacy-compat.rules"
   },
   "emulators": {
     "auth": {

@@ -308,6 +308,12 @@ class FirestoreC4SyncAdapter(
                     )
                 }
 
+                if (snapshot.getLong("revision") == null) {
+                    // Documento legacy sin revisión en Firestore: se elimina físicamente conforme a allow delete legacy
+                    tx.delete(docRef)
+                    return@runTransaction C4TransactionResult.Success(newRevision = 1L, mutationId = mutationId)
+                }
+
                 val nextRevision = baseRevision + 1L
 
                 @Suppress("UNCHECKED_CAST")
@@ -325,6 +331,61 @@ class FirestoreC4SyncAdapter(
 
                 tx.update(docRef, updates)
                 C4TransactionResult.Success(newRevision = nextRevision, mutationId = mutationId)
+            }.await()
+        } catch (e: Exception) {
+            C4TransactionResult.Error(e)
+        }
+    }
+
+    /**
+     * Transacción de migración/ascenso: LegacyUpgrade (Fase C4.5).
+     *
+     * Asciende un documento legacy (que carece de campo 'revision') al protocolo moderno
+     * de forma atómica en revisión 1, con las 5 claves canónicas en 1 e isDeleted = false.
+     * Conforme a la regla de seguridad [isLegacyUpgrade] del perfil legacy-compat.
+     * Si el documento ya fue ascendido, devuelve IdempotentAck sin modificar nada.
+     */
+    suspend fun executeLegacyUpgrade(
+        syncId: String,
+        ownerUid: String,
+        migrationMutationId: String
+    ): C4TransactionResult {
+        val docRef = getDocRef(syncId)
+
+        return try {
+            firestore.runTransaction { tx ->
+                val snapshot = tx.get(docRef)
+                if (!snapshot.exists()) {
+                    return@runTransaction C4TransactionResult.NotFound
+                }
+
+                val remoteOwner = snapshot.getString("userId")
+                if (remoteOwner != ownerUid) {
+                    return@runTransaction C4TransactionResult.OwnershipMismatch(
+                        documentOwner = remoteOwner ?: "unknown",
+                        callerOwner = ownerUid
+                    )
+                }
+
+                val remoteRevision = snapshot.getLong("revision")
+                if (remoteRevision != null && remoteRevision >= 1L) {
+                    val remoteMutationId = snapshot.getString("lastMutationId") ?: migrationMutationId
+                    return@runTransaction C4TransactionResult.IdempotentAck(
+                        currentRevision = remoteRevision,
+                        mutationId = remoteMutationId
+                    )
+                }
+
+                val updates = mapOf(
+                    "revision" to 1L,
+                    "isDeleted" to false,
+                    "lastMutationId" to migrationMutationId,
+                    "fieldRevisions" to C4FirestoreDocument.canonicalCreationFieldRevisions(1L),
+                    "updatedAt" to System.currentTimeMillis()
+                )
+
+                tx.update(docRef, updates)
+                C4TransactionResult.Success(newRevision = 1L, mutationId = migrationMutationId)
             }.await()
         } catch (e: Exception) {
             C4TransactionResult.Error(e)

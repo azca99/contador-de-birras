@@ -108,6 +108,7 @@ class C4AppSyncManager(
     ): Boolean = withContext(Dispatchers.IO) {
         val current = persistence.beerDao.getBeerBySyncId(syncId, ownerUid) ?: return@withContext false
         if (current.syncStatus == SyncStatus.DELETED) return@withContext false
+        if (current.syncStatus == SyncStatus.SYNCED && current.comment == newComment) return@withContext true
 
         val mutationId = UUID.randomUUID().toString()
         val changedFields = setOf(BeerDirtyField.COMMENT)
@@ -248,7 +249,7 @@ class C4AppSyncManager(
     suspend fun pushAllPending(
         photoBytesMap: Map<String, ByteArray> = emptyMap()
     ): Map<String, C4CoordinatorPushResult> = withContext(Dispatchers.IO) {
-        val pendingBeers = persistence.beerDao.getPendingSyncBeers(ownerUid)
+        val pendingBeers = persistence.beerDao.getPendingSyncBeers(ownerUid).filter { it.lastMutationId != null }
         val results = mutableMapOf<String, C4CoordinatorPushResult>()
         for (beer in pendingBeers) {
             val history = persistence.historyDao.getMutationsForBeer(beer.syncId, ownerUid)

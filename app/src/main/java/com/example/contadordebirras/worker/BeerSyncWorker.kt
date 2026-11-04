@@ -31,12 +31,26 @@ class BeerSyncWorker(
             return Result.success()
         }
 
-        return syncExecutionMutex.withLock {
-            val validUid = FirebaseAuth.getInstance().currentUser?.uid
-            if (validUid != expectedUid) {
-                // Auth changed or became null while waiting for the mutex
-                return@withLock Result.success()
-            }
+        // Exclusión mutua con protocolo C4 y proceso de migración cutover
+        if (com.example.contadordebirras.sync.c4.C4SyncConfig.isEnabled ||
+            com.example.contadordebirras.sync.c4.C4SyncConfig.engineMode != com.example.contadordebirras.sync.c4.SyncEngineMode.LEGACY
+        ) {
+            return Result.success()
+        }
+
+        return com.example.contadordebirras.sync.c4.C4SyncConfig.syncExecutionMutex.withLock {
+            syncExecutionMutex.withLock {
+                val validUid = FirebaseAuth.getInstance().currentUser?.uid
+                if (validUid != expectedUid) {
+                    // Auth changed or became null while waiting for the mutex
+                    return@withLock Result.success()
+                }
+
+                if (com.example.contadordebirras.sync.c4.C4SyncConfig.isEnabled ||
+                    com.example.contadordebirras.sync.c4.C4SyncConfig.engineMode != com.example.contadordebirras.sync.c4.SyncEngineMode.LEGACY
+                ) {
+                    return@withLock Result.success()
+                }
 
             val beerDao = BeerDatabase.getDatabase(applicationContext).beerDao()
             val auth = FirebaseAuth.getInstance()
@@ -67,4 +81,5 @@ class BeerSyncWorker(
             }
         }
     }
+}
 }
