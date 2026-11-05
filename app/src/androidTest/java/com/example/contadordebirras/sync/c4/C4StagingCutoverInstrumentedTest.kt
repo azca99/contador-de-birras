@@ -259,11 +259,12 @@ class C4StagingCutoverInstrumentedTest {
         // PASO 7: Frontera de irreversibilidad en Rollback
         // =========================================================================
         val rollbackResult = cutoverManager.rollbackToLegacy(testUserUid)
-        assertTrue("El cliente local revierte a LEGACY", rollbackResult.isLocalReverted)
-        assertEquals(SyncEngineMode.LEGACY, C4SyncConfig.engineMode)
+        assertTrue("El cliente local revierte y desactiva C4", rollbackResult.isLocalReverted)
+        assertEquals("El motor debe permanecer DETENIDO (HALTED) por documentos modernizados", SyncEngineMode.HALTED, C4SyncConfig.engineMode)
         assertFalse(C4SyncConfig.isEnabled)
+        assertFalse(rollbackResult.isLegacyReactivated)
         assertTrue("Se debe marcar alcanzado el punto de no retorno remoto", rollbackResult.pointOfNoReturnReached)
-        assertTrue("Debe incluir advertencia de irreversibilidad", rollbackResult.warningMessage.contains("IRREVERSIBLE"))
+        assertTrue("Debe incluir advertencia de no reactivar escrituras legacy", rollbackResult.warningMessage.contains("NO se reactivan escrituras legacy"))
 
         // Limpieza de foto local de prueba
         localPhotoFile.delete()

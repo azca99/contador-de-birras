@@ -58,7 +58,9 @@ data class RollbackResult(
     val isLocalReverted: Boolean,
     val remoteUpgradedCount: Int,
     val pointOfNoReturnReached: Boolean,
-    val warningMessage: String
+    val warningMessage: String,
+    val isRemoteStateUnknown: Boolean = false,
+    val isLegacyReactivated: Boolean = false
 )
 
 /**
@@ -129,30 +131,65 @@ class C4StagingCutoverManager(
      */
     suspend fun rollbackToLegacy(ownerUid: String? = null): RollbackResult {
         return C4SyncConfig.syncExecutionMutex.withLock {
-            C4SyncConfig.engineMode = SyncEngineMode.LEGACY
-            C4SyncConfig.isEnabled = false
-
+            // 1. Consultar el estado remoto ANTES de decidir si puede volver a Legacy
             var remoteUpgradedCount = 0
+            var isRemoteStateUnknown = false
+            var remoteQueryError: String? = null
+
             if (!ownerUid.isNullOrBlank()) {
                 try {
                     val remoteDocs = firestoreAdapter.queryServerDocuments(ownerUid)
                     remoteUpgradedCount = remoteDocs.count { it.revision >= 1L }
-                } catch (_: Exception) {}
-            }
-
-            val pointOfNoReturn = remoteUpgradedCount > 0
-            val warning = if (pointOfNoReturn) {
-                "ADVERTENCIA DE SEGURIDAD: El motor local ha revertido a LEGACY y sus datos locales están preservados. Sin embargo, $remoteUpgradedCount documento(s) en Firestore ya fueron ascendidos a revisión >= 1. Las reglas de Firestore impedirán que clientes legacy modifiquen o borren estos documentos modernizados. El rollback remoto completo es IRREVERSIBLE desde el cliente y requiere intervención administrativa en Firestore."
+                } catch (e: Exception) {
+                    isRemoteStateUnknown = true
+                    remoteQueryError = e.message ?: e.javaClass.simpleName
+                }
             } else {
-                "Rollback local completado exitosamente: ningún documento remoto había sido ascendido. Entorno en estado LEGACY puro."
+                isRemoteStateUnknown = true
+                remoteQueryError = "ownerUid no proporcionado para verificar estado remoto"
             }
 
-            RollbackResult(
-                isLocalReverted = true,
-                remoteUpgradedCount = remoteUpgradedCount,
-                pointOfNoReturnReached = pointOfNoReturn,
-                warningMessage = warning
-            )
+            // Desactivar siempre el motor C4 local
+            C4SyncConfig.isEnabled = false
+
+            // 2. Evaluar según el estado remoto verificado
+            if (isRemoteStateUnknown) {
+                // Estado remoto DESCONOCIDO: No reactivar legacy y mantener el motor detenido en estado seguro
+                C4SyncConfig.engineMode = SyncEngineMode.HALTED
+                val warning = "ESTADO REMOTO DESCONOCIDO: No se pudo verificar el estado en Firestore ($remoteQueryError). Por seguridad para evitar inconsistencias o rechazo de reglas, NO se reactivan escrituras legacy incompatibles y el motor permanece DETENIDO en estado seguro. NO se puede afirmar que el rollback sea seguro hasta verificar el servidor."
+                RollbackResult(
+                    isLocalReverted = true,
+                    remoteUpgradedCount = -1,
+                    pointOfNoReturnReached = true,
+                    isRemoteStateUnknown = true,
+                    isLegacyReactivated = false,
+                    warningMessage = warning
+                )
+            } else if (remoteUpgradedCount > 0) {
+                // Existen documentos modernizados: NO reactivar escrituras legacy incompatibles
+                C4SyncConfig.engineMode = SyncEngineMode.HALTED
+                val warning = "PUNTO DE NO RETORNO ALCANZADO: $remoteUpgradedCount documento(s) en Firestore ya fueron ascendidos a revisión >= 1. Las reglas de Firestore impedirán que clientes legacy modifiquen o borren estos documentos modernizados. NO se reactivan escrituras legacy automáticas para evitar rechazos o inconsistencias. El motor permanece DETENIDO en estado seguro hasta resolver la cuenta o completar la transición."
+                RollbackResult(
+                    isLocalReverted = true,
+                    remoteUpgradedCount = remoteUpgradedCount,
+                    pointOfNoReturnReached = true,
+                    isRemoteStateUnknown = false,
+                    isLegacyReactivated = false,
+                    warningMessage = warning
+                )
+            } else {
+                // Estado remoto verificado con 0 documentos modernizados: seguro volver a Legacy
+                C4SyncConfig.engineMode = SyncEngineMode.LEGACY
+                val warning = "Rollback local seguro completado: Se verificó el estado remoto y ningún documento fue modernizado (0 documentos con revisión >= 1). El motor Legacy se ha reactivado con total seguridad."
+                RollbackResult(
+                    isLocalReverted = true,
+                    remoteUpgradedCount = 0,
+                    pointOfNoReturnReached = false,
+                    isRemoteStateUnknown = false,
+                    isLegacyReactivated = true,
+                    warningMessage = warning
+                )
+            }
         }
     }
 
@@ -183,31 +220,52 @@ class C4StagingCutoverManager(
     private suspend fun performCutoverInternal(ownerUid: String): CutoverResult {
         val details = mutableListOf<String>()
 
-        // 1. Lectura de estado local existente en Room
+        // 1. PREVALIDACIÓN: Consultar estado local y remoto ANTES de cualquier modificación
         val localBeers = beerDao.getActiveBeersSync(ownerUid) +
                 beerDao.getPendingSyncBeers(ownerUid).filter { it.syncStatus == SyncStatus.DELETED }
         val localBeersBySyncId = localBeers.associateBy { it.syncId }
 
-        // 2. Consulta autoritativa SERVER de documentos remotos en Firestore
         val remoteDocs = try {
             firestoreAdapter.queryServerDocuments(ownerUid)
         } catch (e: Exception) {
-            return CutoverResult.Blocked("No se pudo consultar Firestore para cutover: ${e.message}")
+            return CutoverResult.Blocked("Prevalidación fallida: No se pudo consultar Firestore para cutover: ${e.message}")
         }
         val remoteDocsBySyncId = remoteDocs.associateBy { it.syncId }
+
+        // A. Detectar cervezas SYNCED locales ausentes en Firestore (Cero pérdida de datos / Anti-Data-Loss)
+        val absentSyncedLocals = localBeers.filter { localBeer ->
+            localBeer.syncStatus == SyncStatus.SYNCED && !remoteDocsBySyncId.containsKey(localBeer.syncId)
+        }
+        if (absentSyncedLocals.isNotEmpty()) {
+            absentSyncedLocals.forEach { absent ->
+                details.add("Prevalidación: Local SYNCED ${absent.syncId.take(8)} ausente en remoto: conservada intacta en Room para reconciliación segura.")
+            }
+            return CutoverResult.Blocked(
+                reason = "Prevalidación BLOQUEADA: Se detectaron ${absentSyncedLocals.size} cerveza(s) locales marcadas como SYNCED ausentes en Firestore. Fueron preservadas intactas en Room para garantizar cero pérdida de datos. Ninguna modificación fue realizada en Firestore ni en Room. Requiere reconciliación antes de migrar.",
+                details = details
+            )
+        }
+
+        // B. Detectar incompatibilidades conocidas en documentos remotos
+        val corruptedRemoteDocs = remoteDocs.filter { it.revision > 0L && it.fieldRevisions.isEmpty() }
+        if (corruptedRemoteDocs.isNotEmpty()) {
+            return CutoverResult.Blocked(
+                reason = "Prevalidación BLOQUEADA: Se detectaron ${corruptedRemoteDocs.size} documento(s) remotos corruptos con revisión > 0 pero fieldRevisions vacío. Ninguna modificación fue realizada.",
+                details = details
+            )
+        }
 
         var upgradedRemoteCount = 0
         var localAlignedCount = 0
         var localPromotedCount = 0
         var localTombstonesCount = 0
         var pushedPendingCount = 0
-        var localAbsentRemotelyCount = 0
         var storageFailuresCount = 0
         var offlinePushesCount = 0
         var conflictsCount = 0
         var blockedPushesCount = 0
 
-        // 3. PASO A: Ascenso de documentos remotos legacy a revisión 1 mediante CAS autoritativo
+        // 2. PASO A: Ascenso de documentos remotos legacy a revisión 1 mediante CAS autoritativo
         for (remoteDoc in remoteDocs) {
             if (remoteDoc.revision == 0L || remoteDoc.fieldRevisions.isEmpty()) {
                 val migrationMutationId = "mut-cutover-upg-${remoteDoc.syncId.take(8)}-${UUID.randomUUID().toString().take(8)}"
@@ -234,7 +292,7 @@ class C4StagingCutoverManager(
             it.syncId to if (it.revision >= 1L) it.revision else 1L
         }
 
-        // 4. PASO B: Preparación de entidades locales Room que estaban en 0/0 (Legacy)
+        // 3. PASO B: Preparación de entidades locales Room que estaban en 0/0 (Legacy)
         for (localBeer in localBeers) {
             val isLegacyLocal = localBeer.remoteRevision == 0L && localBeer.baseRevision == 0L
 
@@ -286,26 +344,44 @@ class C4StagingCutoverManager(
                                 localAlignedCount++
                                 details.add("Local SYNCED ${localBeer.syncId.take(8)} alineada a rev $targetRev")
                             }
-                        } else {
-                            // PRESERVACIÓN DE DATOS (Anti-Data-Loss):
-                            // NO marcar automáticamente DELETED. Conservar los datos locales intactos en Room
-                            // y registrar para reconciliación segura.
-                            localAbsentRemotelyCount++
-                            details.add("Local SYNCED ${localBeer.syncId.take(8)} ausente en remoto: conservada intacta en Room para reconciliación segura.")
                         }
                     }
                 }
             }
         }
 
-        // 5. PASO C: Descubrimiento y Reconciliación Remota por Colección (PULL C4)
+        // 4. PASO C: Descubrimiento y Reconciliación Remota por Colección (PULL C4)
         val pullResults = coordinator.executePullCollection(ownerUid)
         var remoteDiscoveredCount = 0
+        var pullBlockedCount = 0
+        var pullIncompleteReadCount = 0
+
         pullResults.forEach { (syncId, result) ->
-            if (result is C4CoordinatorPullResult.Applied) {
-                remoteDiscoveredCount++
-                details.add("PULL aplicado para $syncId: ${result.plan::class.simpleName}")
+            when (result) {
+                is C4CoordinatorPullResult.Applied -> {
+                    remoteDiscoveredCount++
+                    details.add("PULL aplicado para ${syncId.take(8)}: ${result.plan::class.simpleName}")
+                }
+                is C4CoordinatorPullResult.Blocked -> {
+                    pullBlockedCount++
+                    details.add("PULL BLOQUEADO para ${syncId.take(8)}: ${result.reason}")
+                }
+                is C4CoordinatorPullResult.IncompleteReadIgnored -> {
+                    pullIncompleteReadCount++
+                    details.add("PULL lectura incompleta ignorada para ${syncId.take(8)}")
+                }
+                C4CoordinatorPullResult.NoOp -> {
+                    // NoOp
+                }
             }
+        }
+
+        // Si la reconciliación remota falló, bloquear antes de intentar PUSH para mantener datos y mutaciones intactos
+        if (pullBlockedCount > 0 || pullIncompleteReadCount > 0) {
+            return CutoverResult.Blocked(
+                reason = "Cutover BLOQUEADO: La reconciliación remota (PULL) no se completó limpiamente ($pullBlockedCount bloqueado(s), $pullIncompleteReadCount lectura(s) incompleta(s)). Ningún PUSH fue ejecutado; datos y mutaciones locales se mantienen intactos.",
+                details = details
+            )
         }
 
         // 6. PASO D: PUSH de mutaciones locales pendientes (Creaciones y Borrados offline preparados)
@@ -359,12 +435,6 @@ class C4StagingCutoverManager(
         val remainingLegacyBeers = (beerDao.getActiveBeersSync(ownerUid) + remainingPendingBeers)
             .filter { it.remoteRevision == 0L && it.baseRevision == 0L }
 
-        if (localAbsentRemotelyCount > 0) {
-            return CutoverResult.Blocked(
-                reason = "Cutover BLOQUEADO: Se detectaron $localAbsentRemotelyCount cerveza(s) locales sin equivalente remoto en Firestore. Fueron preservadas intactas en Room para garantizar cero pérdida de datos. Requiere reconciliación antes de activar C4.",
-                details = details
-            )
-        }
 
         if (remainingPendingMutations.isNotEmpty() || remainingPendingBeers.isNotEmpty() || storageFailuresCount > 0 || offlinePushesCount > 0) {
             return CutoverResult.Incomplete(

@@ -10,6 +10,7 @@ import com.example.contadordebirras.data.MutationStatus
 import com.example.contadordebirras.data.SyncStatus
 import com.example.contadordebirras.domain.BeerType
 import io.mockk.coEvery
+import io.mockk.coVerify
 import io.mockk.mockk
 import kotlinx.coroutines.runBlocking
 import org.junit.After
@@ -121,7 +122,10 @@ class C4StagingCutoverManagerTest {
             fieldRevisions = C4FirestoreDocument.canonicalCreationFieldRevisions(1L)
         )
 
-        coEvery { firestoreAdapter.queryServerDocuments(aliceUid) } returns listOf(legacyRemoteDoc)
+        coEvery { firestoreAdapter.queryServerDocuments(aliceUid) } returnsMany listOf(
+            listOf(legacyRemoteDoc),
+            listOf(upgradedRemoteDoc)
+        )
         coEvery { firestoreAdapter.executeLegacyUpgrade(syncId, aliceUid, any()) } returns C4TransactionResult.Success(1L, "mut-upgrade")
         coEvery { firestoreAdapter.readServerDocument(syncId) } returns upgradedRemoteDoc
 
@@ -289,7 +293,7 @@ class C4StagingCutoverManagerTest {
 
         assertTrue("Cutover debe ser BLOCKED para evitar pérdida de datos", result is CutoverResult.Blocked)
         val blocked = result as CutoverResult.Blocked
-        assertTrue(blocked.reason.contains("sin equivalente remoto"))
+        assertTrue(blocked.reason.contains("ausentes en Firestore"))
 
         // COMPROBACIÓN CRÍTICA: La cerveza NO fue borrada ni marcada DELETED
         val preservedBeer = beerDao.getBeerBySyncId(syncId, aliceUid)
@@ -493,12 +497,153 @@ class C4StagingCutoverManagerTest {
         val rollbackResult = cutoverManager.rollbackToLegacy(aliceUid)
 
         assertTrue(rollbackResult.isLocalReverted)
-        assertEquals(SyncEngineMode.LEGACY, C4SyncConfig.engineMode)
+        assertEquals(SyncEngineMode.HALTED, C4SyncConfig.engineMode)
         assertFalse(C4SyncConfig.isEnabled)
+        assertFalse(rollbackResult.isLegacyReactivated)
 
         // Verificar detección de frontera de no retorno
         assertEquals(1, rollbackResult.remoteUpgradedCount)
         assertTrue(rollbackResult.pointOfNoReturnReached)
-        assertTrue(rollbackResult.warningMessage.contains("IRREVERSIBLE"))
+        assertTrue(rollbackResult.warningMessage.contains("NO se reactivan escrituras legacy"))
+    }
+
+    /**
+     * REGRESIÓN 1: Prevalidación bloquea ANTES de modificar Firestore.
+     * Si existe una cerveza local SYNCED ausente en remoto, el proceso se aborta
+     * sin ejecutar executeLegacyUpgrade sobre otros documentos remotos.
+     */
+    @Test
+    fun regression_prevalidation_blocksBeforeModifyingFirestore() = runBlocking {
+        val orphanSyncId = UUID.randomUUID().toString()
+        val remoteSyncId = UUID.randomUUID().toString()
+
+        // 1. Cerveza local SYNCED ausente en Firestore
+        val orphanLocalBeer = LegacyBeerFixtures.createLegacyRoomBeer(
+            ownerUid = aliceUid,
+            syncId = orphanSyncId,
+            syncStatus = SyncStatus.SYNCED,
+            comment = "Cerveza huérfana local"
+        )
+        beerDao.insertBeer(orphanLocalBeer)
+
+        // 2. Documento remoto legacy existente en Firestore
+        val legacyRemoteDoc = C4FirestoreDocument(
+            syncId = remoteSyncId,
+            userId = aliceUid,
+            type = "CANA",
+            timestamp = 1000L,
+            revision = 0L,
+            lastMutationId = "legacy-mut",
+            fieldRevisions = emptyMap()
+        )
+        coEvery { firestoreAdapter.queryServerDocuments(aliceUid) } returns listOf(legacyRemoteDoc)
+
+        val result = cutoverManager.executeCutover(aliceUid)
+
+        assertTrue("Prevalidación debe bloquear el cutover", result is CutoverResult.Blocked)
+        val blocked = result as CutoverResult.Blocked
+        assertTrue(blocked.reason.contains("Prevalidación BLOQUEADA"))
+
+        // Verificación crítica: NINGUNA modificación en Firestore fue intentada
+        coVerify(exactly = 0) { firestoreAdapter.executeLegacyUpgrade(any(), any(), any()) }
+
+        // La cerveza local huérfana permanece intacta en Room
+        val preserved = beerDao.getBeerBySyncId(orphanSyncId, aliceUid)
+        assertNotNull(preserved)
+        assertEquals(SyncStatus.SYNCED, preserved!!.syncStatus)
+        assertFalse(C4SyncConfig.isEnabled)
+    }
+
+    /**
+     * REGRESIÓN 2: PULL bloqueado impide Completed y mantiene mutaciones intactas.
+     * Si la reconciliación remota (PULL) reporta Blocked o IncompleteReadIgnored,
+     * el cutover retorna Blocked, no procede al PUSH y preserva las mutaciones locales pendientes.
+     */
+    @Test
+    fun regression_pullBlocked_preventsCompletedAndPreservesLocalMutations() = runBlocking {
+        val localSyncId = UUID.randomUUID().toString()
+        val remoteConflictSyncId = UUID.randomUUID().toString()
+
+        // Mutación local pendiente en Room
+        val localMutationId = "mut-offline-pending"
+        val pendingBeer = LegacyBeerFixtures.createLegacyRoomBeer(
+            ownerUid = aliceUid,
+            syncId = localSyncId,
+            syncStatus = SyncStatus.PENDING,
+            comment = "Pendiente local"
+        ).copy(
+            remoteRevision = -1L,
+            baseRevision = -1L,
+            lastMutationId = localMutationId,
+            dirtyFields = "COMMENT"
+        )
+        beerDao.insertBeer(pendingBeer)
+        beerDao.insertHistoryRecord(
+            com.example.contadordebirras.data.LocalMutationHistoryEntity(
+                mutationId = localMutationId,
+                syncId = localSyncId,
+                ownerUid = aliceUid,
+                timestamp = 1000L,
+                dirtyFields = "COMMENT",
+                baseRevision = -1L,
+                status = MutationStatus.PENDING,
+                isLocalOnlyCreation = true
+            )
+        )
+
+        // Mock: Firestore sin documentos legacy para ascender
+        coEvery { firestoreAdapter.queryServerDocuments(aliceUid) } returns emptyList()
+
+        // Mock específico de coordinador para simular retorno Blocked en PULL
+        val mockCoord = mockk<AndroidC4SyncCoordinator>()
+        coEvery { mockCoord.executePullCollection(aliceUid) } returns mapOf(
+            remoteConflictSyncId to C4CoordinatorPullResult.Blocked("Conflicto no convergente en campo COMMENT")
+        )
+
+        val cutoverWithMockCoord = C4StagingCutoverManager(
+            coordinator = mockCoord,
+            persistence = persistence,
+            firestoreAdapter = firestoreAdapter
+        )
+
+        val result = cutoverWithMockCoord.executeCutover(aliceUid)
+
+        assertTrue("Cutover debe ser BLOCKED si PULL falla", result is CutoverResult.Blocked)
+        val blocked = result as CutoverResult.Blocked
+        assertTrue(blocked.reason.contains("PULL"))
+
+        // Verificación crítica: PUSH de mutaciones locales NO fue invocado
+        coVerify(exactly = 0) { mockCoord.executePush(any(), any(), any(), any()) }
+
+        // Mutación local pendiente sigue intacta en Room
+        val pendingMutations = persistence.historyDao.getPendingMutations(aliceUid)
+        assertEquals(1, pendingMutations.size)
+        assertEquals(MutationStatus.PENDING, pendingMutations[0].status)
+        assertFalse(C4SyncConfig.isEnabled)
+    }
+
+    /**
+     * REGRESIÓN 3: Rollback con estado remoto desconocido nunca afirma reversibilidad.
+     * Si la consulta a Firestore falla durante el rollback, se declara estado remoto
+     * DESCONOCIDO, NO se reactiva el motor legacy y el motor queda DETENIDO (HALTED).
+     */
+    @Test
+    fun regression_rollback_unknownRemoteState_neverClaimsReversibility() = runBlocking {
+        // Simular fallo de red o consulta en Firestore
+        coEvery { firestoreAdapter.queryServerDocuments(aliceUid) } throws java.io.IOException("Firestore unreachable")
+
+        C4SyncConfig.isEnabled = true
+        C4SyncConfig.engineMode = SyncEngineMode.C4_ACTIVE
+
+        val rollbackResult = cutoverManager.rollbackToLegacy(aliceUid)
+
+        assertTrue(rollbackResult.isLocalReverted)
+        assertTrue("Debe declarar estado remoto desconocido", rollbackResult.isRemoteStateUnknown)
+        assertFalse("NUNCA debe reactivar escrituras legacy si el estado remoto es desconocido", rollbackResult.isLegacyReactivated)
+        assertTrue("Debe marcar punto de no retorno por precaución", rollbackResult.pointOfNoReturnReached)
+        assertEquals("El motor debe permanecer DETENIDO (HALTED)", SyncEngineMode.HALTED, C4SyncConfig.engineMode)
+        assertFalse(C4SyncConfig.isEnabled)
+        assertTrue(rollbackResult.warningMessage.contains("ESTADO REMOTO DESCONOCIDO"))
+        assertFalse(rollbackResult.warningMessage.contains("Rollback local seguro completado"))
     }
 }

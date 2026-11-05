@@ -402,8 +402,11 @@ class C4SyncDebugViewModel(application: Application) : AndroidViewModel(applicat
                     context = getApplication()
                 )
                 val rollbackResult = cutoverManager.rollbackToLegacy(manager.ownerUid)
-                isC4Active.value = false
-                statusMessage.value = "Motor C4 desactivado por Rollback. Motor legacy activo para producción."
+                statusMessage.value = if (rollbackResult.isLegacyReactivated) {
+                    "Motor C4 desactivado. Motor legacy reactivado de forma segura."
+                } else {
+                    "Motor C4 desactivado. Motor DETENIDO en estado seguro (no reactiva legacy)."
+                }
                 log("Rollback ejecutado: ${rollbackResult.warningMessage}")
                 refreshState()
             } catch (e: Exception) {

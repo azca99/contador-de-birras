@@ -11,7 +11,9 @@ enum class SyncEngineMode {
     /** Proceso de migración/cutover en ejecución: ambos motores pausados temporalmente */
     CUTOVER_IN_PROGRESS,
     /** Modo C4 activo: protocolo C4 activo, BeerSyncEngine inactivo */
-    C4_ACTIVE
+    C4_ACTIVE,
+    /** Modo detenido/seguro: ambos motores inactivos ante anomalía, irreversibilidad o estado desconocido */
+    HALTED
 }
 
 /**
