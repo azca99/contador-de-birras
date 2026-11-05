@@ -63,6 +63,7 @@ class AndroidC4CoordinatorUnitTest {
             .build()
         beerDao = database.beerDao()
         persistence = RoomC4SyncPersistence(database)
+        coEvery { storageAdapter.photoExists(any()) } returns true
         coordinator = AndroidC4SyncCoordinator(firestoreAdapter, storageAdapter, persistence)
     }
 

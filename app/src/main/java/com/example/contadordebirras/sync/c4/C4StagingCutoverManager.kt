@@ -1,6 +1,6 @@
 package com.example.contadordebirras.sync.c4
 
-import android.util.Log
+import android.content.Context
 import com.example.contadordebirras.data.BeerDao
 import com.example.contadordebirras.data.BeerEntity
 import com.example.contadordebirras.data.SyncStatus
@@ -13,46 +13,76 @@ import java.util.UUID
 
 /**
  * Resultado de la ejecución de migración y transición Staging Cutover (Fase C4.5).
+ *
+ * Taxonomía estricta de seguridad:
+ * - [Completed]: Cierre total verificado. Cero mutaciones pendientes, cero entidades legacy 0/0,
+ *   todas las fotos subidas y verificadas en Storage. C4 se activa.
+ * - [Incomplete]: Cutover parcial por red offline, fallo de Storage o ACK no recibido. Cero pérdida
+ *   de datos; las mutaciones permanecen en PENDING en Room para ser reintentadas. C4 NO se activa.
+ * - [Blocked]: Precondición fallida, error de red fatal en servidor, o conflicto/anomalía detectada
+ *   (ej. documento local ausente en remoto que se preserva intacto para reconciliación). C4 NO se activa.
  */
 sealed interface CutoverResult {
-    data class Success(
+    data class Completed(
         val upgradedRemoteCount: Int,
         val localAlignedCount: Int,
         val localPromotedCount: Int,
         val localTombstonesCount: Int,
         val remoteDiscoveredCount: Int,
         val pushedPendingCount: Int,
-        val details: List<String>
-    ) : CutoverResult
-
-    data class AlreadyUpToDate(
         val totalActiveBeers: Int,
-        val message: String
+        val alreadyMigrated: Boolean = false,
+        val details: List<String> = emptyList()
     ) : CutoverResult
 
-    data class Blocked(val reason: String) : CutoverResult
-    data class Error(val exception: Throwable) : CutoverResult
+    data class Incomplete(
+        val pendingMutationsCount: Int,
+        val pendingBeersCount: Int,
+        val storageFailuresCount: Int = 0,
+        val offlinePushesCount: Int = 0,
+        val blockedPushesCount: Int = 0,
+        val conflictsCount: Int = 0,
+        val details: List<String> = emptyList()
+    ) : CutoverResult
+
+    data class Blocked(
+        val reason: String,
+        val details: List<String> = emptyList()
+    ) : CutoverResult
 }
+
+/**
+ * Resultado explícito de la operación de Rollback hacia el motor Legacy.
+ */
+data class RollbackResult(
+    val isLocalReverted: Boolean,
+    val remoteUpgradedCount: Int,
+    val pointOfNoReturnReached: Boolean,
+    val warningMessage: String
+)
 
 /**
  * Gestor de Transición y Migración Staging Cutover del motor legacy al protocolo C4 (Fase C4.5).
  *
- * GARANTÍAS FORMALES:
+ * GARANTÍAS FORMALES DE SEGURIDAD:
  * 1. Cero pérdida de datos: Ninguna cerveza, comentario, foto, timestamp o ubicación desaparece.
- * 2. Cero duplicados: La identidad `syncId` se preserva unívocamente; índices únicos respetados.
- * 3. Preservación de offline pending: Las cervezas creadas o borradas sin conexión bajo el motor
- *    legacy se ascienden de forma durable a mutaciones C4 antes de cualquier operación de red.
- * 4. Ascenso atómico CAS en Firestore: Los documentos remotos legacy se ascienden a revisión 1
- *    mediante la transacción autorizada [isLegacyUpgrade] del perfil legacy-compat.
- * 5. Exclusión mutua estricta: [C4SyncConfig.syncExecutionMutex] impide que BeerSyncEngine
- *    y C4 escriban simultáneamente sobre los mismos datos.
- * 6. Idempotencia: La migración puede reejecutarse arbitrariamente sin efectos secundarios ni duplicados.
- * 7. Rollback seguro: La transición puede revertirse a modo LEGACY en cualquier momento sin pérdida.
+ * 2. Cero suposiciones destructivas: Las cervezas locales sin equivalente remoto NO se marcan DELETED.
+ *    Se conservan intactas en Room y se bloquea la transición hasta su reconciliación segura.
+ * 3. Verificación de fotografías: Las fotos pendientes se obtienen de su contenido local real,
+ *    se suben a Storage versionado y se verifica su existencia antes de confirmar. Si falla,
+ *    se mantienen en PENDING sin perder photoUri ni su referencia.
+ * 4. Verificación estricta de post-condiciones: NUNCA devuelve Completed si quedan mutaciones PENDING,
+ *    conflictos, errores de Storage o PUSH bloqueados.
+ * 5. Rollback realista: Define explícitamente la frontera de irreversibilidad remota frente al
+ *    rollback local, protegiendo contra la sobreescritura de clientes legacy en Firestore.
+ * 6. Exclusión mutua estricta: [C4SyncConfig.syncExecutionMutex] impide ejecución concurrente.
  */
 class C4StagingCutoverManager(
     private val coordinator: AndroidC4SyncCoordinator,
     private val persistence: RoomC4SyncPersistence,
-    private val firestoreAdapter: FirestoreC4SyncAdapter
+    private val firestoreAdapter: FirestoreC4SyncAdapter,
+    private val context: Context? = null,
+    private val photoResolver: (suspend (String) -> ByteArray?)? = null
 ) {
     private val beerDao: BeerDao = persistence.beerDao
 
@@ -74,7 +104,7 @@ class C4StagingCutoverManager(
                     performCutoverInternal(ownerUid)
                 }
 
-                if (result is CutoverResult.Success || result is CutoverResult.AlreadyUpToDate) {
+                if (result is CutoverResult.Completed) {
                     C4SyncConfig.engineMode = SyncEngineMode.C4_ACTIVE
                     C4SyncConfig.isEnabled = true
                 } else {
@@ -86,19 +116,67 @@ class C4StagingCutoverManager(
             } catch (e: Exception) {
                 C4SyncConfig.engineMode = previousMode
                 C4SyncConfig.isEnabled = previousEnabled
-                CutoverResult.Error(e)
+                CutoverResult.Blocked("Excepción inesperada durante cutover: ${e.message}")
             }
         }
     }
 
     /**
-     * Revierte de forma segura al modo legacy sin alterar los datos existentes.
+     * Revierte de forma segura al modo legacy definiendo con transparencia la frontera de reversibilidad.
+     *
+     * @param ownerUid Si se proporciona, comprueba si existen documentos remotos ya modernizados (rev >= 1)
+     *                 en Firestore para documentar si se alcanzó el punto de no retorno remoto.
      */
-    suspend fun rollbackToLegacy(): Boolean {
+    suspend fun rollbackToLegacy(ownerUid: String? = null): RollbackResult {
         return C4SyncConfig.syncExecutionMutex.withLock {
             C4SyncConfig.engineMode = SyncEngineMode.LEGACY
             C4SyncConfig.isEnabled = false
-            true
+
+            var remoteUpgradedCount = 0
+            if (!ownerUid.isNullOrBlank()) {
+                try {
+                    val remoteDocs = firestoreAdapter.queryServerDocuments(ownerUid)
+                    remoteUpgradedCount = remoteDocs.count { it.revision >= 1L }
+                } catch (_: Exception) {}
+            }
+
+            val pointOfNoReturn = remoteUpgradedCount > 0
+            val warning = if (pointOfNoReturn) {
+                "ADVERTENCIA DE SEGURIDAD: El motor local ha revertido a LEGACY y sus datos locales están preservados. Sin embargo, $remoteUpgradedCount documento(s) en Firestore ya fueron ascendidos a revisión >= 1. Las reglas de Firestore impedirán que clientes legacy modifiquen o borren estos documentos modernizados. El rollback remoto completo es IRREVERSIBLE desde el cliente y requiere intervención administrativa en Firestore."
+            } else {
+                "Rollback local completado exitosamente: ningún documento remoto había sido ascendido. Entorno en estado LEGACY puro."
+            }
+
+            RollbackResult(
+                isLocalReverted = true,
+                remoteUpgradedCount = remoteUpgradedCount,
+                pointOfNoReturnReached = pointOfNoReturn,
+                warningMessage = warning
+            )
+        }
+    }
+
+    private suspend fun resolvePhotoBytes(photoUriStr: String): ByteArray? {
+        if (photoResolver != null) {
+            return photoResolver.invoke(photoUriStr)
+        }
+        return withContext(Dispatchers.IO) {
+            try {
+                val uri = android.net.Uri.parse(photoUriStr)
+                if (uri.scheme == "content") {
+                    context?.contentResolver?.openInputStream(uri)?.use { it.readBytes() }
+                } else if (uri.scheme == "file") {
+                    val file = java.io.File(uri.path ?: photoUriStr)
+                    if (file.exists() && file.isFile) file.readBytes()
+                    else context?.contentResolver?.openInputStream(uri)?.use { it.readBytes() }
+                } else {
+                    val file = java.io.File(photoUriStr)
+                    if (file.exists() && file.isFile) file.readBytes()
+                    else context?.contentResolver?.openInputStream(uri)?.use { it.readBytes() }
+                }
+            } catch (_: Exception) {
+                null
+            }
         }
     }
 
@@ -123,11 +201,16 @@ class C4StagingCutoverManager(
         var localPromotedCount = 0
         var localTombstonesCount = 0
         var pushedPendingCount = 0
+        var localAbsentRemotelyCount = 0
+        var storageFailuresCount = 0
+        var offlinePushesCount = 0
+        var conflictsCount = 0
+        var blockedPushesCount = 0
 
-        // 3. PASO A: Ascenso de documentos remotos legacy a revisión 1
+        // 3. PASO A: Ascenso de documentos remotos legacy a revisión 1 mediante CAS autoritativo
         for (remoteDoc in remoteDocs) {
             if (remoteDoc.revision == 0L || remoteDoc.fieldRevisions.isEmpty()) {
-                val migrationMutationId = "cutover-upgrade-${remoteDoc.syncId.take(8)}-${UUID.randomUUID().toString().take(8)}"
+                val migrationMutationId = "mut-cutover-upg-${remoteDoc.syncId.take(8)}-${UUID.randomUUID().toString().take(8)}"
                 val txResult = firestoreAdapter.executeLegacyUpgrade(
                     syncId = remoteDoc.syncId,
                     ownerUid = ownerUid,
@@ -159,7 +242,7 @@ class C4StagingCutoverManager(
                 when (localBeer.syncStatus) {
                     SyncStatus.PENDING -> {
                         // Creación local offline bajo legacy: promover a local-only (-1/-1) con mutación durable
-                        val initialMutationId = "cutover-local-${UUID.randomUUID().toString().take(8)}"
+                        val initialMutationId = "mut-cutover-loc-${UUID.randomUUID().toString().take(8)}"
                         val allFields = BeerDirtyFieldsCodec.encode(BeerDirtyField.entries.toSet()) ?: ""
                         val ok = persistence.prepareLegacyPendingForLocalOnlyCreation(
                             syncId = localBeer.syncId,
@@ -178,7 +261,7 @@ class C4StagingCutoverManager(
                     SyncStatus.DELETED -> {
                         // Borrado local offline bajo legacy: preparar mutación durable de tombstone con revisión remota post-ascenso
                         val baseRev = updatedRemoteRevisions[localBeer.syncId] ?: localBeer.remoteRevision
-                        val tombstoneMutationId = "cutover-tomb-${UUID.randomUUID().toString().take(8)}"
+                        val tombstoneMutationId = "mut-cutover-tomb-${UUID.randomUUID().toString().take(8)}"
                         val ok = persistence.prepareLegacyDeletedForTombstone(
                             syncId = localBeer.syncId,
                             ownerUid = ownerUid,
@@ -188,6 +271,8 @@ class C4StagingCutoverManager(
                         if (ok) {
                             localTombstonesCount++
                             details.add("Local borrada ${localBeer.syncId.take(8)} preparada como C4 Tombstone (baseRev: $baseRev)")
+                        } else {
+                            return CutoverResult.Blocked("Fallo al preparar tombstone local ${localBeer.syncId}")
                         }
                     }
 
@@ -202,12 +287,11 @@ class C4StagingCutoverManager(
                                 details.add("Local SYNCED ${localBeer.syncId.take(8)} alineada a rev $targetRev")
                             }
                         } else {
-                            // Cerveza ausente en remoto: eliminación física remota en era legacy -> marcar DELETED
-                            val ok = persistence.markLegacyAbsentAsDeleted(localBeer.syncId, ownerUid)
-                            if (ok) {
-                                localTombstonesCount++
-                                details.add("Local previamente sincronizada ${localBeer.syncId.take(8)} ausente en remoto -> marcada DELETED")
-                            }
+                            // PRESERVACIÓN DE DATOS (Anti-Data-Loss):
+                            // NO marcar automáticamente DELETED. Conservar los datos locales intactos en Room
+                            // y registrar para reconciliación segura.
+                            localAbsentRemotelyCount++
+                            details.add("Local SYNCED ${localBeer.syncId.take(8)} ausente en remoto: conservada intacta en Room para reconciliación segura.")
                         }
                     }
                 }
@@ -227,9 +311,17 @@ class C4StagingCutoverManager(
         // 6. PASO D: PUSH de mutaciones locales pendientes (Creaciones y Borrados offline preparados)
         val pendingHistory = persistence.historyDao.getPendingMutations(ownerUid)
         for (history in pendingHistory) {
+            val localBeer = persistence.beerDao.getBeerBySyncId(history.syncId, ownerUid)
+            val photoBytes = if (localBeer?.photoUri != null) {
+                resolvePhotoBytes(localBeer.photoUri)
+            } else {
+                null
+            }
+
             val pushResult = coordinator.executePush(
                 syncId = history.syncId,
-                ownerUid = ownerUid
+                ownerUid = ownerUid,
+                photoBytes = photoBytes
             )
             when (pushResult) {
                 is C4CoordinatorPushResult.Success, is C4CoordinatorPushResult.IdempotentRecovery -> {
@@ -237,43 +329,76 @@ class C4StagingCutoverManager(
                     details.add("PUSH exitoso para ${history.syncId.take(8)} (mutación: ${history.mutationId})")
                 }
                 is C4CoordinatorPushResult.Offline -> {
+                    offlinePushesCount++
                     details.add("PUSH aplazado para ${history.syncId.take(8)}: red offline")
                 }
                 is C4CoordinatorPushResult.Conflict -> {
+                    conflictsCount++
                     details.add("PUSH conflicto para ${history.syncId.take(8)}: ${pushResult.reason}")
                 }
                 is C4CoordinatorPushResult.Blocked -> {
+                    blockedPushesCount++
                     details.add("PUSH advertencia para ${history.syncId.take(8)}: ${pushResult.reason}")
                 }
                 is C4CoordinatorPushResult.StorageFailed -> {
+                    storageFailuresCount++
                     details.add("PUSH storage falló para ${history.syncId.take(8)}: ${pushResult.reason}")
                 }
                 C4CoordinatorPushResult.NotFound -> {
+                    blockedPushesCount++
                     details.add("PUSH entidad local no encontrada para ${history.syncId.take(8)}")
                 }
             }
         }
 
-        // Comprobación de idempotencia o finalización
+        // 7. VERIFICACIÓN ESTRICTA DE CONDICIONES DE CIERRE POST-CUTOVER
+        val remainingPendingMutations = persistence.historyDao.getPendingMutations(ownerUid)
+        val remainingPendingBeers = beerDao.getPendingSyncBeers(ownerUid).filter {
+            it.syncStatus == SyncStatus.PENDING || it.lastMutationId != null
+        }
+        val remainingLegacyBeers = (beerDao.getActiveBeersSync(ownerUid) + remainingPendingBeers)
+            .filter { it.remoteRevision == 0L && it.baseRevision == 0L }
+
+        if (localAbsentRemotelyCount > 0) {
+            return CutoverResult.Blocked(
+                reason = "Cutover BLOQUEADO: Se detectaron $localAbsentRemotelyCount cerveza(s) locales sin equivalente remoto en Firestore. Fueron preservadas intactas en Room para garantizar cero pérdida de datos. Requiere reconciliación antes de activar C4.",
+                details = details
+            )
+        }
+
+        if (remainingPendingMutations.isNotEmpty() || remainingPendingBeers.isNotEmpty() || storageFailuresCount > 0 || offlinePushesCount > 0) {
+            return CutoverResult.Incomplete(
+                pendingMutationsCount = remainingPendingMutations.size,
+                pendingBeersCount = remainingPendingBeers.size,
+                storageFailuresCount = storageFailuresCount,
+                offlinePushesCount = offlinePushesCount,
+                blockedPushesCount = blockedPushesCount,
+                conflictsCount = conflictsCount,
+                details = details
+            )
+        }
+
+        if (conflictsCount > 0 || blockedPushesCount > 0 || remainingLegacyBeers.isNotEmpty()) {
+            return CutoverResult.Blocked(
+                reason = "Cutover BLOQUEADO: Existen anomalías pendientes: $conflictsCount conflicto(s), $blockedPushesCount bloqueo(s), o ${remainingLegacyBeers.size} entidades legacy 0/0 sin resolver.",
+                details = details
+            )
+        }
+
         val totalActive = beerDao.getActiveBeersSync(ownerUid).size
         val changesMade = upgradedRemoteCount + localAlignedCount + localPromotedCount +
                 localTombstonesCount + remoteDiscoveredCount + pushedPendingCount
 
-        return if (changesMade == 0) {
-            CutoverResult.AlreadyUpToDate(
-                totalActiveBeers = totalActive,
-                message = "Base de datos y entorno remoto ya están 100% migrados y alineados al Protocolo C4."
-            )
-        } else {
-            CutoverResult.Success(
-                upgradedRemoteCount = upgradedRemoteCount,
-                localAlignedCount = localAlignedCount,
-                localPromotedCount = localPromotedCount,
-                localTombstonesCount = localTombstonesCount,
-                remoteDiscoveredCount = remoteDiscoveredCount,
-                pushedPendingCount = pushedPendingCount,
-                details = details
-            )
-        }
+        return CutoverResult.Completed(
+            upgradedRemoteCount = upgradedRemoteCount,
+            localAlignedCount = localAlignedCount,
+            localPromotedCount = localPromotedCount,
+            localTombstonesCount = localTombstonesCount,
+            remoteDiscoveredCount = remoteDiscoveredCount,
+            pushedPendingCount = pushedPendingCount,
+            totalActiveBeers = totalActive,
+            alreadyMigrated = (changesMade == 0),
+            details = details
+        )
     }
 }

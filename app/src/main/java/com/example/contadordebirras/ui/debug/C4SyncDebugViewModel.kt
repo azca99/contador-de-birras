@@ -352,28 +352,36 @@ class C4SyncDebugViewModel(application: Application) : AndroidViewModel(applicat
                 val cutoverManager = C4StagingCutoverManager(
                     coordinator = manager.coordinator,
                     persistence = manager.persistence,
-                    firestoreAdapter = manager.coordinator.firestoreAdapter
+                    firestoreAdapter = manager.coordinator.firestoreAdapter,
+                    context = getApplication()
                 )
                 val result = cutoverManager.executeCutover(manager.ownerUid)
                 when (result) {
-                    is CutoverResult.Success -> {
-                        log("Cutover COMPLETADO con éxito:")
-                        log(" • Remotos ascendidos a rev 1: ${result.upgradedRemoteCount}")
-                        log(" • Locales alineadas a moderna: ${result.localAlignedCount}")
-                        log(" • Locales offline promovidas a C4: ${result.localPromotedCount}")
-                        log(" • Tombstones locales procesados: ${result.localTombstonesCount}")
-                        log(" • Remotas descubiertas: ${result.remoteDiscoveredCount}")
-                        log(" • PUSH pendientes confirmados: ${result.pushedPendingCount}")
+                    is CutoverResult.Completed -> {
+                        if (result.alreadyMigrated) {
+                            log("Cutover COMPLETADO (ya estaba 100% migrado e idempotente, total activas: ${result.totalActiveBeers})")
+                        } else {
+                            log("Cutover COMPLETADO con éxito:")
+                            log(" • Remotos ascendidos a rev 1: ${result.upgradedRemoteCount}")
+                            log(" • Locales alineadas a moderna: ${result.localAlignedCount}")
+                            log(" • Locales offline promovidas a C4: ${result.localPromotedCount}")
+                            log(" • Tombstones locales procesados: ${result.localTombstonesCount}")
+                            log(" • Remotas descubiertas: ${result.remoteDiscoveredCount}")
+                            log(" • PUSH pendientes confirmados: ${result.pushedPendingCount}")
+                        }
                         result.details.forEach { log("   $it") }
                     }
-                    is CutoverResult.AlreadyUpToDate -> {
-                        log("Cutover ya estaba al día (idempotente): ${result.message} (Total activas: ${result.totalActiveBeers})")
+                    is CutoverResult.Incomplete -> {
+                        log("Cutover INCOMPLETO (mutaciones preservadas en Room):")
+                        log(" • Mutaciones pendientes: ${result.pendingMutationsCount}")
+                        log(" • Cervezas pendientes: ${result.pendingBeersCount}")
+                        log(" • Fallos Storage: ${result.storageFailuresCount}")
+                        log(" • PUSH offline: ${result.offlinePushesCount}")
+                        result.details.forEach { log("   $it") }
                     }
                     is CutoverResult.Blocked -> {
                         log("Cutover BLOQUEADO: ${result.reason}")
-                    }
-                    is CutoverResult.Error -> {
-                        log("ERROR durante cutover: ${result.exception.message}")
+                        result.details.forEach { log("   $it") }
                     }
                 }
                 refreshState()
@@ -390,12 +398,13 @@ class C4SyncDebugViewModel(application: Application) : AndroidViewModel(applicat
                 val cutoverManager = C4StagingCutoverManager(
                     coordinator = manager.coordinator,
                     persistence = manager.persistence,
-                    firestoreAdapter = manager.coordinator.firestoreAdapter
+                    firestoreAdapter = manager.coordinator.firestoreAdapter,
+                    context = getApplication()
                 )
-                cutoverManager.rollbackToLegacy()
+                val rollbackResult = cutoverManager.rollbackToLegacy(manager.ownerUid)
                 isC4Active.value = false
                 statusMessage.value = "Motor C4 desactivado por Rollback. Motor legacy activo para producción."
-                log("Rollback ejecutado: Motor C4 desactivado, modo revertido a LEGACY. Base Room intacta.")
+                log("Rollback ejecutado: ${rollbackResult.warningMessage}")
                 refreshState()
             } catch (e: Exception) {
                 log("Error al revertir a legacy: ${e.message}")

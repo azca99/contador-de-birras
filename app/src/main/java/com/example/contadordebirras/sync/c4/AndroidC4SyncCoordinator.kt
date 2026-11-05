@@ -146,7 +146,12 @@ class AndroidC4SyncCoordinator(
             is PushPlan.CreateActive -> {
                 var uploadedPhotoUrl: String? = null
 
-                if (plan.fieldsToWrite.contains(BeerDirtyField.PHOTO) && localBeer.photoUri != null && photoBytes != null) {
+                if (plan.fieldsToWrite.contains(BeerDirtyField.PHOTO) && localBeer.photoUri != null) {
+                    if (photoBytes == null) {
+                        return C4CoordinatorPushResult.StorageFailed(
+                            "No se pudo obtener el contenido binario de la fotografía local (${localBeer.photoUri}). Se mantiene PENDING para evitar pérdida de datos."
+                        )
+                    }
                     val uploadResult = storageAdapter.uploadVersionedPhoto(
                         ownerUid = ownerUid,
                         syncId = syncId,
@@ -155,6 +160,10 @@ class AndroidC4SyncCoordinator(
                     )
                     when (uploadResult) {
                         is C4StorageResult.Success -> {
+                            val exists = storageAdapter.photoExists(uploadResult.remotePath)
+                            if (!exists) {
+                                return C4CoordinatorPushResult.StorageFailed("Verificación de foto en Storage falló tras subida: ${uploadResult.remotePath}")
+                            }
                             uploadedPhotoUrl = uploadResult.remotePath
                         }
                         is C4StorageResult.OverwriteRejected -> {
@@ -251,7 +260,12 @@ class AndroidC4SyncCoordinator(
             is PushPlan.ApplyPatch -> {
                 var uploadedPhotoUrl: String? = null
 
-                if (plan.fieldsToWrite.contains(BeerDirtyField.PHOTO) && localBeer.photoUri != null && photoBytes != null) {
+                if (plan.fieldsToWrite.contains(BeerDirtyField.PHOTO) && localBeer.photoUri != null) {
+                    if (photoBytes == null) {
+                        return C4CoordinatorPushResult.StorageFailed(
+                            "No se pudo obtener el contenido binario de la fotografía local (${localBeer.photoUri}). Se mantiene PENDING para evitar pérdida de datos."
+                        )
+                    }
                     val uploadResult = storageAdapter.uploadVersionedPhoto(
                         ownerUid = ownerUid,
                         syncId = syncId,
@@ -260,6 +274,10 @@ class AndroidC4SyncCoordinator(
                     )
                     when (uploadResult) {
                         is C4StorageResult.Success -> {
+                            val exists = storageAdapter.photoExists(uploadResult.remotePath)
+                            if (!exists) {
+                                return C4CoordinatorPushResult.StorageFailed("Verificación de foto en Storage falló tras subida: ${uploadResult.remotePath}")
+                            }
                             uploadedPhotoUrl = uploadResult.remotePath
                         }
                         is C4StorageResult.OverwriteRejected -> {

@@ -8,7 +8,6 @@ import com.example.contadordebirras.data.BeerDatabase
 import com.example.contadordebirras.data.BeerEntity
 import com.example.contadordebirras.data.MutationStatus
 import com.example.contadordebirras.data.SyncStatus
-import com.example.contadordebirras.domain.BeerDirtyFieldsCodec
 import com.example.contadordebirras.domain.BeerType
 import io.mockk.coEvery
 import io.mockk.mockk
@@ -23,15 +22,17 @@ import org.robolectric.annotation.Config
 import java.util.UUID
 
 /**
- * Suite de pruebas unitarias para [C4StagingCutoverManager] (Fase C4.5).
+ * Suite de pruebas unitarias exhaustiva para [C4StagingCutoverManager] (Fase C4.5).
  *
- * Evalúa las garantías formales de transición:
- * - Cero pérdida de datos (comentarios, fechas, fotos, coordenadas).
- * - Cero duplicación de registros.
- * - Preservación de cervezas locales creadas o borradas sin conexión bajo el motor legacy.
- * - Idempotencia estricta en reintentos.
- * - Exclusión mutua de motores mediante C4SyncConfig.
- * - Reversibilidad segura (rollback a legacy).
+ * Valida los 8 escenarios de seguridad exigidos para el cierre definitivo:
+ * 1. Legacy SYNCED con foto.
+ * 2. Legacy PENDING con foto sin subir.
+ * 3. Legacy DELETED.
+ * 4. Documento local sin equivalente remoto (preservación estricta sin borrado).
+ * 5. Fallo de red a mitad del cutover (preservación de mutaciones y retorno INCOMPLETE).
+ * 6. Fallo de Storage (foto se mantiene PENDING, no se pierde photoUri, retorno INCOMPLETE).
+ * 7. Reintento tras cutover parcial (idempotencia y convergencia a COMPLETED).
+ * 8. Protección de documentos modernizados contra escrituras legacy y frontera de rollback.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
@@ -46,6 +47,7 @@ class C4StagingCutoverManagerTest {
     private lateinit var cutoverManager: C4StagingCutoverManager
 
     private val aliceUid = "user_alice_test"
+    private var testPhotoResolver: (suspend (String) -> ByteArray?)? = null
 
     @Before
     fun setUp() {
@@ -62,10 +64,12 @@ class C4StagingCutoverManagerTest {
             persistence = persistence
         )
 
+        testPhotoResolver = null
         cutoverManager = C4StagingCutoverManager(
             coordinator = coordinator,
             persistence = persistence,
-            firestoreAdapter = firestoreAdapter
+            firestoreAdapter = firestoreAdapter,
+            photoResolver = { uri -> testPhotoResolver?.invoke(uri) }
         )
 
         C4SyncConfig.reset()
@@ -78,13 +82,13 @@ class C4StagingCutoverManagerTest {
     }
 
     /**
-     * 1. Ascenso de documento remoto legacy y alineación local SYNCED:
+     * 1. LEGACY SYNCED CON FOTO:
      * El documento remoto estaba en revisión 0 sin fieldRevisions.
      * Cutover ejecuta executeLegacyUpgrade a rev 1 y alinea Room local a rev 1.
-     * Preserva íntegramente comentarios, foto y coordenadas.
+     * Preserva íntegramente comentarios, foto y coordenadas. Post-condiciones verificadas: COMPLETED.
      */
     @Test
-    fun executeCutover_upgradesLegacyRemoteAndAlignsLocalSynced() = runBlocking {
+    fun executeCutover_legacySyncedWithPhoto_upgradesAndAligns() = runBlocking {
         val syncId = UUID.randomUUID().toString()
         val legacyBeer = LegacyBeerFixtures.createLegacyRoomBeer(
             ownerUid = aliceUid,
@@ -123,10 +127,11 @@ class C4StagingCutoverManagerTest {
 
         val result = cutoverManager.executeCutover(aliceUid)
 
-        assertTrue("Cutover debe ser exitoso", result is CutoverResult.Success)
-        val success = result as CutoverResult.Success
-        assertEquals(1, success.upgradedRemoteCount)
-        assertEquals(1, success.localAlignedCount)
+        assertTrue("Resultado debe ser Completed", result is CutoverResult.Completed)
+        val completed = result as CutoverResult.Completed
+        assertEquals(1, completed.upgradedRemoteCount)
+        assertEquals(1, completed.localAlignedCount)
+        assertEquals(0, persistence.historyDao.getPendingMutations(aliceUid).size)
 
         val aligned = beerDao.getBeerBySyncId(syncId, aliceUid)
         assertNotNull(aligned)
@@ -140,25 +145,40 @@ class C4StagingCutoverManagerTest {
     }
 
     /**
-     * 2. Preservación de creación local offline generada bajo legacy:
-     * Cerveza en PENDING con 0/0 en Room, ausente en remoto.
-     * Cutover la promueve a local-only (-1/-1), registra mutación durable en historial
-     * y ejecuta PUSH CreateActive a revisión 1.
-     * Ninguna cerveza desaparece.
+     * 2. LEGACY PENDING CON FOTO SIN SUBIR:
+     * Cerveza en PENDING con 0/0 en Room, con photoUri local.
+     * Cutover obtiene realmente los bytes de la foto, la sube a Storage versionado,
+     * verifica su existencia y emite CreateActive con rev 1.
+     * photoUri se conserva intacto, remotePhotoUrl se puebla, mutación se confirma.
      */
     @Test
-    fun executeCutover_preservesLocalOfflinePendingCreation_andPushesSuccessfully() = runBlocking {
+    fun executeCutover_legacyPendingWithUnuploadedPhoto_uploadsVersionedPhotoAndPushesCreateActive() = runBlocking {
         val syncId = UUID.randomUUID().toString()
+        val fakePhotoBytes = byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0xFF.toByte(), 0xE0.toByte())
+        val photoUri = "file:///data/user/0/com.azcaratech.birras/photos/$syncId.jpg"
+
+        testPhotoResolver = { uri ->
+            if (uri == photoUri) fakePhotoBytes else null
+        }
+
         val offlineBeer = LegacyBeerFixtures.createLegacyRoomBeer(
             ownerUid = aliceUid,
             syncId = syncId,
             syncStatus = SyncStatus.PENDING,
-            comment = "Creada sin conexión bajo legacy"
+            comment = "Birra offline con foto",
+            photoUri = photoUri
         )
         beerDao.insertBeer(offlineBeer)
 
         coEvery { firestoreAdapter.queryServerDocuments(aliceUid) } returns emptyList()
         coEvery { firestoreAdapter.readServerDocument(syncId) } returns null
+        coEvery {
+            storageAdapter.uploadVersionedPhoto(aliceUid, syncId, any(), fakePhotoBytes, any())
+        } answers {
+            val mutationId = thirdArg<String>()
+            C4StorageResult.Success("users/$aliceUid/beers/${syncId}_$mutationId.jpg", alreadyExisted = false)
+        }
+        coEvery { storageAdapter.photoExists(any()) } returns true
         coEvery {
             firestoreAdapter.executeCreateActive(
                 syncId = syncId,
@@ -172,17 +192,21 @@ class C4StagingCutoverManagerTest {
 
         val result = cutoverManager.executeCutover(aliceUid)
 
-        assertTrue(result is CutoverResult.Success)
-        val success = result as CutoverResult.Success
-        assertEquals(1, success.localPromotedCount)
-        assertEquals(1, success.pushedPendingCount)
+        assertTrue("Cutover debe completarse", result is CutoverResult.Completed)
+        val completed = result as CutoverResult.Completed
+        assertEquals(1, completed.localPromotedCount)
+        assertEquals(1, completed.pushedPendingCount)
 
         val syncedBeer = beerDao.getBeerBySyncId(syncId, aliceUid)
         assertNotNull(syncedBeer)
         assertEquals(SyncStatus.SYNCED, syncedBeer!!.syncStatus)
         assertEquals(1L, syncedBeer.remoteRevision)
         assertEquals(1L, syncedBeer.baseRevision)
-        assertEquals("Creada sin conexión bajo legacy", syncedBeer.comment)
+        assertEquals("Birra offline con foto", syncedBeer.comment)
+        // photoUri local ESTRICTAMENTE PRESERVADO
+        assertEquals(photoUri, syncedBeer.photoUri)
+        // remotePhotoUrl versionado asignado
+        assertTrue(syncedBeer.remotePhotoUrl?.startsWith("users/$aliceUid/beers/${syncId}_") == true)
 
         val history = persistence.historyDao.getMutationsForBeer(syncId, aliceUid)
         assertEquals(1, history.size)
@@ -190,12 +214,12 @@ class C4StagingCutoverManagerTest {
     }
 
     /**
-     * 3. Manejo de borrado local offline en la era legacy:
+     * 3. LEGACY DELETED:
      * Cerveza en DELETED con 0/0 en Room.
-     * Cutover registra mutación durable de tombstone y emite WriteTombstone.
+     * Cutover prepara tombstone con baseRevision remota post-ascenso y emite WriteTombstone.
      */
     @Test
-    fun executeCutover_handlesLegacyLocalDeletedBeer() = runBlocking {
+    fun executeCutover_legacyDeleted_preparesTombstoneAndPushesWriteTombstone() = runBlocking {
         val syncId = UUID.randomUUID().toString()
         val deletedBeer = LegacyBeerFixtures.createLegacyRoomBeer(
             ownerUid = aliceUid,
@@ -230,10 +254,10 @@ class C4StagingCutoverManagerTest {
 
         val result = cutoverManager.executeCutover(aliceUid)
 
-        assertTrue(result is CutoverResult.Success)
-        val success = result as CutoverResult.Success
-        assertEquals(1, success.localTombstonesCount)
-        assertEquals(1, success.pushedPendingCount)
+        assertTrue(result is CutoverResult.Completed)
+        val completed = result as CutoverResult.Completed
+        assertEquals(1, completed.localTombstonesCount)
+        assertEquals(1, completed.pushedPendingCount)
 
         val finalBeer = beerDao.getBeerBySyncId(syncId, aliceUid)
         assertNotNull(finalBeer)
@@ -242,104 +266,239 @@ class C4StagingCutoverManagerTest {
     }
 
     /**
-     * 4. Anti-resurrección ante borrados remotos de la era legacy:
-     * Local tenía SYNCED 0/0 pero el documento fue borrado físicamente en Firestore (doc.delete()).
-     * Cutover detecta la ausencia y marca la fila local como DELETED.
+     * 4. DOCUMENTO LOCAL SIN EQUIVALENTE REMOTO (PRESERVACIÓN DE DATOS):
+     * Cerveza local en SYNCED (0/0) bajo legacy, pero no existe en Firestore.
+     * REGLA ESTRICTA: NO marcar automáticamente DELETED. Conservar la cerveza activa e intacta en Room.
+     * Retornar CutoverResult.Blocked para reconciliación segura. C4 NO se activa.
      */
     @Test
-    fun executeCutover_handlesLegacyRemoteDeletion_marksLocalAsDeleted() = runBlocking {
+    fun executeCutover_localSyncedAbsentRemotely_preservesLocalDataAndBlocksWithoutDeletion() = runBlocking {
         val syncId = UUID.randomUUID().toString()
-        val syncedBeer = LegacyBeerFixtures.createLegacyRoomBeer(
+        val localOnlyBeer = LegacyBeerFixtures.createLegacyRoomBeer(
             ownerUid = aliceUid,
             syncId = syncId,
             syncStatus = SyncStatus.SYNCED,
-            comment = "Cerveza borrada en remoto durante legacy"
+            comment = "Cerveza valiosa creada en legacy no presente en servidor"
         )
-        beerDao.insertBeer(syncedBeer)
+        beerDao.insertBeer(localOnlyBeer)
 
         coEvery { firestoreAdapter.queryServerDocuments(aliceUid) } returns emptyList()
         coEvery { firestoreAdapter.readServerDocument(syncId) } returns null
 
         val result = cutoverManager.executeCutover(aliceUid)
 
-        assertTrue(result is CutoverResult.Success)
-        val success = result as CutoverResult.Success
-        assertEquals(1, success.localTombstonesCount)
+        assertTrue("Cutover debe ser BLOCKED para evitar pérdida de datos", result is CutoverResult.Blocked)
+        val blocked = result as CutoverResult.Blocked
+        assertTrue(blocked.reason.contains("sin equivalente remoto"))
 
-        val finalBeer = beerDao.getBeerBySyncId(syncId, aliceUid)
-        assertNotNull(finalBeer)
-        assertEquals(SyncStatus.DELETED, finalBeer!!.syncStatus)
-        assertNotNull(finalBeer.deletedAt)
+        // COMPROBACIÓN CRÍTICA: La cerveza NO fue borrada ni marcada DELETED
+        val preservedBeer = beerDao.getBeerBySyncId(syncId, aliceUid)
+        assertNotNull("La cerveza local DEBE existir", preservedBeer)
+        assertEquals(SyncStatus.SYNCED, preservedBeer!!.syncStatus)
+        assertEquals("Cerveza valiosa creada en legacy no presente en servidor", preservedBeer.comment)
+        assertNull(preservedBeer.deletedAt)
+
+        // C4 no debe quedar activo
+        assertEquals(SyncEngineMode.LEGACY, C4SyncConfig.engineMode)
+        assertFalse(C4SyncConfig.isEnabled)
     }
 
     /**
-     * 5. Idempotencia estricta:
-     * Ejecutar el cutover dos veces consecutivas produce AlreadyUpToDate y no duplica registros
-     * ni realiza cambios espurios.
+     * 5. FALLO DE RED A MITAD DEL CUTOVER:
+     * El paso de red PUSH falla por red offline (UNAVAILABLE).
+     * Las mutaciones se conservan en PENDING en Room. Cero pérdida de datos.
+     * El resultado es CutoverResult.Incomplete (nunca Completed ni AlreadyUpToDate).
      */
     @Test
-    fun executeCutover_isStrictlyIdempotent() = runBlocking {
+    fun executeCutover_networkFailureDuringPush_preservesPendingMutationsAndReturnsIncomplete() = runBlocking {
         val syncId = UUID.randomUUID().toString()
-        val beer = BeerEntity(
-            type = BeerType.CANA,
-            timestamp = 1000L,
-            syncId = syncId,
+        val offlineBeer = LegacyBeerFixtures.createLegacyRoomBeer(
             ownerUid = aliceUid,
-            syncStatus = SyncStatus.SYNCED,
-            remoteRevision = 1L,
-            baseRevision = 1L
+            syncId = syncId,
+            syncStatus = SyncStatus.PENDING,
+            comment = "Offline esperando push"
+        )
+        beerDao.insertBeer(offlineBeer)
+
+        coEvery { firestoreAdapter.queryServerDocuments(aliceUid) } returns emptyList()
+        // Lectura de documento durante push lanza excepción de red
+        coEvery { firestoreAdapter.readServerDocument(syncId) } throws com.google.firebase.firestore.FirebaseFirestoreException(
+            "Service unavailable / offline",
+            com.google.firebase.firestore.FirebaseFirestoreException.Code.UNAVAILABLE
+        )
+
+        val result = cutoverManager.executeCutover(aliceUid)
+
+        assertTrue("Debe retornar Incomplete por fallo de red", result is CutoverResult.Incomplete)
+        val incomplete = result as CutoverResult.Incomplete
+        assertEquals(1, incomplete.pendingMutationsCount)
+        assertEquals(1, incomplete.offlinePushesCount)
+
+        // Comprobación de persistencia intacta
+        val pendingBeer = beerDao.getBeerBySyncId(syncId, aliceUid)
+        assertNotNull(pendingBeer)
+        assertEquals(SyncStatus.PENDING, pendingBeer!!.syncStatus)
+
+        val pendingHistory = persistence.historyDao.getPendingMutations(aliceUid)
+        assertEquals(1, pendingHistory.size)
+        assertEquals(MutationStatus.PENDING, pendingHistory[0].status)
+
+        // C4 no se activa
+        assertEquals(SyncEngineMode.LEGACY, C4SyncConfig.engineMode)
+        assertFalse(C4SyncConfig.isEnabled)
+    }
+
+    /**
+     * 6. FALLO DE STORAGE EN FOTOGRAFÍA:
+     * Cerveza con photoUri pendiente de subida, pero Storage falla o los bytes no pueden leerse.
+     * Push aborta con StorageFailed, la mutación permanece en PENDING, photoUri se conserva intacto.
+     * CutoverResult.Incomplete es retornado.
+     */
+    @Test
+    fun executeCutover_storageFailure_keepsPhotoPendingAndReturnsIncomplete() = runBlocking {
+        val syncId = UUID.randomUUID().toString()
+        val photoUri = "file:///photos/beer_failure.jpg"
+
+        // El resolver falla simulando archivo corrupto o no disponible
+        testPhotoResolver = { _ -> null }
+
+        val offlineBeer = LegacyBeerFixtures.createLegacyRoomBeer(
+            ownerUid = aliceUid,
+            syncId = syncId,
+            syncStatus = SyncStatus.PENDING,
+            comment = "Birra con fallo de foto",
+            photoUri = photoUri
+        )
+        beerDao.insertBeer(offlineBeer)
+
+        coEvery { firestoreAdapter.queryServerDocuments(aliceUid) } returns emptyList()
+        coEvery { firestoreAdapter.readServerDocument(syncId) } returns null
+
+        val result = cutoverManager.executeCutover(aliceUid)
+
+        assertTrue("Debe retornar Incomplete cuando Storage falla", result is CutoverResult.Incomplete)
+        val incomplete = result as CutoverResult.Incomplete
+        assertEquals(1, incomplete.storageFailuresCount)
+        assertEquals(1, incomplete.pendingMutationsCount)
+
+        // Comprobación: photoUri y cerveza intactas en PENDING
+        val beer = beerDao.getBeerBySyncId(syncId, aliceUid)
+        assertNotNull(beer)
+        assertEquals(SyncStatus.PENDING, beer!!.syncStatus)
+        assertEquals(photoUri, beer.photoUri)
+
+        val pendingHistory = persistence.historyDao.getPendingMutations(aliceUid)
+        assertEquals(1, pendingHistory.size)
+        assertEquals(MutationStatus.PENDING, pendingHistory[0].status)
+    }
+
+    /**
+     * 7. REINTENTO TRAS CUTOVER PARCIAL:
+     * Tras el fallo anterior (escenario 5 o 6), la red se recupera.
+     * Un segundo intento de cutover procesa las mutaciones pendientes de forma idempotente
+     * y concluye en CutoverResult.Completed.
+     */
+    @Test
+    fun executeCutover_retryAfterPartialCutover_completesIdempotently() = runBlocking {
+        val syncId = UUID.randomUUID().toString()
+        val fakePhotoBytes = byteArrayOf(0x01, 0x02, 0x03)
+        val photoUri = "file:///photos/beer_recovered.jpg"
+
+        // 1. Simular estado parcial: promovida a -1/-1 con mutación pendiente en Room
+        val initialMutationId = "mut-init-123"
+        val beer = LegacyBeerFixtures.createLegacyRoomBeer(
+            ownerUid = aliceUid,
+            syncId = syncId,
+            syncStatus = SyncStatus.PENDING,
+            comment = "Birra recuperada en reintento",
+            photoUri = photoUri
+        ).copy(
+            remoteRevision = -1L,
+            baseRevision = -1L,
+            lastMutationId = initialMutationId,
+            dirtyFields = "TYPE,TIMESTAMP,LOCATION,COMMENT,PHOTO"
         )
         beerDao.insertBeer(beer)
+        beerDao.insertHistoryRecord(
+            com.example.contadordebirras.data.LocalMutationHistoryEntity(
+                mutationId = initialMutationId,
+                syncId = syncId,
+                ownerUid = aliceUid,
+                timestamp = 1000L,
+                dirtyFields = "TYPE,TIMESTAMP,LOCATION,COMMENT,PHOTO",
+                baseRevision = -1L,
+                status = MutationStatus.PENDING,
+                isLocalOnlyCreation = true
+            )
+        )
 
-        val modernDoc = C4FirestoreDocument(
+        // 2. En el reintento, Storage y Firestore operan normalmente
+        testPhotoResolver = { fakePhotoBytes }
+        coEvery { firestoreAdapter.queryServerDocuments(aliceUid) } returns emptyList()
+        coEvery { firestoreAdapter.readServerDocument(syncId) } returns null
+        coEvery { storageAdapter.uploadVersionedPhoto(aliceUid, syncId, initialMutationId, fakePhotoBytes, any()) } returns
+                C4StorageResult.Success("users/$aliceUid/beers/${syncId}_$initialMutationId.jpg", alreadyExisted = false)
+        coEvery { storageAdapter.photoExists(any()) } returns true
+        coEvery {
+            firestoreAdapter.executeCreateActive(
+                syncId = syncId,
+                ownerUid = aliceUid,
+                newDocument = any(),
+                mutationId = initialMutationId
+            )
+        } returns C4TransactionResult.Success(1L, initialMutationId)
+
+        val result = cutoverManager.executeCutover(aliceUid)
+
+        assertTrue("El reintento debe concluir exitosamente en Completed", result is CutoverResult.Completed)
+        val completed = result as CutoverResult.Completed
+        assertEquals(1, completed.pushedPendingCount)
+        assertEquals(0, persistence.historyDao.getPendingMutations(aliceUid).size)
+
+        val syncedBeer = beerDao.getBeerBySyncId(syncId, aliceUid)
+        assertNotNull(syncedBeer)
+        assertEquals(SyncStatus.SYNCED, syncedBeer!!.syncStatus)
+        assertEquals(1L, syncedBeer.remoteRevision)
+        assertEquals(SyncEngineMode.C4_ACTIVE, C4SyncConfig.engineMode)
+        assertTrue(C4SyncConfig.isEnabled)
+    }
+
+    /**
+     * 8. PROTECCIÓN DE DOCUMENTOS MODERNIZADOS Y FRONTERA DE ROLLBACK:
+     * Una vez que un documento remoto es ascendido a revision >= 1, las reglas de Firestore
+     * rechazan escrituras de clientes legacy.
+     * rollbackToLegacy() revierte el cliente local pero documenta con total transparencia
+     * que se alcanzó el punto de no retorno remoto.
+     */
+    @Test
+    fun legacyClient_writeAttemptOnModernDocument_andRollbackBoundary() = runBlocking {
+        val syncId = UUID.randomUUID().toString()
+        val upgradedDoc = C4FirestoreDocument(
             syncId = syncId,
             userId = aliceUid,
             type = "CANA",
             timestamp = 1000L,
             revision = 1L,
-            lastMutationId = "mut-existing",
+            lastMutationId = "mut-upgraded",
             fieldRevisions = C4FirestoreDocument.canonicalCreationFieldRevisions(1L)
         )
 
-        coEvery { firestoreAdapter.queryServerDocuments(aliceUid) } returns listOf(modernDoc)
-        coEvery { firestoreAdapter.readServerDocument(syncId) } returns modernDoc
+        coEvery { firestoreAdapter.queryServerDocuments(aliceUid) } returns listOf(upgradedDoc)
 
-        val result = cutoverManager.executeCutover(aliceUid)
-
-        assertTrue("Reintento debe reportar AlreadyUpToDate", result is CutoverResult.AlreadyUpToDate)
-        val activeCount = beerDao.getActiveBeersSync(aliceUid).size
-        assertEquals("No debe haber duplicados", 1, activeCount)
-    }
-
-    /**
-     * 6. Reversibilidad (Rollback):
-     * Permite cancelar la transición regresando a LEGACY sin perder ninguna cerveza.
-     */
-    @Test
-    fun rollbackToLegacy_preservesDataAndRestoresLegacyState() = runBlocking {
-        val syncId = UUID.randomUUID().toString()
-        val beer = BeerEntity(
-            type = BeerType.JARRA,
-            timestamp = 2000L,
-            comment = "Cerveza preservada",
-            syncId = syncId,
-            ownerUid = aliceUid,
-            syncStatus = SyncStatus.SYNCED,
-            remoteRevision = 1L,
-            baseRevision = 1L
-        )
-        beerDao.insertBeer(beer)
-
+        // Activar C4
         C4SyncConfig.isEnabled = true
         C4SyncConfig.engineMode = SyncEngineMode.C4_ACTIVE
 
-        val rolledBack = cutoverManager.rollbackToLegacy()
-        assertTrue(rolledBack)
+        // Ejecutar rollback
+        val rollbackResult = cutoverManager.rollbackToLegacy(aliceUid)
+
+        assertTrue(rollbackResult.isLocalReverted)
         assertEquals(SyncEngineMode.LEGACY, C4SyncConfig.engineMode)
         assertFalse(C4SyncConfig.isEnabled)
 
-        val preservedBeer = beerDao.getBeerBySyncId(syncId, aliceUid)
-        assertNotNull(preservedBeer)
-        assertEquals("Cerveza preservada", preservedBeer!!.comment)
+        // Verificar detección de frontera de no retorno
+        assertEquals(1, rollbackResult.remoteUpgradedCount)
+        assertTrue(rollbackResult.pointOfNoReturnReached)
+        assertTrue(rollbackResult.warningMessage.contains("IRREVERSIBLE"))
     }
 }

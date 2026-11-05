@@ -231,7 +231,8 @@ class C4AppSyncManager(
      */
     suspend fun pushBeer(
         syncId: String,
-        photoBytes: ByteArray? = null
+        photoBytes: ByteArray? = null,
+        photoResolver: (suspend (String) -> ByteArray?)? = null
     ): C4CoordinatorPushResult = withContext(Dispatchers.IO) {
         val history = persistence.historyDao.getMutationsForBeer(syncId, ownerUid)
         val isProvenCreation = history.any { it.isLocalOnlyCreation }
@@ -240,14 +241,19 @@ class C4AppSyncManager(
             isProvenNeverSyncedCreation = isProvenCreation,
             pastLocalMutationIds = pastMutationIds
         )
-        coordinator.executePush(syncId, ownerUid, photoBytes, evidence)
+        val beer = persistence.beerDao.getBeerBySyncId(syncId, ownerUid)
+        val resolvedBytes = photoBytes ?: beer?.photoUri?.let { uriStr ->
+            photoResolver?.invoke(uriStr)
+        }
+        coordinator.executePush(syncId, ownerUid, resolvedBytes, evidence)
     }
 
     /**
      * Empuja todas las cervezas que tienen mutaciones pendientes.
      */
     suspend fun pushAllPending(
-        photoBytesMap: Map<String, ByteArray> = emptyMap()
+        photoBytesMap: Map<String, ByteArray> = emptyMap(),
+        photoResolver: (suspend (String) -> ByteArray?)? = null
     ): Map<String, C4CoordinatorPushResult> = withContext(Dispatchers.IO) {
         val pendingBeers = persistence.beerDao.getPendingSyncBeers(ownerUid).filter { it.lastMutationId != null }
         val results = mutableMapOf<String, C4CoordinatorPushResult>()
@@ -259,10 +265,13 @@ class C4AppSyncManager(
                 isProvenNeverSyncedCreation = isProvenCreation,
                 pastLocalMutationIds = pastMutationIds
             )
+            val resolvedBytes = photoBytesMap[beer.syncId] ?: beer.photoUri?.let { uriStr ->
+                photoResolver?.invoke(uriStr)
+            }
             results[beer.syncId] = coordinator.executePush(
                 syncId = beer.syncId,
                 ownerUid = ownerUid,
-                photoBytes = photoBytesMap[beer.syncId],
+                photoBytes = resolvedBytes,
                 historicalEvidence = evidence
             )
         }
