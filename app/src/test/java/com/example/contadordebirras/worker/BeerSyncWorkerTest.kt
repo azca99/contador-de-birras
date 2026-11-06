@@ -27,6 +27,7 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import androidx.test.core.app.ApplicationProvider
 
+import com.example.contadordebirras.sync.c4.C4ProviderSyncResult
 import com.example.contadordebirras.sync.c4.C4SyncConfig
 import com.example.contadordebirras.sync.c4.C4SyncProvider
 import com.example.contadordebirras.sync.c4.C4SyncProviderRegistry
@@ -337,7 +338,7 @@ class BeerSyncWorkerTest {
         mockkConstructor(BeerSyncEngine::class)
 
         val mockProvider = mockk<C4SyncProvider>(relaxed = true)
-        coEvery { mockProvider.syncUser(any(), "user_A") } returns true
+        coEvery { mockProvider.syncUser(any(), "user_A") } returns C4ProviderSyncResult.Success
         C4SyncProviderRegistry.setProvider(mockProvider)
 
         // Persistir C4_ACTIVE para el usuario
@@ -353,6 +354,53 @@ class BeerSyncWorkerTest {
         assertEquals(Result.success(), result)
         // Se ejecuta el proveedor C4 registrado
         coVerify(exactly = 1) { mockProvider.syncUser(any(), "user_A") }
+        // El motor legacy NUNCA debe ejecutarse
+        coVerify(exactly = 0) { anyConstructed<BeerSyncEngine>().sync() }
+    }
+
+    @Test
+    fun `doWork returns failure and blocks legacy when mode is C4_ACTIVE but provider is inactive`() = runTest {
+        every { user.uid } returns "user_A"
+        mockkConstructor(BeerSyncEngine::class)
+
+        // Por defecto, C4SyncProviderRegistry usa InactiveProductionC4SyncProvider
+        C4SyncProviderRegistry.reset()
+
+        // Persistir C4_ACTIVE para el usuario
+        C4SyncStateStore.setEngineMode(context, "user_A", SyncEngineMode.C4_ACTIVE)
+
+        val inputData = Data.Builder().putString(BeerSyncWorker.KEY_EXPECTED_UID, "user_A").build()
+        val worker = TestListenableWorkerBuilder<BeerSyncWorker>(context)
+            .setInputData(inputData)
+            .build()
+
+        val result = worker.doWork()
+
+        // Debe retornar failure() explícito (no éxito ficticio ni reintentos infinitos)
+        assertEquals(Result.failure(), result)
+        // El motor legacy NUNCA debe ejecutarse
+        coVerify(exactly = 0) { anyConstructed<BeerSyncEngine>().sync() }
+    }
+
+    @Test
+    fun `doWork retries when mode is C4_ACTIVE and provider returns TransientError`() = runTest {
+        every { user.uid } returns "user_A"
+        mockkConstructor(BeerSyncEngine::class)
+
+        val mockProvider = mockk<C4SyncProvider>(relaxed = true)
+        coEvery { mockProvider.syncUser(any(), "user_A") } returns C4ProviderSyncResult.TransientError("network timeout")
+        C4SyncProviderRegistry.setProvider(mockProvider)
+
+        C4SyncStateStore.setEngineMode(context, "user_A", SyncEngineMode.C4_ACTIVE)
+
+        val inputData = Data.Builder().putString(BeerSyncWorker.KEY_EXPECTED_UID, "user_A").build()
+        val worker = TestListenableWorkerBuilder<BeerSyncWorker>(context)
+            .setInputData(inputData)
+            .build()
+
+        val result = worker.doWork()
+
+        assertEquals(Result.retry(), result)
         // El motor legacy NUNCA debe ejecutarse
         coVerify(exactly = 0) { anyConstructed<BeerSyncEngine>().sync() }
     }

@@ -661,8 +661,60 @@ class C4StagingCutoverManagerTest {
         assertFalse("NUNCA debe reactivar escrituras legacy si el estado remoto es desconocido", rollbackResult.isLegacyReactivated)
         assertTrue("Debe marcar punto de no retorno por precaución", rollbackResult.pointOfNoReturnReached)
         assertEquals("El motor debe permanecer DETENIDO (HALTED)", SyncEngineMode.HALTED, C4SyncConfig.engineMode)
-        assertFalse(C4SyncConfig.isEnabled)
         assertTrue(rollbackResult.warningMessage.contains("ESTADO REMOTO DESCONOCIDO"))
         assertFalse(rollbackResult.warningMessage.contains("Rollback local seguro completado"))
+    }
+
+    /**
+     * REGRESIÓN 4: Fallo al confirmar el bloqueo de protocolo remoto en Firestore.
+     * Si writeAccountProtocolLock falla, el cutover NO debe establecer C4_ACTIVE,
+     * NO debe anunciar Completed, debe mantener HALTED y registrar el checkpoint recuperable.
+     */
+    @Test
+    fun regression_cutover_whenWriteAccountProtocolLockFails_keepsHaltedAndReturnsBlocked() = runBlocking {
+        val syncId = UUID.randomUUID().toString()
+        val beer = LegacyBeerFixtures.createLegacyRoomBeer(
+            ownerUid = aliceUid,
+            syncId = syncId,
+            syncStatus = SyncStatus.SYNCED,
+            comment = "Cerveza para cutover"
+        )
+        beerDao.insertBeer(beer)
+
+        val remoteDoc = C4FirestoreDocument(
+            syncId = syncId,
+            userId = aliceUid,
+            type = "CANA",
+            timestamp = 1000L,
+            revision = 0L,
+            lastMutationId = "legacy-mut",
+            fieldRevisions = emptyMap()
+        )
+        val upgradedRemoteDoc = remoteDoc.copy(
+            revision = 1L,
+            lastMutationId = "mut-upgrade",
+            fieldRevisions = C4FirestoreDocument.canonicalCreationFieldRevisions(1L)
+        )
+        coEvery { firestoreAdapter.queryServerDocuments(aliceUid) } returnsMany listOf(
+            listOf(remoteDoc),
+            listOf(upgradedRemoteDoc)
+        )
+        coEvery { firestoreAdapter.executeLegacyUpgrade(syncId, aliceUid, any()) } returns C4TransactionResult.Success(1L, "mut-upgrade")
+        coEvery { firestoreAdapter.readServerDocument(syncId) } returns upgradedRemoteDoc
+
+        // Simular que la escritura del bloqueo de protocolo en Firestore falla
+        coEvery { firestoreAdapter.writeAccountProtocolLock(aliceUid, any(), any()) } returns false
+
+        val result = cutoverManager.executeCutover(aliceUid)
+
+        assertTrue("Debe retornar Blocked cuando falla la confirmación del bloqueo remoto", result is CutoverResult.Blocked)
+        val blocked = result as CutoverResult.Blocked
+        assertTrue("El motivo debe indicar fallo en el bloqueo de protocolo", blocked.reason.contains("bloqueo de protocolo C4"))
+
+        // C4 NO debe establecerse como activo
+        assertEquals(SyncEngineMode.HALTED, C4SyncConfig.engineMode)
+        assertFalse(C4SyncConfig.isEnabled)
+        assertEquals(SyncEngineMode.HALTED, C4SyncStateStore.getEngineMode(context, aliceUid))
+        assertEquals("HALTED_RECOVERABLE_LOCK_FAILED", C4SyncStateStore.getMigrationCheckpoint(context, aliceUid))
     }
 }

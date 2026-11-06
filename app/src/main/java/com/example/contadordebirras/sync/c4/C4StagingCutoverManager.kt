@@ -109,16 +109,40 @@ class C4StagingCutoverManager(
                     performCutoverInternal(ownerUid)
                 }
 
-                if (result is CutoverResult.Completed) {
-                    C4SyncConfig.engineMode = SyncEngineMode.C4_ACTIVE
-                    C4SyncConfig.isEnabled = true
-                    context?.let { ctx ->
-                        C4SyncStateStore.setEngineMode(ctx, ownerUid, SyncEngineMode.C4_ACTIVE)
-                        C4SyncStateStore.recordMigrationCheckpoint(ctx, ownerUid, "COMPLETED")
-                    }
-                    try {
+                val finalResult = if (result is CutoverResult.Completed) {
+                    // 1. Confirmar el bloqueo de protocolo remoto en Firestore ANTES de activar C4_ACTIVE
+                    val lockWritten = try {
                         firestoreAdapter.writeAccountProtocolLock(ownerUid)
-                    } catch (_: Exception) {}
+                    } catch (_: Exception) {
+                        false
+                    }
+
+                    if (lockWritten) {
+                        C4SyncConfig.engineMode = SyncEngineMode.C4_ACTIVE
+                        C4SyncConfig.isEnabled = true
+                        context?.let { ctx ->
+                            C4SyncStateStore.setEngineMode(ctx, ownerUid, SyncEngineMode.C4_ACTIVE)
+                            C4SyncStateStore.recordMigrationCheckpoint(ctx, ownerUid, "COMPLETED")
+                        }
+                        result
+                    } else {
+                        // Ante error al confirmar el bloqueo remoto, NO establecer C4_ACTIVE ni anunciar Completed.
+                        // Mantener HALTED y registrar estado recuperable.
+                        C4SyncConfig.engineMode = SyncEngineMode.HALTED
+                        C4SyncConfig.isEnabled = false
+                        context?.let { ctx ->
+                            C4SyncStateStore.setEngineMode(ctx, ownerUid, SyncEngineMode.HALTED)
+                            C4SyncStateStore.recordMigrationCheckpoint(
+                                ctx,
+                                ownerUid,
+                                "HALTED_RECOVERABLE_LOCK_FAILED"
+                            )
+                        }
+                        CutoverResult.Blocked(
+                            reason = "Fallo al confirmar el bloqueo de protocolo C4 en Firestore (/users/$ownerUid). El motor permanece en HALTED para proteger los datos.",
+                            details = result.details
+                        )
+                    }
                 } else {
                     // Ante cualquier interrupción, incompletitud o bloqueo, NO volver a LEGACY.
                     // Mantener en HALTED para proteger contra reactivación legacy destructiva.
@@ -128,9 +152,10 @@ class C4StagingCutoverManager(
                         C4SyncStateStore.setEngineMode(ctx, ownerUid, SyncEngineMode.HALTED)
                         C4SyncStateStore.recordMigrationCheckpoint(ctx, ownerUid, "HALTED_RECOVERABLE")
                     }
+                    result
                 }
 
-                result
+                finalResult
             } catch (e: Exception) {
                 // Si la migración pudo tocar Firestore y luego falla, no reactivar escrituras legacy.
                 // Mantener HALTED y registrar estado recuperable.

@@ -54,12 +54,6 @@ class FirestoreC4SyncAdapter(
                     kotlinx.coroutines.delay(300L * attempt)
                     continue
                 }
-                if (e.code == FirebaseFirestoreException.Code.UNAVAILABLE || e.message?.contains("offline") == true) {
-                    try {
-                        val fallbackSnapshot = getDocRef(syncId).get().await()
-                        return C4FirestoreDocument.fromDocumentSnapshot(syncId, fallbackSnapshot)
-                    } catch (_: Exception) {}
-                }
                 throw e
             }
         }
@@ -428,37 +422,35 @@ class FirestoreC4SyncAdapter(
      */
     suspend fun readAccountProtocolLock(ownerUid: String): AccountProtocolLock? {
         val userDocRef = firestore.collection("users").document(ownerUid)
-        var snapshot: com.google.firebase.firestore.DocumentSnapshot? = null
+        var lastException: Exception? = null
         for (attempt in 1..3) {
             try {
-                snapshot = userDocRef.get(Source.SERVER).await()
-                break
+                val snapshot = userDocRef.get(Source.SERVER).await()
+                if (!snapshot.exists()) return null
+                val protocol = snapshot.getString("syncProtocolVersion")
+                val minVersion = snapshot.getLong("minSupportedAppVersionCode") ?: 1L
+                val migratedAt = snapshot.getLong("c4MigratedAt") ?: 0L
+                val state = snapshot.getString("accountSyncState") ?: "UNKNOWN"
+                return AccountProtocolLock(
+                    syncProtocolVersion = protocol ?: "LEGACY",
+                    minSupportedAppVersionCode = minVersion,
+                    c4MigratedAt = migratedAt,
+                    accountSyncState = state
+                )
             } catch (e: FirebaseFirestoreException) {
                 if (e.code == FirebaseFirestoreException.Code.NOT_FOUND) return null
+                lastException = e
                 if (attempt < 3 && (e.code == FirebaseFirestoreException.Code.UNAVAILABLE || e.message?.contains("offline") == true)) {
                     kotlinx.coroutines.delay(300L * attempt)
                     continue
                 }
-                try {
-                    snapshot = userDocRef.get().await()
-                    break
-                } catch (_: Exception) {}
-            } catch (_: Exception) {
-                break
+                throw e
+            } catch (e: Exception) {
+                lastException = e
+                throw e
             }
         }
-        val doc = snapshot ?: return null
-        if (!doc.exists()) return null
-        val protocol = doc.getString("syncProtocolVersion")
-        val minVersion = doc.getLong("minSupportedAppVersionCode") ?: 1L
-        val migratedAt = doc.getLong("c4MigratedAt") ?: 0L
-        val state = doc.getString("accountSyncState") ?: "UNKNOWN"
-        return AccountProtocolLock(
-            syncProtocolVersion = protocol ?: "LEGACY",
-            minSupportedAppVersionCode = minVersion,
-            c4MigratedAt = migratedAt,
-            accountSyncState = state
-        )
+        throw lastException ?: IllegalStateException("Error al leer bloqueo de protocolo para $ownerUid desde SERVER")
     }
 }
 

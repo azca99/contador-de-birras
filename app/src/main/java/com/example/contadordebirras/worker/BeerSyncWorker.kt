@@ -37,9 +37,23 @@ class BeerSyncWorker(
         if (persistedMode == com.example.contadordebirras.sync.c4.SyncEngineMode.C4_ACTIVE) {
             // Ejecutar sincronización C4 mediante el proveedor inyectado bajo exclusión mutua
             return com.example.contadordebirras.sync.c4.C4SyncConfig.syncExecutionMutex.withLock {
-                val success = com.example.contadordebirras.sync.c4.C4SyncProviderRegistry.getProvider()
-                    .syncUser(applicationContext, expectedUid)
-                if (success) Result.success() else Result.retry()
+                val provider = com.example.contadordebirras.sync.c4.C4SyncProviderRegistry.getProvider()
+                when (val syncResult = provider.syncUser(applicationContext, expectedUid)) {
+                    is com.example.contadordebirras.sync.c4.C4ProviderSyncResult.Success -> {
+                        Result.success()
+                    }
+                    is com.example.contadordebirras.sync.c4.C4ProviderSyncResult.InactiveOrBlocked -> {
+                        // Si el estado es C4_ACTIVE pero el proveedor está inactivo o bloqueado:
+                        // 1. NO ejecutar Legacy (se respeta la exclusión mutua y el modo C4_ACTIVE).
+                        // 2. NO comunicar sincronización completada (no devolver Result.success()).
+                        // 3. Dejar un error explícito sin reintentos infinitos (Result.failure()).
+                        Result.failure()
+                    }
+                    is com.example.contadordebirras.sync.c4.C4ProviderSyncResult.TransientError -> {
+                        // Fallo transitorio con proveedor operativo: reintentar
+                        Result.retry()
+                    }
+                }
             }
         }
 
