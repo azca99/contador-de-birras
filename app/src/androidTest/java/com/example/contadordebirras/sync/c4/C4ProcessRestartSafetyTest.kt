@@ -8,14 +8,16 @@ import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import androidx.work.workDataOf
 import com.example.contadordebirras.data.BeerDatabase
-import com.example.contadordebirras.data.BeerEntity
 import com.example.contadordebirras.data.LocalMutationHistoryEntity
 import com.example.contadordebirras.data.MutationStatus
 import com.example.contadordebirras.data.SyncStatus
-import com.example.contadordebirras.domain.BeerType
 import com.example.contadordebirras.worker.BeerSyncWorker
+import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.firestore.FirebaseFirestore
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.tasks.await
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -24,41 +26,84 @@ import org.junit.runner.RunWith
 /**
  * Prueba Real de Seguridad tras Cierre Forzado del Proceso (am force-stop) y Reinicio de la App.
  *
- * Valida:
- * 1. Preparación de cuenta con estado HALTED, checkpoint de migración interrumpida y mutación local PENDING.
- * 2. Cierre forzado del proceso desde fuera (vía ADB am force-stop).
- * 3. Reapertura del proceso de la app (vía ADB am start).
- * 4. Verificación de que el estado persistente en disco sobrevive como HALTED.
- * 5. Ejecución real de BeerSyncWorker en el nuevo proceso:
- *    - Comprobación de que NO ejecuta Legacy (persistedMode != LEGACY).
- *    - Comprobación de que la mutación local sigue intacta y PENDING en Room.
- *    - Comprobación de que no hubo escrituras remotas.
+ * GARANTÍAS VERIFICADAS:
+ * 1. Autenticación real en Firebase Emulator: Emplea un UID auténtico registrado en FirebaseAuth,
+ *    evitando falsos positivos por UID mismatch (AUTH_CHANGED) en [BeerSyncWorker].
+ * 2. Comprobación fehaciente de la ruta de bloqueo HALTED: Se verifica que currentUid == expectedUid
+ *    y que la finalización del worker se debe estrictamente a [SyncEngineMode.HALTED].
+ * 3. Supervivencia durable del estado: Comprueba que SharedPreferences en disco mantiene HALTED
+ *    y el checkpoint de migración tras matar el proceso.
+ * 4. Preservación estricta de datos locales: La mutación y entidad en Room permanecen en PENDING.
+ * 5. Verificación efectiva de ausencia de escrituras remotas: Consulta directamente Firestore
+ *    para comprobar que el documento no fue escrito en el servidor.
  */
 @RunWith(AndroidJUnit4::class)
 class C4ProcessRestartSafetyTest {
 
     companion object {
-        const val TEST_UID = "user_c4_process_restart_safety"
+        const val TEST_EMAIL = "restart_safety_test@contador-c4.test"
+        const val TEST_PASSWORD = "password123456"
         const val TEST_SYNC_ID = "sync_c4_restart_beer_1"
         const val TEST_MUTATION_ID = "mut_c4_restart_init_1"
         const val TEST_CHECKPOINT = "MIGRATION_INTERRUPTED_CHECKPOINT"
+
+        private const val PREFS_TEST_NAME = "c4_restart_test_prefs"
+        private const val KEY_RECORDED_UID = "test_authenticated_uid"
+    }
+
+    private fun ensureEmulatorConfigured() {
+        try {
+            FirebaseAuth.getInstance().useEmulator(
+                C4SyncConstants.EMULATOR_HOST_ANDROID,
+                C4TestEnvironmentFactory.REQUIRED_AUTH_PORT
+            )
+        } catch (_: IllegalStateException) {
+            // Ya configurado o en uso
+        }
+        try {
+            FirebaseFirestore.getInstance().useEmulator(
+                C4SyncConstants.EMULATOR_HOST_ANDROID,
+                C4SyncConstants.FIRESTORE_PORT
+            )
+        } catch (_: IllegalStateException) {
+            // Ya configurado o en uso
+        }
     }
 
     /**
-     * Paso 1: Inicializa y persiste el estado HALTED, checkpoint y mutación local pendiente.
+     * Paso 1: Autentica un usuario real en Firebase Auth Emulator, persiste el estado HALTED,
+     * registra el checkpoint de migración e inserta la mutación local PENDING en Room.
      */
     @Test
     fun step1_prepareHaltedAccount() = runBlocking {
         val context = ApplicationProvider.getApplicationContext<Context>()
+        ensureEmulatorConfigured()
+
+        // 1. Autenticar usuario REAL en Firebase Auth Emulator
+        val auth = FirebaseAuth.getInstance()
+        val authUser = try {
+            auth.signInWithEmailAndPassword(TEST_EMAIL, TEST_PASSWORD).await().user
+        } catch (_: Exception) {
+            auth.createUserWithEmailAndPassword(TEST_EMAIL, TEST_PASSWORD).await().user
+        }
+        assertNotNull("FirebaseAuth debe tener un usuario autenticado real en el emulador", authUser)
+        val authenticatedUid = authUser!!.uid
+
+        // Persistir el UID autenticado para verificación de ruta en step2
+        context.getSharedPreferences(PREFS_TEST_NAME, Context.MODE_PRIVATE)
+            .edit()
+            .putString(KEY_RECORDED_UID, authenticatedUid)
+            .commit()
+
         val db = BeerDatabase.getDatabase(context)
         val beerDao = db.beerDao()
 
-        // 1. Limpiar rastro previo si existiese
-        C4SyncStateStore.clearForTesting(context, TEST_UID)
+        // 2. Limpiar rastro previo para este UID autenticado
+        C4SyncStateStore.clearForTesting(context, authenticatedUid)
 
-        // 2. Insertar cerveza local con mutación PENDING
+        // 3. Insertar cerveza local con mutación PENDING asociada al UID autenticado real
         val beer = LegacyBeerFixtures.createLegacyRoomBeer(
-            ownerUid = TEST_UID,
+            ownerUid = authenticatedUid,
             syncId = TEST_SYNC_ID,
             syncStatus = SyncStatus.PENDING,
             comment = "Cerveza Local Pendiente Antes del Force-Stop"
@@ -68,11 +113,11 @@ class C4ProcessRestartSafetyTest {
         )
         beerDao.insertBeer(beer)
 
-        // 3. Insertar historial de mutación PENDING
+        // 4. Insertar historial de mutación PENDING asociada al UID autenticado real
         val historyRecord = LocalMutationHistoryEntity(
             mutationId = TEST_MUTATION_ID,
             syncId = TEST_SYNC_ID,
-            ownerUid = TEST_UID,
+            ownerUid = authenticatedUid,
             timestamp = 1700000000000L,
             dirtyFields = "COMMENT",
             baseRevision = 0L,
@@ -81,18 +126,18 @@ class C4ProcessRestartSafetyTest {
         )
         beerDao.insertHistoryRecord(historyRecord)
 
-        // 4. Persistir estado HALTED y checkpoint en SharedPreferences (commit síncrono a disco)
-        C4SyncStateStore.setEngineMode(context, TEST_UID, SyncEngineMode.HALTED, commitSync = true)
-        C4SyncStateStore.recordMigrationCheckpoint(context, TEST_UID, TEST_CHECKPOINT, commitSync = true)
+        // 5. Persistir estado HALTED y checkpoint en SharedPreferences (commit síncrono a disco)
+        C4SyncStateStore.setEngineMode(context, authenticatedUid, SyncEngineMode.HALTED, commitSync = true)
+        C4SyncStateStore.recordMigrationCheckpoint(context, authenticatedUid, TEST_CHECKPOINT, commitSync = true)
 
-        // Verificación inmediata antes de matar el proceso
-        assertEquals(SyncEngineMode.HALTED, C4SyncStateStore.getEngineMode(context, TEST_UID))
-        assertEquals(TEST_CHECKPOINT, C4SyncStateStore.getMigrationCheckpoint(context, TEST_UID))
-        val insertedBeer = beerDao.getBeerBySyncId(TEST_SYNC_ID, TEST_UID)
+        // Verificación inmediata antes del force-stop
+        assertEquals(SyncEngineMode.HALTED, C4SyncStateStore.getEngineMode(context, authenticatedUid))
+        assertEquals(TEST_CHECKPOINT, C4SyncStateStore.getMigrationCheckpoint(context, authenticatedUid))
+        val insertedBeer = beerDao.getBeerBySyncId(TEST_SYNC_ID, authenticatedUid)
         assertNotNull(insertedBeer)
         assertEquals(SyncStatus.PENDING, insertedBeer!!.syncStatus)
 
-        println("[RESTART_TEST_STEP1] PREPARATION_HALTED_OK")
+        println("[RESTART_TEST_STEP1] PREPARATION_HALTED_OK with real UID: $authenticatedUid")
     }
 
     /**
@@ -102,27 +147,65 @@ class C4ProcessRestartSafetyTest {
     @Test
     fun step2_verifyAfterRestart() = runBlocking {
         val context = ApplicationProvider.getApplicationContext<Context>()
-        val db = BeerDatabase.getDatabase(context)
-        val beerDao = db.beerDao()
+        ensureEmulatorConfigured()
 
-        // 1. Confirmar que la memoria estática de C4 se reinició a valores por defecto
-        // (En un proceso limpio, isEnabled es false)
-        println("[RESTART_TEST_STEP2] Static isEnabled in new process: ${C4SyncConfig.isEnabled}")
+        val auth = FirebaseAuth.getInstance()
+        val currentUid = auth.currentUser?.uid
 
-        // 2. Comprobar que el estado PERSISTENTE en disco sigue siendo HALTED
-        val persistedMode = C4SyncStateStore.getEngineMode(context, TEST_UID)
-        assertEquals("El estado persistente debe seguir siendo HALTED tras el reinicio", SyncEngineMode.HALTED, persistedMode)
+        // 1. VERIFICACIÓN DE CONDICIÓN DE AUTENTICACIÓN:
+        // Asegurar que el usuario sigue autenticado tras el reinicio y coincide con el UID esperado
+        val recordedUid = context.getSharedPreferences(PREFS_TEST_NAME, Context.MODE_PRIVATE)
+            .getString(KEY_RECORDED_UID, null)
 
-        val checkpoint = C4SyncStateStore.getMigrationCheckpoint(context, TEST_UID)
-        assertEquals("El checkpoint recuperable debe persistir intacto", TEST_CHECKPOINT, checkpoint)
+        assertNotNull(
+            "UID autenticado previamente debe existir en las preferencias de test",
+            recordedUid
+        )
+        assertNotNull(
+            "FirebaseAuth.currentUser.uid NO debe ser nulo tras el reinicio. " +
+            "Si el usuario no está autenticado, BeerSyncWorker finalizaría prematuramente por UID mismatch (AUTH_CHANGED) " +
+            "generando un falso positivo antes de comprobar HALTED.",
+            currentUid
+        )
+        assertEquals(
+            "El usuario autenticado en FirebaseAuth debe coincidir exactamente con el UID registrado",
+            recordedUid,
+            currentUid
+        )
 
-        // 3. Encolar y ejecutar BeerSyncWorker en el entorno real de Android WorkManager
+        val authenticatedUid = currentUid!!
+
+        // 2. COMPROBACIÓN FIABLE DE QUE SE TOMA LA RUTA DE BLOQUEO HALTED:
+        // a) La memoria estática del proceso se reinició por defecto (C4SyncConfig.isEnabled = false)
+        assertFalse("Memoria estática debe iniciar con isEnabled = false", C4SyncConfig.isEnabled)
+        assertEquals("Memoria estática debe iniciar con engineMode = LEGACY", SyncEngineMode.LEGACY, C4SyncConfig.engineMode)
+
+        // b) El estado persistente en disco SOBREVIVIÓ como HALTED para este usuario
+        val persistedMode = C4SyncStateStore.getEngineMode(context, authenticatedUid)
+        assertEquals(
+            "El estado persistente en disco debe ser HALTED para el UID autenticado",
+            SyncEngineMode.HALTED,
+            persistedMode
+        )
+        val checkpoint = C4SyncStateStore.getMigrationCheckpoint(context, authenticatedUid)
+        assertEquals(
+            "El checkpoint recuperable debe persistir intacto",
+            TEST_CHECKPOINT,
+            checkpoint
+        )
+        assertTrue(
+            "Legacy debe estar bloqueado formalmente según C4SyncStateStore",
+            C4SyncStateStore.isLegacyBlocked(context, authenticatedUid)
+        )
+
+        // c) Ejecutar BeerSyncWorker en el entorno real de Android WorkManager.
+        // Dado que currentUid == expectedUid, NO toma la ruta de aborto temprano por UID mismatch.
+        // Toma la ruta de comprobación de modo persistente HALTED y retorna Result.success() sin invocar Legacy.
         val workRequest = OneTimeWorkRequestBuilder<BeerSyncWorker>()
-            .setInputData(workDataOf(BeerSyncWorker.KEY_EXPECTED_UID to TEST_UID))
+            .setInputData(workDataOf(BeerSyncWorker.KEY_EXPECTED_UID to authenticatedUid))
             .build()
         WorkManager.getInstance(context).enqueue(workRequest).result.get()
 
-        // Esperar a que el worker finalice su ejecución
         var attempts = 0
         var workInfo: WorkInfo? = WorkManager.getInstance(context).getWorkInfoById(workRequest.id).get()
         while (workInfo != null && !workInfo.state.isFinished && attempts < 30) {
@@ -133,17 +216,42 @@ class C4ProcessRestartSafetyTest {
         assertNotNull("WorkInfo no debe ser nulo", workInfo)
         assertEquals("BeerSyncWorker debió finalizar en SUCCEEDED", WorkInfo.State.SUCCEEDED, workInfo!!.state)
 
-        // 4. Confirmar que la mutación y la entidad en Room siguen PENDING (NO fueron modificadas ni borradas por Legacy)
-        val beerAfterWorker = beerDao.getBeerBySyncId(TEST_SYNC_ID, TEST_UID)
+        // 3. VERIFICACIÓN DE QUE NO SE EJECUTÓ EL MOTOR LEGACY:
+        // Si el motor Legacy se hubiera ejecutado para este usuario autenticado:
+        // - Habría subido la cerveza a Firestore
+        // - Habría marcado la cerveza en Room como SYNCED
+        val db = BeerDatabase.getDatabase(context)
+        val beerDao = db.beerDao()
+        val beerAfterWorker = beerDao.getBeerBySyncId(TEST_SYNC_ID, authenticatedUid)
         assertNotNull("La cerveza debe seguir existiendo en Room", beerAfterWorker)
-        assertEquals("La cerveza debe seguir en estado PENDING", SyncStatus.PENDING, beerAfterWorker!!.syncStatus)
+        assertEquals(
+            "La cerveza debe permanecer estrictamente en SyncStatus.PENDING (el motor Legacy no la procesó)",
+            SyncStatus.PENDING,
+            beerAfterWorker!!.syncStatus
+        )
         assertEquals("El comentario debe preservarse", "Cerveza Local Pendiente Antes del Force-Stop", beerAfterWorker.comment)
-        assertEquals("Revision remota debe ser 0", 0L, beerAfterWorker.remoteRevision)
+        assertEquals("Revision remota debe seguir siendo 0", 0L, beerAfterWorker.remoteRevision)
 
-        val targetHistory = db.beerDao().getHistoryRecordById(TEST_MUTATION_ID, TEST_UID)
+        val targetHistory = db.beerDao().getHistoryRecordById(TEST_MUTATION_ID, authenticatedUid)
         assertNotNull("La mutación pendiente debe seguir existiendo en el historial", targetHistory)
-        assertEquals("La mutación debe seguir en PENDING", MutationStatus.PENDING, targetHistory!!.status)
+        assertEquals(
+            "La mutación debe seguir estrictamente en MutationStatus.PENDING",
+            MutationStatus.PENDING,
+            targetHistory!!.status
+        )
 
-        println("[RESTART_TEST_STEP2] VERIFICATION_SUCCESS_LEGACY_NOT_EXECUTED")
+        // 4. VERIFICACIÓN EFECTIVA DE AUSENCIA DE ESCRITURAS REMOTAS EN FIRESTORE:
+        val firestore = FirebaseFirestore.getInstance()
+        val remoteDoc = firestore.collection(C4SyncConstants.BEERS_COLLECTION)
+            .document(TEST_SYNC_ID)
+            .get()
+            .await()
+        assertFalse(
+            "VERIFICACIÓN EFECTIVA: El documento remoto beers/$TEST_SYNC_ID NO debe existir en Firestore. " +
+            "Si el motor Legacy se hubiese ejecutado, el documento existiría.",
+            remoteDoc.exists()
+        )
+
+        println("[RESTART_TEST_STEP2] VERIFICATION_SUCCESS_HALTED_BLOCK_EFFECTIVE_NO_REMOTE_WRITES")
     }
 }
