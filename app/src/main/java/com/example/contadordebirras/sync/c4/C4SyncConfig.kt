@@ -1,5 +1,6 @@
 package com.example.contadordebirras.sync.c4
 
+import android.content.Context
 import kotlinx.coroutines.sync.Mutex
 
 /**
@@ -53,6 +54,25 @@ object C4SyncConfig {
      * Consulta segura de activación.
      */
     fun isC4Active(): Boolean = isEnabled && engineMode == SyncEngineMode.C4_ACTIVE
+
+    /**
+     * Consulta el modo persistente y sincroniza el estado en memoria para un usuario.
+     */
+    fun restoreUserEngineMode(context: Context, ownerUid: String): SyncEngineMode {
+        val persistedMode = C4SyncStateStore.getEngineMode(context, ownerUid)
+        this.engineMode = persistedMode
+        this.isEnabled = (persistedMode == SyncEngineMode.C4_ACTIVE)
+        return persistedMode
+    }
+
+    /**
+     * Actualiza el modo del motor persistente y en memoria para un usuario.
+     */
+    fun setUserEngineMode(context: Context, ownerUid: String, mode: SyncEngineMode) {
+        C4SyncStateStore.setEngineMode(context, ownerUid, mode)
+        this.engineMode = mode
+        this.isEnabled = (mode == SyncEngineMode.C4_ACTIVE)
+    }
 
     /**
      * Restablece la configuración al estado seguro por defecto (desactivado y LEGACY).

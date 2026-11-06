@@ -27,6 +27,12 @@ import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
 import androidx.test.core.app.ApplicationProvider
 
+import com.example.contadordebirras.sync.c4.C4SyncConfig
+import com.example.contadordebirras.sync.c4.C4SyncProvider
+import com.example.contadordebirras.sync.c4.C4SyncProviderRegistry
+import com.example.contadordebirras.sync.c4.C4SyncStateStore
+import com.example.contadordebirras.sync.c4.SyncEngineMode
+
 @OptIn(ExperimentalCoroutinesApi::class)
 @RunWith(RobolectricTestRunner::class)
 class BeerSyncWorkerTest {
@@ -46,6 +52,11 @@ class BeerSyncWorkerTest {
         auth = mockk(relaxed = true)
         user = mockk(relaxed = true)
 
+        C4SyncStateStore.clearForTesting(context)
+        C4SyncConfig.engineMode = SyncEngineMode.LEGACY
+        C4SyncConfig.isEnabled = false
+        C4SyncProviderRegistry.reset()
+
         mockkStatic(FirebaseAuth::class)
         every { FirebaseAuth.getInstance() } returns auth
         every { auth.currentUser } returns user
@@ -53,6 +64,10 @@ class BeerSyncWorkerTest {
 
     @After
     fun tearDown() {
+        C4SyncStateStore.clearForTesting(context)
+        C4SyncConfig.engineMode = SyncEngineMode.LEGACY
+        C4SyncConfig.isEnabled = false
+        C4SyncProviderRegistry.reset()
         beerDatabase.close()
         Dispatchers.resetMain()
         unmockkAll()
@@ -274,5 +289,71 @@ class BeerSyncWorkerTest {
         job2.join()
         assertEquals(Result.success(), result2)
         coVerify(exactly = 1) { anyConstructed<BeerSyncEngine>().sync() }
+    }
+
+    @Test
+    fun `doWork skips legacy sync and returns success when mode is HALTED in C4SyncStateStore`() = runTest {
+        every { user.uid } returns "user_A"
+        mockkConstructor(BeerSyncEngine::class)
+
+        // Persistir HALTED para el usuario
+        C4SyncStateStore.setEngineMode(context, "user_A", SyncEngineMode.HALTED)
+
+        val inputData = Data.Builder().putString(BeerSyncWorker.KEY_EXPECTED_UID, "user_A").build()
+        val worker = TestListenableWorkerBuilder<BeerSyncWorker>(context)
+            .setInputData(inputData)
+            .build()
+
+        val result = worker.doWork()
+
+        assertEquals(Result.success(), result)
+        // El motor legacy NUNCA debe ejecutarse
+        coVerify(exactly = 0) { anyConstructed<BeerSyncEngine>().sync() }
+    }
+
+    @Test
+    fun `doWork skips legacy sync and returns success when mode is CUTOVER_IN_PROGRESS in C4SyncStateStore`() = runTest {
+        every { user.uid } returns "user_A"
+        mockkConstructor(BeerSyncEngine::class)
+
+        // Persistir CUTOVER_IN_PROGRESS para el usuario
+        C4SyncStateStore.setEngineMode(context, "user_A", SyncEngineMode.CUTOVER_IN_PROGRESS)
+
+        val inputData = Data.Builder().putString(BeerSyncWorker.KEY_EXPECTED_UID, "user_A").build()
+        val worker = TestListenableWorkerBuilder<BeerSyncWorker>(context)
+            .setInputData(inputData)
+            .build()
+
+        val result = worker.doWork()
+
+        assertEquals(Result.success(), result)
+        // El motor legacy NUNCA debe ejecutarse
+        coVerify(exactly = 0) { anyConstructed<BeerSyncEngine>().sync() }
+    }
+
+    @Test
+    fun `doWork delegates to C4SyncProvider when mode is C4_ACTIVE in C4SyncStateStore`() = runTest {
+        every { user.uid } returns "user_A"
+        mockkConstructor(BeerSyncEngine::class)
+
+        val mockProvider = mockk<C4SyncProvider>(relaxed = true)
+        coEvery { mockProvider.syncUser(any(), "user_A") } returns true
+        C4SyncProviderRegistry.setProvider(mockProvider)
+
+        // Persistir C4_ACTIVE para el usuario
+        C4SyncStateStore.setEngineMode(context, "user_A", SyncEngineMode.C4_ACTIVE)
+
+        val inputData = Data.Builder().putString(BeerSyncWorker.KEY_EXPECTED_UID, "user_A").build()
+        val worker = TestListenableWorkerBuilder<BeerSyncWorker>(context)
+            .setInputData(inputData)
+            .build()
+
+        val result = worker.doWork()
+
+        assertEquals(Result.success(), result)
+        // Se ejecuta el proveedor C4 registrado
+        coVerify(exactly = 1) { mockProvider.syncUser(any(), "user_A") }
+        // El motor legacy NUNCA debe ejecutarse
+        coVerify(exactly = 0) { anyConstructed<BeerSyncEngine>().sync() }
     }
 }

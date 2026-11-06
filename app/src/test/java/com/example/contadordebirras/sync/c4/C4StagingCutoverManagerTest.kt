@@ -49,10 +49,11 @@ class C4StagingCutoverManagerTest {
 
     private val aliceUid = "user_alice_test"
     private var testPhotoResolver: (suspend (String) -> ByteArray?)? = null
+    private lateinit var context: android.content.Context
 
     @Before
     fun setUp() {
-        val context = ApplicationProvider.getApplicationContext<Application>()
+        context = ApplicationProvider.getApplicationContext<Application>()
         database = Room.inMemoryDatabaseBuilder(context, BeerDatabase::class.java)
             .allowMainThreadQueries()
             .build()
@@ -65,20 +66,25 @@ class C4StagingCutoverManagerTest {
             persistence = persistence
         )
 
+        coEvery { firestoreAdapter.writeAccountProtocolLock(any(), any(), any()) } returns true
+
         testPhotoResolver = null
         cutoverManager = C4StagingCutoverManager(
             coordinator = coordinator,
             persistence = persistence,
             firestoreAdapter = firestoreAdapter,
+            context = context,
             photoResolver = { uri -> testPhotoResolver?.invoke(uri) }
         )
 
         C4SyncConfig.reset()
+        C4SyncStateStore.clearForTesting(context, aliceUid)
     }
 
     @After
     fun tearDown() {
         database.close()
+        C4SyncStateStore.clearForTesting(context, aliceUid)
         C4SyncConfig.reset()
     }
 
@@ -302,9 +308,10 @@ class C4StagingCutoverManagerTest {
         assertEquals("Cerveza valiosa creada en legacy no presente en servidor", preservedBeer.comment)
         assertNull(preservedBeer.deletedAt)
 
-        // C4 no debe quedar activo
-        assertEquals(SyncEngineMode.LEGACY, C4SyncConfig.engineMode)
+        // C4 no debe quedar activo y el motor debe permanecer HALTED para proteger los datos
+        assertEquals(SyncEngineMode.HALTED, C4SyncConfig.engineMode)
         assertFalse(C4SyncConfig.isEnabled)
+        assertEquals(SyncEngineMode.HALTED, C4SyncStateStore.getEngineMode(context, aliceUid))
     }
 
     /**
@@ -347,9 +354,10 @@ class C4StagingCutoverManagerTest {
         assertEquals(1, pendingHistory.size)
         assertEquals(MutationStatus.PENDING, pendingHistory[0].status)
 
-        // C4 no se activa
-        assertEquals(SyncEngineMode.LEGACY, C4SyncConfig.engineMode)
+        // C4 no se activa y el motor queda HALTED de forma persistente
+        assertEquals(SyncEngineMode.HALTED, C4SyncConfig.engineMode)
         assertFalse(C4SyncConfig.isEnabled)
+        assertEquals(SyncEngineMode.HALTED, C4SyncStateStore.getEngineMode(context, aliceUid))
     }
 
     /**
@@ -394,6 +402,11 @@ class C4StagingCutoverManagerTest {
         val pendingHistory = persistence.historyDao.getPendingMutations(aliceUid)
         assertEquals(1, pendingHistory.size)
         assertEquals(MutationStatus.PENDING, pendingHistory[0].status)
+
+        // El motor queda HALTED de forma persistente
+        assertEquals(SyncEngineMode.HALTED, C4SyncConfig.engineMode)
+        assertFalse(C4SyncConfig.isEnabled)
+        assertEquals(SyncEngineMode.HALTED, C4SyncStateStore.getEngineMode(context, aliceUid))
     }
 
     /**
@@ -465,6 +478,7 @@ class C4StagingCutoverManagerTest {
         assertEquals(1L, syncedBeer.remoteRevision)
         assertEquals(SyncEngineMode.C4_ACTIVE, C4SyncConfig.engineMode)
         assertTrue(C4SyncConfig.isEnabled)
+        assertEquals(SyncEngineMode.C4_ACTIVE, C4SyncStateStore.getEngineMode(context, aliceUid))
     }
 
     /**
@@ -551,7 +565,9 @@ class C4StagingCutoverManagerTest {
         val preserved = beerDao.getBeerBySyncId(orphanSyncId, aliceUid)
         assertNotNull(preserved)
         assertEquals(SyncStatus.SYNCED, preserved!!.syncStatus)
+        assertEquals(SyncEngineMode.HALTED, C4SyncConfig.engineMode)
         assertFalse(C4SyncConfig.isEnabled)
+        assertEquals(SyncEngineMode.HALTED, C4SyncStateStore.getEngineMode(context, orphanLocalBeer.ownerUid))
     }
 
     /**
@@ -603,7 +619,8 @@ class C4StagingCutoverManagerTest {
         val cutoverWithMockCoord = C4StagingCutoverManager(
             coordinator = mockCoord,
             persistence = persistence,
-            firestoreAdapter = firestoreAdapter
+            firestoreAdapter = firestoreAdapter,
+            context = context
         )
 
         val result = cutoverWithMockCoord.executeCutover(aliceUid)
@@ -619,7 +636,9 @@ class C4StagingCutoverManagerTest {
         val pendingMutations = persistence.historyDao.getPendingMutations(aliceUid)
         assertEquals(1, pendingMutations.size)
         assertEquals(MutationStatus.PENDING, pendingMutations[0].status)
+        assertEquals(SyncEngineMode.HALTED, C4SyncConfig.engineMode)
         assertFalse(C4SyncConfig.isEnabled)
+        assertEquals(SyncEngineMode.HALTED, C4SyncStateStore.getEngineMode(context, aliceUid))
     }
 
     /**

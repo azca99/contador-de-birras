@@ -97,9 +97,12 @@ class C4StagingCutoverManager(
         }
 
         return C4SyncConfig.syncExecutionMutex.withLock {
-            val previousMode = C4SyncConfig.engineMode
-            val previousEnabled = C4SyncConfig.isEnabled
             C4SyncConfig.engineMode = SyncEngineMode.CUTOVER_IN_PROGRESS
+            C4SyncConfig.isEnabled = false
+            context?.let { ctx ->
+                C4SyncStateStore.setEngineMode(ctx, ownerUid, SyncEngineMode.CUTOVER_IN_PROGRESS)
+                C4SyncStateStore.recordMigrationCheckpoint(ctx, ownerUid, "CUTOVER_STARTED")
+            }
 
             try {
                 val result = withContext(Dispatchers.IO) {
@@ -109,15 +112,34 @@ class C4StagingCutoverManager(
                 if (result is CutoverResult.Completed) {
                     C4SyncConfig.engineMode = SyncEngineMode.C4_ACTIVE
                     C4SyncConfig.isEnabled = true
+                    context?.let { ctx ->
+                        C4SyncStateStore.setEngineMode(ctx, ownerUid, SyncEngineMode.C4_ACTIVE)
+                        C4SyncStateStore.recordMigrationCheckpoint(ctx, ownerUid, "COMPLETED")
+                    }
+                    try {
+                        firestoreAdapter.writeAccountProtocolLock(ownerUid)
+                    } catch (_: Exception) {}
                 } else {
-                    C4SyncConfig.engineMode = previousMode
-                    C4SyncConfig.isEnabled = previousEnabled
+                    // Ante cualquier interrupción, incompletitud o bloqueo, NO volver a LEGACY.
+                    // Mantener en HALTED para proteger contra reactivación legacy destructiva.
+                    C4SyncConfig.engineMode = SyncEngineMode.HALTED
+                    C4SyncConfig.isEnabled = false
+                    context?.let { ctx ->
+                        C4SyncStateStore.setEngineMode(ctx, ownerUid, SyncEngineMode.HALTED)
+                        C4SyncStateStore.recordMigrationCheckpoint(ctx, ownerUid, "HALTED_RECOVERABLE")
+                    }
                 }
 
                 result
             } catch (e: Exception) {
-                C4SyncConfig.engineMode = previousMode
-                C4SyncConfig.isEnabled = previousEnabled
+                // Si la migración pudo tocar Firestore y luego falla, no reactivar escrituras legacy.
+                // Mantener HALTED y registrar estado recuperable.
+                C4SyncConfig.engineMode = SyncEngineMode.HALTED
+                C4SyncConfig.isEnabled = false
+                context?.let { ctx ->
+                    C4SyncStateStore.setEngineMode(ctx, ownerUid, SyncEngineMode.HALTED)
+                    C4SyncStateStore.recordMigrationCheckpoint(ctx, ownerUid, "INTERRUPTED_RECOVERABLE")
+                }
                 CutoverResult.Blocked("Excepción inesperada durante cutover: ${e.message}")
             }
         }
@@ -153,7 +175,7 @@ class C4StagingCutoverManager(
             C4SyncConfig.isEnabled = false
 
             // 2. Evaluar según el estado remoto verificado
-            if (isRemoteStateUnknown) {
+            val rollbackResult = if (isRemoteStateUnknown) {
                 // Estado remoto DESCONOCIDO: No reactivar legacy y mantener el motor detenido en estado seguro
                 C4SyncConfig.engineMode = SyncEngineMode.HALTED
                 val warning = "ESTADO REMOTO DESCONOCIDO: No se pudo verificar el estado en Firestore ($remoteQueryError). Por seguridad para evitar inconsistencias o rechazo de reglas, NO se reactivan escrituras legacy incompatibles y el motor permanece DETENIDO en estado seguro. NO se puede afirmar que el rollback sea seguro hasta verificar el servidor."
@@ -190,6 +212,13 @@ class C4StagingCutoverManager(
                     warningMessage = warning
                 )
             }
+
+            if (!ownerUid.isNullOrBlank() && context != null) {
+                C4SyncStateStore.setEngineMode(context, ownerUid, C4SyncConfig.engineMode)
+                C4SyncStateStore.recordMigrationCheckpoint(context, ownerUid, "ROLLBACK_${C4SyncConfig.engineMode.name}")
+            }
+
+            rollbackResult
         }
     }
 

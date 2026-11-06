@@ -31,8 +31,21 @@ class BeerSyncWorker(
             return Result.success()
         }
 
-        // Exclusión mutua con protocolo C4 y proceso de migración cutover
-        if (com.example.contadordebirras.sync.c4.C4SyncConfig.isEnabled ||
+        // 1. Verificación persistente del estado del motor antes de cualquier sincronización
+        val persistedMode = com.example.contadordebirras.sync.c4.C4SyncStateStore.getEngineMode(applicationContext, expectedUid)
+
+        if (persistedMode == com.example.contadordebirras.sync.c4.SyncEngineMode.C4_ACTIVE) {
+            // Ejecutar sincronización C4 mediante el proveedor inyectado bajo exclusión mutua
+            return com.example.contadordebirras.sync.c4.C4SyncConfig.syncExecutionMutex.withLock {
+                val success = com.example.contadordebirras.sync.c4.C4SyncProviderRegistry.getProvider()
+                    .syncUser(applicationContext, expectedUid)
+                if (success) Result.success() else Result.retry()
+            }
+        }
+
+        // Si el estado es CUTOVER_IN_PROGRESS o HALTED, o C4 está activo en memoria, NO ejecutar escrituras legacy
+        if (persistedMode != com.example.contadordebirras.sync.c4.SyncEngineMode.LEGACY ||
+            com.example.contadordebirras.sync.c4.C4SyncConfig.isEnabled ||
             com.example.contadordebirras.sync.c4.C4SyncConfig.engineMode != com.example.contadordebirras.sync.c4.SyncEngineMode.LEGACY
         ) {
             return Result.success()
@@ -46,7 +59,9 @@ class BeerSyncWorker(
                     return@withLock Result.success()
                 }
 
-                if (com.example.contadordebirras.sync.c4.C4SyncConfig.isEnabled ||
+                val recheckedMode = com.example.contadordebirras.sync.c4.C4SyncStateStore.getEngineMode(applicationContext, expectedUid)
+                if (recheckedMode != com.example.contadordebirras.sync.c4.SyncEngineMode.LEGACY ||
+                    com.example.contadordebirras.sync.c4.C4SyncConfig.isEnabled ||
                     com.example.contadordebirras.sync.c4.C4SyncConfig.engineMode != com.example.contadordebirras.sync.c4.SyncEngineMode.LEGACY
                 ) {
                     return@withLock Result.success()

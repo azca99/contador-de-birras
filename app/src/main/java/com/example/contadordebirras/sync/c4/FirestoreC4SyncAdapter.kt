@@ -54,6 +54,12 @@ class FirestoreC4SyncAdapter(
                     kotlinx.coroutines.delay(300L * attempt)
                     continue
                 }
+                if (e.code == FirebaseFirestoreException.Code.UNAVAILABLE || e.message?.contains("offline") == true) {
+                    try {
+                        val fallbackSnapshot = getDocRef(syncId).get().await()
+                        return C4FirestoreDocument.fromDocumentSnapshot(syncId, fallbackSnapshot)
+                    } catch (_: Exception) {}
+                }
                 throw e
             }
         }
@@ -391,4 +397,79 @@ class FirestoreC4SyncAdapter(
             C4TransactionResult.Error(e)
         }
     }
+
+    /**
+     * Escribe el bloqueo de protocolo C4 a nivel de cuenta en /users/{userId}.
+     * Permite a todos los clientes (incluidos otros dispositivos) detectar que la cuenta
+     * ya fue migrada a C4 y requiere un cliente con soporte para C4.
+     */
+    suspend fun writeAccountProtocolLock(
+        ownerUid: String,
+        minClientVersionCode: Int = 3,
+        migratedAt: Long = System.currentTimeMillis()
+    ): Boolean {
+        return try {
+            val userDocRef = firestore.collection("users").document(ownerUid)
+            val lockPayload = mapOf(
+                "syncProtocolVersion" to "C4",
+                "minSupportedAppVersionCode" to minClientVersionCode.toLong(),
+                "c4MigratedAt" to migratedAt,
+                "accountSyncState" to "MIGRATED_TO_C4"
+            )
+            userDocRef.set(lockPayload, com.google.firebase.firestore.SetOptions.merge()).await()
+            true
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    /**
+     * Consulta el estado del protocolo C4 a nivel de cuenta desde SERVER.
+     */
+    suspend fun readAccountProtocolLock(ownerUid: String): AccountProtocolLock? {
+        val userDocRef = firestore.collection("users").document(ownerUid)
+        var snapshot: com.google.firebase.firestore.DocumentSnapshot? = null
+        for (attempt in 1..3) {
+            try {
+                snapshot = userDocRef.get(Source.SERVER).await()
+                break
+            } catch (e: FirebaseFirestoreException) {
+                if (e.code == FirebaseFirestoreException.Code.NOT_FOUND) return null
+                if (attempt < 3 && (e.code == FirebaseFirestoreException.Code.UNAVAILABLE || e.message?.contains("offline") == true)) {
+                    kotlinx.coroutines.delay(300L * attempt)
+                    continue
+                }
+                try {
+                    snapshot = userDocRef.get().await()
+                    break
+                } catch (_: Exception) {}
+            } catch (_: Exception) {
+                break
+            }
+        }
+        val doc = snapshot ?: return null
+        if (!doc.exists()) return null
+        val protocol = doc.getString("syncProtocolVersion")
+        val minVersion = doc.getLong("minSupportedAppVersionCode") ?: 1L
+        val migratedAt = doc.getLong("c4MigratedAt") ?: 0L
+        val state = doc.getString("accountSyncState") ?: "UNKNOWN"
+        return AccountProtocolLock(
+            syncProtocolVersion = protocol ?: "LEGACY",
+            minSupportedAppVersionCode = minVersion,
+            c4MigratedAt = migratedAt,
+            accountSyncState = state
+        )
+    }
+}
+
+/**
+ * Representación del bloqueo de protocolo a nivel de cuenta en Firestore (Fase C4 Release Readiness).
+ */
+data class AccountProtocolLock(
+    val syncProtocolVersion: String,
+    val minSupportedAppVersionCode: Long,
+    val c4MigratedAt: Long,
+    val accountSyncState: String
+) {
+    val isMigratedToC4: Boolean get() = syncProtocolVersion == "C4"
 }
