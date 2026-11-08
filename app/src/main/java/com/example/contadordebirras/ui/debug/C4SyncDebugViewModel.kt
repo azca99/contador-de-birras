@@ -51,7 +51,7 @@ class C4SyncDebugViewModel(application: Application) : AndroidViewModel(applicat
     private val timeFormat = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
 
     init {
-        if (C4SyncConfig.isEnabled) {
+        if (C4SyncConfig.isEnabled && C4SyncConfig.engineMode == com.example.contadordebirras.sync.c4.SyncEngineMode.C4_ACTIVE) {
             toggleC4(true)
         }
     }
@@ -112,6 +112,25 @@ class C4SyncDebugViewModel(application: Application) : AndroidViewModel(applicat
                         instances = instances
                     )
 
+                    val persistedMode = com.example.contadordebirras.sync.c4.C4SyncStateStore.getEngineMode(
+                        getApplication(),
+                        userUid
+                    )
+
+                    // 5. El panel de diagnóstico tampoco debe reactivar una cuenta HALTED simplemente por activar el interruptor.
+                    // Cualquier recuperación debe ser explícita y segura.
+                    if (persistedMode == com.example.contadordebirras.sync.c4.SyncEngineMode.HALTED ||
+                        persistedMode == com.example.contadordebirras.sync.c4.SyncEngineMode.CUTOVER_IN_PROGRESS
+                    ) {
+                        C4SyncConfig.isEnabled = false
+                        C4SyncConfig.engineMode = persistedMode
+                        isC4Active.value = false
+                        statusMessage.value = "Cuenta en estado $persistedMode. Reactivación automática mediante interruptor bloqueada. Usa la acción explícita de recuperación."
+                        log("SEGURIDAD: La cuenta $userUid está en $persistedMode. Reactivación automática rechazada.")
+                        refreshState()
+                        return@launch
+                    }
+
                     // Activar el modo C4 persistido para este usuario piloto
                     C4SyncConfig.isEnabled = true
                     C4SyncConfig.engineMode = com.example.contadordebirras.sync.c4.SyncEngineMode.C4_ACTIVE
@@ -167,6 +186,33 @@ class C4SyncDebugViewModel(application: Application) : AndroidViewModel(applicat
                 statusMessage.value = "Motor C4 desactivado en UI. Cuenta en HALTED (Legacy bloqueado; mutaciones locales conservadas)."
                 log("C4 desactivado. Cuenta en estado HALTED (Legacy bloqueado; mutaciones pendientes conservadas).")
             }
+        }
+    }
+
+    /**
+     * Recuperación explícita y consciente de una cuenta en estado HALTED.
+     */
+    fun recoverHaltedAccountExplicitly() {
+        viewModelScope.launch {
+            val defaultAuth = com.google.firebase.auth.FirebaseAuth.getInstance()
+            val userUid = defaultAuth.currentUser?.uid ?: syncManager?.ownerUid
+            if (userUid.isNullOrBlank()) {
+                statusMessage.value = "No se puede recuperar: no hay usuario autenticado en Firebase Emulator."
+                log("Recuperación fallida: UID no disponible.")
+                return@launch
+            }
+            log("Ejecutando recuperación explícita para UID: $userUid a C4_ACTIVE...")
+            com.example.contadordebirras.sync.c4.C4SyncStateStore.setEngineMode(
+                getApplication(),
+                userUid,
+                com.example.contadordebirras.sync.c4.SyncEngineMode.C4_ACTIVE
+            )
+            C4SyncConfig.isEnabled = true
+            C4SyncConfig.engineMode = com.example.contadordebirras.sync.c4.SyncEngineMode.C4_ACTIVE
+            isC4Active.value = true
+            statusMessage.value = "Cuenta recuperada explícitamente a C4_ACTIVE."
+            log("Recuperación completada con éxito. C4_ACTIVE establecido.")
+            toggleC4(true)
         }
     }
 

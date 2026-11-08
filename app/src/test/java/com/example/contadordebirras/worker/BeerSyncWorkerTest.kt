@@ -404,4 +404,27 @@ class BeerSyncWorkerTest {
         // El motor legacy NUNCA debe ejecutarse
         coVerify(exactly = 0) { anyConstructed<BeerSyncEngine>().sync() }
     }
+
+    @Test
+    fun `doWork retries and blocks legacy when package is c4pilot and C4 is not yet confirmed`() = runTest {
+        every { user.uid } returns "user_A"
+        mockkConstructor(BeerSyncEngine::class)
+
+        val spyContext = spyk(context)
+        every { spyContext.packageName } returns "com.daniel.contadordebirras.c4pilot"
+
+        // Mode is still LEGACY (C4 initialization unconfirmed)
+        C4SyncStateStore.setEngineMode(spyContext, "user_A", SyncEngineMode.LEGACY)
+
+        val inputData = Data.Builder().putString(BeerSyncWorker.KEY_EXPECTED_UID, "user_A").build()
+        val worker = TestListenableWorkerBuilder<BeerSyncWorker>(spyContext)
+            .setInputData(inputData)
+            .build()
+
+        val result = worker.doWork()
+
+        // Debe retornar retry sin tocar en ningún caso el motor Legacy
+        assertEquals(Result.retry(), result)
+        coVerify(exactly = 0) { anyConstructed<BeerSyncEngine>().sync() }
+    }
 }

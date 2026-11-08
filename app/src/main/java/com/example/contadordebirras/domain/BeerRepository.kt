@@ -70,26 +70,59 @@ class BeerRepository(
         }
     }
 
-    suspend fun addBeer(type: BeerType, timestamp: Long, latitude: Double? = null, longitude: Double? = null, photoUri: String? = null, comment: String? = null, photoSource: String? = null): Long {
-        return withContext(Dispatchers.IO) {
-            val ownerUid = currentOwnerUid()
+    companion object {
+        const val C4_PILOT_USER_EMAIL = "c4_pilot_user@demo-contador-c44.test"
+    }
+
+    private fun ensureSafeExecutionMode(ownerUid: String): Boolean {
+        val isPilotPackage = context.packageName?.endsWith(".c4pilot") == true
+        if (isPilotPackage) {
+            val currentUser = authRepository.currentUser.value
+            if (currentUser == null || ownerUid.isBlank() || ownerUid == "guest_local") {
+                throw IllegalStateException("Operación bloqueada en piloto C4: la sesión aún no está lista.")
+            }
+            if (currentUser.email != C4_PILOT_USER_EMAIL) {
+                throw IllegalStateException(
+                    "Operación bloqueada en piloto C4: la cuenta autenticada (${currentUser.email}) no corresponde a la cuenta piloto autorizada ($C4_PILOT_USER_EMAIL)."
+                )
+            }
+            val persistedMode = try {
+                com.example.contadordebirras.sync.c4.C4SyncStateStore.getEngineMode(context, ownerUid)
+            } catch (e: Exception) {
+                throw IllegalStateException("Operación bloqueada en piloto C4: fallo al leer el estado persistente de C4: ${e.message}", e)
+            }
+            if (persistedMode != com.example.contadordebirras.sync.c4.SyncEngineMode.C4_ACTIVE ||
+                !com.example.contadordebirras.sync.c4.C4SyncConfig.isC4Active()
+            ) {
+                throw IllegalStateException(
+                    "Operación bloqueada en piloto C4: el modo actual no es C4_ACTIVE (persistido=$persistedMode, enMemoria=${com.example.contadordebirras.sync.c4.C4SyncConfig.engineMode})."
+                )
+            }
+            return true
+        } else {
             val persistedMode = try {
                 com.example.contadordebirras.sync.c4.C4SyncStateStore.getEngineMode(context, ownerUid)
             } catch (_: Exception) {
                 com.example.contadordebirras.sync.c4.SyncEngineMode.LEGACY
             }
-            val isC4 = com.example.contadordebirras.sync.c4.C4SyncConfig.isC4Active() ||
-                persistedMode == com.example.contadordebirras.sync.c4.SyncEngineMode.C4_ACTIVE
-
-            if (isC4 && (ownerUid.isBlank() || ownerUid == "guest_local")) {
-                throw IllegalStateException("Operación bloqueada: el piloto C4 requiere una sesión de usuario autenticada.")
-            }
-
             if (persistedMode == com.example.contadordebirras.sync.c4.SyncEngineMode.HALTED ||
                 com.example.contadordebirras.sync.c4.C4SyncConfig.engineMode == com.example.contadordebirras.sync.c4.SyncEngineMode.HALTED
             ) {
                 throw IllegalStateException("Operación bloqueada: la cuenta está en estado HALTED para proteger los datos C4.")
             }
+            val isC4 = com.example.contadordebirras.sync.c4.C4SyncConfig.isC4Active() ||
+                    persistedMode == com.example.contadordebirras.sync.c4.SyncEngineMode.C4_ACTIVE
+            if (isC4 && (ownerUid.isBlank() || ownerUid == "guest_local")) {
+                throw IllegalStateException("Operación bloqueada: el piloto C4 requiere una sesión de usuario autenticada.")
+            }
+            return isC4
+        }
+    }
+
+    suspend fun addBeer(type: BeerType, timestamp: Long, latitude: Double? = null, longitude: Double? = null, photoUri: String? = null, comment: String? = null, photoSource: String? = null): Long {
+        return withContext(Dispatchers.IO) {
+            val ownerUid = currentOwnerUid()
+            val isC4 = ensureSafeExecutionMode(ownerUid)
 
             val now = nowProvider()
             val syncId = UUID.randomUUID().toString()
@@ -148,19 +181,7 @@ class BeerRepository(
                 val current = beerDao.getBeerById(beerId.toInt(), ownerUid) ?: return@withLock false
                 if (current.syncStatus == SyncStatus.DELETED) return@withLock false
 
-                val persistedMode = try {
-                    com.example.contadordebirras.sync.c4.C4SyncStateStore.getEngineMode(context, ownerUid)
-                } catch (_: Exception) {
-                    com.example.contadordebirras.sync.c4.SyncEngineMode.LEGACY
-                }
-                val isC4 = com.example.contadordebirras.sync.c4.C4SyncConfig.isC4Active() ||
-                    persistedMode == com.example.contadordebirras.sync.c4.SyncEngineMode.C4_ACTIVE
-
-                if (persistedMode == com.example.contadordebirras.sync.c4.SyncEngineMode.HALTED ||
-                    com.example.contadordebirras.sync.c4.C4SyncConfig.engineMode == com.example.contadordebirras.sync.c4.SyncEngineMode.HALTED
-                ) {
-                    throw IllegalStateException("Operación bloqueada: la cuenta está en estado HALTED para proteger los datos C4.")
-                }
+                val isC4 = ensureSafeExecutionMode(ownerUid)
 
                 val locationChanged = current.latitude != latitude ||
                         current.longitude != longitude ||
@@ -228,19 +249,7 @@ class BeerRepository(
                 val current = beerDao.getBeerById(beer.id, ownerUid) ?: return@withLock false
                 if (current.syncStatus == SyncStatus.DELETED) return@withLock false
 
-                val persistedMode = try {
-                    com.example.contadordebirras.sync.c4.C4SyncStateStore.getEngineMode(context, ownerUid)
-                } catch (_: Exception) {
-                    com.example.contadordebirras.sync.c4.SyncEngineMode.LEGACY
-                }
-                val isC4 = com.example.contadordebirras.sync.c4.C4SyncConfig.isC4Active() ||
-                    persistedMode == com.example.contadordebirras.sync.c4.SyncEngineMode.C4_ACTIVE
-
-                if (persistedMode == com.example.contadordebirras.sync.c4.SyncEngineMode.HALTED ||
-                    com.example.contadordebirras.sync.c4.C4SyncConfig.engineMode == com.example.contadordebirras.sync.c4.SyncEngineMode.HALTED
-                ) {
-                    throw IllegalStateException("Operación bloqueada: la cuenta está en estado HALTED para proteger los datos C4.")
-                }
+                val isC4 = ensureSafeExecutionMode(ownerUid)
 
                 val baseRevision = if (current.syncStatus == SyncStatus.PENDING) current.baseRevision else current.remoteRevision
                 val now = nowProvider()
@@ -290,19 +299,7 @@ class BeerRepository(
                 val current = beerDao.getBeerById(beerId.toInt(), ownerUid) ?: return@withLock false
                 if (current.syncStatus == SyncStatus.DELETED) return@withLock false
 
-                val persistedMode = try {
-                    com.example.contadordebirras.sync.c4.C4SyncStateStore.getEngineMode(context, ownerUid)
-                } catch (_: Exception) {
-                    com.example.contadordebirras.sync.c4.SyncEngineMode.LEGACY
-                }
-                val isC4 = com.example.contadordebirras.sync.c4.C4SyncConfig.isC4Active() ||
-                    persistedMode == com.example.contadordebirras.sync.c4.SyncEngineMode.C4_ACTIVE
-
-                if (persistedMode == com.example.contadordebirras.sync.c4.SyncEngineMode.HALTED ||
-                    com.example.contadordebirras.sync.c4.C4SyncConfig.engineMode == com.example.contadordebirras.sync.c4.SyncEngineMode.HALTED
-                ) {
-                    throw IllegalStateException("Operación bloqueada: la cuenta está en estado HALTED para proteger los datos C4.")
-                }
+                val isC4 = ensureSafeExecutionMode(ownerUid)
 
                 val changedFields = mutableSetOf<BeerDirtyField>()
                 if (typeChanged && current.type != type) {

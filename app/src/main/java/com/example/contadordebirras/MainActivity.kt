@@ -75,6 +75,14 @@ class MainActivity : ComponentActivity() {
                 val auth = com.google.firebase.auth.FirebaseAuth.getInstance()
                 val pilotEmail = "c4_pilot_user@demo-contador-c44.test"
                 val pilotPassword = "password123456"
+
+                // 4. Comprobación estricta de identidad: no reutilizar sesiones de otros usuarios
+                val existingUser = auth.currentUser
+                if (existingUser != null && existingUser.email != pilotEmail) {
+                    android.util.Log.w("C4Pilot", "Sesión previa ajena (${existingUser.email} != $pilotEmail). Cerrando sesión previa.")
+                    auth.signOut()
+                }
+
                 if (auth.currentUser == null) {
                     try {
                         auth.signInWithEmailAndPassword(pilotEmail, pilotPassword).await()
@@ -82,8 +90,31 @@ class MainActivity : ComponentActivity() {
                         auth.createUserWithEmailAndPassword(pilotEmail, pilotPassword).await()
                     }
                 }
-                val pilotUid = auth.currentUser?.uid
-                if (!pilotUid.isNullOrBlank()) {
+
+                val verifiedUser = auth.currentUser
+                val pilotUid = verifiedUser?.uid
+                val verifiedEmail = verifiedUser?.email
+
+                if (pilotUid.isNullOrBlank() || verifiedEmail != pilotEmail) {
+                    throw IllegalStateException("Autenticación inválida para el piloto C4: uid=$pilotUid, email=$verifiedEmail (esperado: $pilotEmail)")
+                }
+
+                // 1. Respetar estrictamente el estado persistente HALTED o CUTOVER_IN_PROGRESS
+                val persistedMode = com.example.contadordebirras.sync.c4.C4SyncStateStore.getEngineMode(applicationContext, pilotUid)
+
+                if (persistedMode == com.example.contadordebirras.sync.c4.SyncEngineMode.HALTED ||
+                    persistedMode == com.example.contadordebirras.sync.c4.SyncEngineMode.CUTOVER_IN_PROGRESS
+                ) {
+                    com.example.contadordebirras.sync.c4.C4SyncConfig.isEnabled = false
+                    com.example.contadordebirras.sync.c4.C4SyncConfig.engineMode = persistedMode
+                    authRepository.updateCurrentUser()
+                    userRepository.saveAlias("Piloto C4")
+                    android.util.Log.w(
+                        "C4Pilot",
+                        "Cuenta piloto en estado persistente $persistedMode: reactivación automática bloqueada; mutaciones conservadas; sincronización no permitida."
+                    )
+                } else {
+                    // Si era primera ejecución o ya estaba en C4_ACTIVE
                     com.example.contadordebirras.sync.c4.C4SyncConfig.isEnabled = true
                     com.example.contadordebirras.sync.c4.C4SyncConfig.engineMode = com.example.contadordebirras.sync.c4.SyncEngineMode.C4_ACTIVE
                     com.example.contadordebirras.sync.c4.C4SyncStateStore.setEngineMode(

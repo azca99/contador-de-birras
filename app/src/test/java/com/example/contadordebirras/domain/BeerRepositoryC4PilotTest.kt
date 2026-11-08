@@ -248,4 +248,72 @@ class BeerRepositoryC4PilotTest {
         }
         verify(exactly = 1) { syncScheduler.requestSync("pilot_user_uid") }
     }
+
+    @Test
+    fun `addBeer in pilot package fails when authenticated user email is not pilot email`() = runTest {
+        every { context.packageName } returns "com.daniel.contadordebirras.c4pilot"
+        val foreignUser = mockk<FirebaseUser>(relaxed = true)
+        every { foreignUser.uid } returns "foreign_uid"
+        every { foreignUser.email } returns "other_user@test.com"
+        currentUserFlow.value = foreignUser
+
+        val repo = createRepository()
+
+        try {
+            repo.addBeer(BeerType.CANA, 2000L)
+            fail("Expected IllegalStateException due to unauthorized email")
+        } catch (e: IllegalStateException) {
+            assertTrue(e.message?.contains("cuenta piloto autorizada") == true)
+        }
+        verify(exactly = 0) { beerDao.insertBeer(any()) }
+    }
+
+    @Test
+    fun `addBeer in pilot package fails when mode is not C4_ACTIVE and never executes legacy`() = runTest {
+        every { context.packageName } returns "com.daniel.contadordebirras.c4pilot"
+        val user = mockk<FirebaseUser>(relaxed = true)
+        every { user.uid } returns "pilot_user_uid"
+        every { user.email } returns BeerRepository.C4_PILOT_USER_EMAIL
+        currentUserFlow.value = user
+
+        C4SyncConfig.engineMode = SyncEngineMode.LEGACY
+        val repo = createRepository()
+
+        try {
+            repo.addBeer(BeerType.CANA, 2000L)
+            fail("Expected IllegalStateException because mode is not C4_ACTIVE in pilot")
+        } catch (e: IllegalStateException) {
+            assertTrue(e.message?.contains("el modo actual no es C4_ACTIVE") == true)
+        }
+        verify(exactly = 0) { beerDao.insertBeer(any()) }
+    }
+
+    @Test
+    fun `addBeer in pilot package succeeds when authenticated as pilot user and C4_ACTIVE`() = runTest {
+        every { context.packageName } returns "com.daniel.contadordebirras.c4pilot"
+        val user = mockk<FirebaseUser>(relaxed = true)
+        every { user.uid } returns "pilot_user_uid"
+        every { user.email } returns BeerRepository.C4_PILOT_USER_EMAIL
+        currentUserFlow.value = user
+
+        C4SyncConfig.isEnabled = true
+        C4SyncConfig.engineMode = SyncEngineMode.C4_ACTIVE
+
+        val prefs = mockk<android.content.SharedPreferences>(relaxed = true)
+        every { context.applicationContext.getSharedPreferences(any(), any()) } returns prefs
+        every { prefs.getString(any(), any()) } returns SyncEngineMode.C4_ACTIVE.name
+
+        val historySlot = slot<LocalMutationHistoryEntity>()
+        val beerSlot = slot<BeerEntity>()
+        every { beerDao.insertHistoryRecord(capture(historySlot)) } returns 1L
+        every { beerDao.insertBeer(capture(beerSlot)) } returns 55L
+
+        val repo = createRepository()
+        val id = repo.addBeer(BeerType.BOTELLIN, 2000L)
+
+        assertEquals(55L, id)
+        assertEquals(MutationStatus.PENDING, historySlot.captured.status)
+        assertTrue(historySlot.captured.isLocalOnlyCreation)
+        verify(exactly = 1) { syncScheduler.requestSync("pilot_user_uid") }
+    }
 }

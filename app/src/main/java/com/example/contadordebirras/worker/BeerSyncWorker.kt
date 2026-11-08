@@ -65,12 +65,22 @@ class BeerSyncWorker(
             return Result.success()
         }
 
+        // 2. Para el paquete del piloto C4 (.c4pilot), bloquear estrictamente el camino Legacy
+        // si C4 todavía no está inicializado o confirmado. No afecta a la app normal.
+        if (applicationContext.packageName.endsWith(".c4pilot")) {
+            return Result.retry()
+        }
+
         return com.example.contadordebirras.sync.c4.C4SyncConfig.syncExecutionMutex.withLock {
             syncExecutionMutex.withLock {
                 val validUid = FirebaseAuth.getInstance().currentUser?.uid
                 if (validUid != expectedUid) {
                     // Auth changed or became null while waiting for the mutex
                     return@withLock Result.success()
+                }
+
+                if (applicationContext.packageName.endsWith(".c4pilot")) {
+                    return@withLock Result.failure()
                 }
 
                 val recheckedMode = com.example.contadordebirras.sync.c4.C4SyncStateStore.getEngineMode(applicationContext, expectedUid)
