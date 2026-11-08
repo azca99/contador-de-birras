@@ -32,7 +32,8 @@ object C4SyncStateStore {
     fun getEngineMode(context: Context, ownerUid: String): SyncEngineMode {
         if (ownerUid.isBlank()) return SyncEngineMode.LEGACY
         val prefs = getPrefs(context)
-        val modeStr = prefs.getString("$KEY_PREFIX_MODE$ownerUid", null) ?: return SyncEngineMode.LEGACY
+        val modeStr = prefs.getString("$KEY_PREFIX_MODE$ownerUid", null)
+        if (modeStr.isNullOrBlank()) return SyncEngineMode.LEGACY
         return try {
             SyncEngineMode.valueOf(modeStr)
         } catch (_: Exception) {

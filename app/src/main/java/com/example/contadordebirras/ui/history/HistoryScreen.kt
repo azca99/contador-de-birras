@@ -28,6 +28,10 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.platform.LocalContext
+import com.example.contadordebirras.data.SyncStatus
+import com.example.contadordebirras.sync.c4.C4SyncConfig
+import com.example.contadordebirras.sync.c4.SyncEngineMode
 import com.example.contadordebirras.ui.components.SecureFirebaseImage
 import com.example.contadordebirras.data.BeerEntity
 import com.example.contadordebirras.domain.BeerType
@@ -39,6 +43,8 @@ import java.util.Locale
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HistoryScreen(viewModel: StatsViewModel, onStatsClick: () -> Unit) {
+    val context = LocalContext.current
+    val isC4Pilot = remember { context.packageName.endsWith(".c4pilot") }
     val beers by viewModel.allBeers.collectAsState()
     val timeFormat = remember { SimpleDateFormat("HH:mm", Locale.getDefault()) }
     val groupedBeers = remember(beers) {
@@ -68,6 +74,36 @@ fun HistoryScreen(viewModel: StatsViewModel, onStatsClick: () -> Unit) {
             Text("Tu Diario", style = MaterialTheme.typography.headlineLarge, color = MaterialTheme.colorScheme.primary)
             IconButton(onClick = onStatsClick) {
                 Icon(Icons.Rounded.BarChart, contentDescription = "Estadísticas", tint = MaterialTheme.colorScheme.primary)
+            }
+        }
+
+        if (isC4Pilot) {
+            val isHalted = C4SyncConfig.engineMode == SyncEngineMode.HALTED
+            Surface(
+                color = if (isHalted) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.tertiaryContainer,
+                shape = RoundedCornerShape(8.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(bottom = 8.dp)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(8.dp)
+                            .clip(androidx.compose.foundation.shape.CircleShape)
+                            .background(if (isHalted) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.tertiary)
+                    )
+                    Text(
+                        text = if (isHalted) "PILOTO C4 · BLOQUEADO (HALTED)" else "PILOTO C4 · DATOS DE PRUEBA",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (isHalted) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onTertiaryContainer,
+                        fontWeight = androidx.compose.ui.text.font.FontWeight.Bold
+                    )
+                }
             }
         }
         
@@ -141,6 +177,33 @@ fun HistoryScreen(viewModel: StatsViewModel, onStatsClick: () -> Unit) {
                                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
                                             Text(text = beer.type.displayName, style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.onSurface)
                                             Text(text = timeFormat.format(Date(beer.timestamp)), style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        }
+
+                                        if (isC4Pilot) {
+                                            Spacer(modifier = Modifier.height(4.dp))
+                                            val isHalted = C4SyncConfig.engineMode == SyncEngineMode.HALTED
+                                            val (badgeText, badgeBg, badgeFg) = when {
+                                                isHalted ->
+                                                    Triple("HALTED (Error)", Color(0xFFFFEBEE), Color(0xFFC62828))
+                                                beer.syncStatus == SyncStatus.SYNCED ->
+                                                    Triple("SYNCED (C4)", Color(0xFFE8F5E9), Color(0xFF2E7D32))
+                                                beer.syncStatus == SyncStatus.PENDING ->
+                                                    Triple("PENDING (C4)", Color(0xFFFFF3E0), Color(0xFFEF6C00))
+                                                else ->
+                                                    Triple(beer.syncStatus, Color(0xFFEEEEEE), Color(0xFF616161))
+                                            }
+                                            Surface(
+                                                color = badgeBg,
+                                                shape = RoundedCornerShape(4.dp)
+                                            ) {
+                                                Text(
+                                                    text = badgeText,
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = badgeFg,
+                                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                                                    fontWeight = androidx.compose.ui.text.font.FontWeight.SemiBold
+                                                )
+                                            }
                                         }
                                         
                                         val loc = beer.locationName ?: if (beer.latitude != null) "Ubicación registrada" else null

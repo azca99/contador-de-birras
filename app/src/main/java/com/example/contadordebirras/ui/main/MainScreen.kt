@@ -1,5 +1,6 @@
 package com.example.contadordebirras.ui.main
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -7,6 +8,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.foundation.border
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.contadordebirras.domain.BeerType
 import java.text.SimpleDateFormat
@@ -105,6 +108,11 @@ fun MainScreen(viewModel: MainViewModel) {
                 viewModel.executeSave(selectedType, photoUri, comment, photoSource, locationFetcher) { success ->
                     if (success) {
                         photoUri = null; comment = ""; photoSource = null
+                        if (context.packageName.endsWith(".c4pilot")) {
+                            Toast.makeText(context, "Birra registrada en Piloto C4 (sincronizando...)", Toast.LENGTH_SHORT).show()
+                        }
+                    } else {
+                        Toast.makeText(context, "Operación bloqueada: verifique conexión a Firebase Emulator o estado C4.", Toast.LENGTH_LONG).show()
                     }
                     pendingSave = false
                 }
@@ -112,6 +120,11 @@ fun MainScreen(viewModel: MainViewModel) {
                 viewModel.executeSave(selectedType, photoUri, comment, photoSource, null) { success ->
                     if (success) {
                         photoUri = null; comment = ""; photoSource = null
+                        if (context.packageName.endsWith(".c4pilot")) {
+                            Toast.makeText(context, "Birra registrada en Piloto C4 (sincronizando...)", Toast.LENGTH_SHORT).show()
+                        }
+                    } else {
+                        Toast.makeText(context, "Operación bloqueada: verifique conexión a Firebase Emulator o estado C4.", Toast.LENGTH_LONG).show()
                     }
                     pendingSave = false
                 }
@@ -127,6 +140,38 @@ fun MainScreen(viewModel: MainViewModel) {
         verticalArrangement = Arrangement.Top
     ) {
         Spacer(modifier = Modifier.height(24.dp))
+        
+        val isC4Pilot = com.example.contadordebirras.BuildConfig.DEBUG && context.packageName.endsWith(".c4pilot")
+        if (isC4Pilot) {
+            val isHalted = com.example.contadordebirras.sync.c4.C4SyncConfig.engineMode == com.example.contadordebirras.sync.c4.SyncEngineMode.HALTED
+            Surface(
+                color = if (isHalted) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.tertiaryContainer,
+                shape = RoundedCornerShape(16.dp),
+                modifier = Modifier.padding(bottom = 12.dp)
+            ) {
+                Row(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(8.dp)
+                            .background(
+                                color = if (isHalted) MaterialTheme.colorScheme.error else Color(0xFF4CAF50),
+                                shape = androidx.compose.foundation.shape.CircleShape
+                            )
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = if (isHalted) "PILOTO C4 · BLOQUEADO (HALTED)" else "PILOTO C4 · DATOS DE PRUEBA",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = if (isHalted) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onTertiaryContainer
+                    )
+                }
+            }
+        }
+
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(Icons.Rounded.Person, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(32.dp))
             Spacer(Modifier.width(12.dp))
@@ -286,6 +331,11 @@ fun MainScreen(viewModel: MainViewModel) {
                         viewModel.executeSave(selectedType, photoUri, comment, photoSource, locationFetcher) { success ->
                             if (success) {
                                 photoUri = null; comment = ""; photoSource = null
+                                if (context.packageName.endsWith(".c4pilot")) {
+                                    Toast.makeText(context, "Birra registrada en Piloto C4 (sincronizando...)", Toast.LENGTH_SHORT).show()
+                                }
+                            } else {
+                                Toast.makeText(context, "Operación bloqueada: verifique conexión a Firebase Emulator o estado C4.", Toast.LENGTH_LONG).show()
                             }
                             pendingSave = false
                         }
@@ -299,6 +349,11 @@ fun MainScreen(viewModel: MainViewModel) {
                     viewModel.executeSave(selectedType, photoUri, comment, photoSource, null) { success ->
                         if (success) {
                             photoUri = null; comment = ""; photoSource = null
+                            if (context.packageName.endsWith(".c4pilot")) {
+                                Toast.makeText(context, "Birra registrada en Piloto C4 (sincronizando...)", Toast.LENGTH_SHORT).show()
+                            }
+                        } else {
+                            Toast.makeText(context, "Operación bloqueada: verifique conexión a Firebase Emulator o estado C4.", Toast.LENGTH_LONG).show()
                         }
                         pendingSave = false
                     }

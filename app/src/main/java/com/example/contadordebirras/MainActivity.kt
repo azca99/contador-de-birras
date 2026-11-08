@@ -69,6 +69,41 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    if (packageName.endsWith(".c4pilot")) {
+        lifecycleScope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            try {
+                val auth = com.google.firebase.auth.FirebaseAuth.getInstance()
+                val pilotEmail = "c4_pilot_user@demo-contador-c44.test"
+                val pilotPassword = "password123456"
+                if (auth.currentUser == null) {
+                    try {
+                        auth.signInWithEmailAndPassword(pilotEmail, pilotPassword).await()
+                    } catch (_: Exception) {
+                        auth.createUserWithEmailAndPassword(pilotEmail, pilotPassword).await()
+                    }
+                }
+                val pilotUid = auth.currentUser?.uid
+                if (!pilotUid.isNullOrBlank()) {
+                    com.example.contadordebirras.sync.c4.C4SyncConfig.isEnabled = true
+                    com.example.contadordebirras.sync.c4.C4SyncConfig.engineMode = com.example.contadordebirras.sync.c4.SyncEngineMode.C4_ACTIVE
+                    com.example.contadordebirras.sync.c4.C4SyncStateStore.setEngineMode(
+                        applicationContext,
+                        pilotUid,
+                        com.example.contadordebirras.sync.c4.SyncEngineMode.C4_ACTIVE
+                    )
+                    authRepository.updateCurrentUser()
+                    userRepository.saveAlias("Piloto C4")
+                    syncScheduler.requestSync(pilotUid)
+                    android.util.Log.i("C4Pilot", "Piloto C4 inicializado con éxito para UID: $pilotUid en c4_debug_disposable.db")
+                }
+            } catch (e: Exception) {
+                android.util.Log.e("C4Pilot", "Error al inicializar sesión piloto C4: ${e.message}", e)
+                com.example.contadordebirras.sync.c4.C4SyncConfig.isEnabled = false
+                com.example.contadordebirras.sync.c4.C4SyncConfig.engineMode = com.example.contadordebirras.sync.c4.SyncEngineMode.HALTED
+            }
+        }
+    }
+
     enableEdgeToEdge()
     setContent {
       ContadorDeBirrasTheme { 

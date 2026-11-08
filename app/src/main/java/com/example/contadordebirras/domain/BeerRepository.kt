@@ -72,16 +72,55 @@ class BeerRepository(
 
     suspend fun addBeer(type: BeerType, timestamp: Long, latitude: Double? = null, longitude: Double? = null, photoUri: String? = null, comment: String? = null, photoSource: String? = null): Long {
         return withContext(Dispatchers.IO) {
+            val ownerUid = currentOwnerUid()
+            val persistedMode = try {
+                com.example.contadordebirras.sync.c4.C4SyncStateStore.getEngineMode(context, ownerUid)
+            } catch (_: Exception) {
+                com.example.contadordebirras.sync.c4.SyncEngineMode.LEGACY
+            }
+            val isC4 = com.example.contadordebirras.sync.c4.C4SyncConfig.isC4Active() ||
+                persistedMode == com.example.contadordebirras.sync.c4.SyncEngineMode.C4_ACTIVE
+
+            if (isC4 && (ownerUid.isBlank() || ownerUid == "guest_local")) {
+                throw IllegalStateException("Operación bloqueada: el piloto C4 requiere una sesión de usuario autenticada.")
+            }
+
+            if (persistedMode == com.example.contadordebirras.sync.c4.SyncEngineMode.HALTED ||
+                com.example.contadordebirras.sync.c4.C4SyncConfig.engineMode == com.example.contadordebirras.sync.c4.SyncEngineMode.HALTED
+            ) {
+                throw IllegalStateException("Operación bloqueada: la cuenta está en estado HALTED para proteger los datos C4.")
+            }
+
             val now = nowProvider()
+            val syncId = UUID.randomUUID().toString()
+            val mutationId = mutationIdProvider()
+            val allFields = BeerDirtyFieldsCodec.encode(BeerDirtyFieldsCodec.ALL_FIELDS) ?: ""
+
+            if (isC4) {
+                val record = com.example.contadordebirras.data.LocalMutationHistoryEntity(
+                    mutationId = mutationId,
+                    syncId = syncId,
+                    ownerUid = ownerUid,
+                    timestamp = now,
+                    dirtyFields = allFields,
+                    baseRevision = 0L,
+                    status = com.example.contadordebirras.data.MutationStatus.PENDING,
+                    isLocalOnlyCreation = true
+                )
+                beerDao.supersedePriorPendingHistoryRecords(syncId, ownerUid, mutationId)
+                beerDao.insertHistoryRecord(record)
+            }
+
             val beer = BeerEntity(
+                syncId = syncId,
                 type = type, timestamp = timestamp, latitude = latitude, longitude = longitude, 
                 photoUri = photoUri, comment = comment, locationName = null, photoSource = photoSource,
                 syncStatus = SyncStatus.PENDING, updatedAt = now,
-                ownerUid = currentOwnerUid(),
+                ownerUid = ownerUid,
                 remoteRevision = 0L,
                 baseRevision = 0L,
-                dirtyFields = BeerDirtyFieldsCodec.encode(BeerDirtyFieldsCodec.ALL_FIELDS),
-                lastMutationId = mutationIdProvider(),
+                dirtyFields = allFields,
+                lastMutationId = mutationId,
                 deletedAt = null
             )
             val id = beerDao.insertBeer(beer)
@@ -109,6 +148,20 @@ class BeerRepository(
                 val current = beerDao.getBeerById(beerId.toInt(), ownerUid) ?: return@withLock false
                 if (current.syncStatus == SyncStatus.DELETED) return@withLock false
 
+                val persistedMode = try {
+                    com.example.contadordebirras.sync.c4.C4SyncStateStore.getEngineMode(context, ownerUid)
+                } catch (_: Exception) {
+                    com.example.contadordebirras.sync.c4.SyncEngineMode.LEGACY
+                }
+                val isC4 = com.example.contadordebirras.sync.c4.C4SyncConfig.isC4Active() ||
+                    persistedMode == com.example.contadordebirras.sync.c4.SyncEngineMode.C4_ACTIVE
+
+                if (persistedMode == com.example.contadordebirras.sync.c4.SyncEngineMode.HALTED ||
+                    com.example.contadordebirras.sync.c4.C4SyncConfig.engineMode == com.example.contadordebirras.sync.c4.SyncEngineMode.HALTED
+                ) {
+                    throw IllegalStateException("Operación bloqueada: la cuenta está en estado HALTED para proteger los datos C4.")
+                }
+
                 val locationChanged = current.latitude != latitude ||
                         current.longitude != longitude ||
                         current.locationName != locationName
@@ -125,6 +178,27 @@ class BeerRepository(
                 }
                 val mutationId = mutationIdProvider()
                 val now = nowProvider()
+
+                if (isC4) {
+                    val isCreation = current.remoteRevision == 0L
+                    val historyDirtyFields = if (isCreation) {
+                        BeerDirtyFieldsCodec.encode(BeerDirtyFieldsCodec.ALL_FIELDS) ?: ""
+                    } else {
+                        dirtyFields ?: ""
+                    }
+                    val record = com.example.contadordebirras.data.LocalMutationHistoryEntity(
+                        mutationId = mutationId,
+                        syncId = current.syncId,
+                        ownerUid = ownerUid,
+                        timestamp = now,
+                        dirtyFields = historyDirtyFields,
+                        baseRevision = baseRevision,
+                        status = com.example.contadordebirras.data.MutationStatus.PENDING,
+                        isLocalOnlyCreation = isCreation
+                    )
+                    beerDao.supersedePriorPendingHistoryRecords(current.syncId, ownerUid, mutationId)
+                    beerDao.insertHistoryRecord(record)
+                }
 
                 val updatedRows = beerDao.updateBeerLocationLocalMutation(
                     id = current.id,
@@ -154,9 +228,38 @@ class BeerRepository(
                 val current = beerDao.getBeerById(beer.id, ownerUid) ?: return@withLock false
                 if (current.syncStatus == SyncStatus.DELETED) return@withLock false
 
+                val persistedMode = try {
+                    com.example.contadordebirras.sync.c4.C4SyncStateStore.getEngineMode(context, ownerUid)
+                } catch (_: Exception) {
+                    com.example.contadordebirras.sync.c4.SyncEngineMode.LEGACY
+                }
+                val isC4 = com.example.contadordebirras.sync.c4.C4SyncConfig.isC4Active() ||
+                    persistedMode == com.example.contadordebirras.sync.c4.SyncEngineMode.C4_ACTIVE
+
+                if (persistedMode == com.example.contadordebirras.sync.c4.SyncEngineMode.HALTED ||
+                    com.example.contadordebirras.sync.c4.C4SyncConfig.engineMode == com.example.contadordebirras.sync.c4.SyncEngineMode.HALTED
+                ) {
+                    throw IllegalStateException("Operación bloqueada: la cuenta está en estado HALTED para proteger los datos C4.")
+                }
+
                 val baseRevision = if (current.syncStatus == SyncStatus.PENDING) current.baseRevision else current.remoteRevision
                 val now = nowProvider()
                 val mutationId = mutationIdProvider()
+
+                if (isC4) {
+                    val record = com.example.contadordebirras.data.LocalMutationHistoryEntity(
+                        mutationId = mutationId,
+                        syncId = current.syncId,
+                        ownerUid = ownerUid,
+                        timestamp = now,
+                        dirtyFields = "",
+                        baseRevision = baseRevision,
+                        status = com.example.contadordebirras.data.MutationStatus.PENDING,
+                        isLocalOnlyCreation = false
+                    )
+                    beerDao.supersedePriorPendingHistoryRecords(current.syncId, ownerUid, mutationId)
+                    beerDao.insertHistoryRecord(record)
+                }
 
                 val updatedRows = beerDao.softDeleteBeerLocalMutation(
                     id = current.id,
@@ -187,6 +290,20 @@ class BeerRepository(
                 val current = beerDao.getBeerById(beerId.toInt(), ownerUid) ?: return@withLock false
                 if (current.syncStatus == SyncStatus.DELETED) return@withLock false
 
+                val persistedMode = try {
+                    com.example.contadordebirras.sync.c4.C4SyncStateStore.getEngineMode(context, ownerUid)
+                } catch (_: Exception) {
+                    com.example.contadordebirras.sync.c4.SyncEngineMode.LEGACY
+                }
+                val isC4 = com.example.contadordebirras.sync.c4.C4SyncConfig.isC4Active() ||
+                    persistedMode == com.example.contadordebirras.sync.c4.SyncEngineMode.C4_ACTIVE
+
+                if (persistedMode == com.example.contadordebirras.sync.c4.SyncEngineMode.HALTED ||
+                    com.example.contadordebirras.sync.c4.C4SyncConfig.engineMode == com.example.contadordebirras.sync.c4.SyncEngineMode.HALTED
+                ) {
+                    throw IllegalStateException("Operación bloqueada: la cuenta está en estado HALTED para proteger los datos C4.")
+                }
+
                 val changedFields = mutableSetOf<BeerDirtyField>()
                 if (typeChanged && current.type != type) {
                     changedFields.add(BeerDirtyField.TYPE)
@@ -210,6 +327,27 @@ class BeerRepository(
                 }
                 val mutationId = mutationIdProvider()
                 val now = nowProvider()
+
+                if (isC4) {
+                    val isCreation = current.remoteRevision == 0L
+                    val historyDirtyFields = if (isCreation) {
+                        BeerDirtyFieldsCodec.encode(BeerDirtyFieldsCodec.ALL_FIELDS) ?: ""
+                    } else {
+                        dirtyFields ?: ""
+                    }
+                    val record = com.example.contadordebirras.data.LocalMutationHistoryEntity(
+                        mutationId = mutationId,
+                        syncId = current.syncId,
+                        ownerUid = ownerUid,
+                        timestamp = now,
+                        dirtyFields = historyDirtyFields,
+                        baseRevision = baseRevision,
+                        status = com.example.contadordebirras.data.MutationStatus.PENDING,
+                        isLocalOnlyCreation = isCreation
+                    )
+                    beerDao.supersedePriorPendingHistoryRecords(current.syncId, ownerUid, mutationId)
+                    beerDao.insertHistoryRecord(record)
+                }
 
                 val updatedRows = beerDao.updateBeerDetailsLocalMutation(
                     id = current.id,

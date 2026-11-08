@@ -41,7 +41,7 @@ import java.util.UUID
 class C4SyncDebugViewModel(application: Application) : AndroidViewModel(application) {
 
     val isC4Active = mutableStateOf(C4SyncConfig.isEnabled)
-    val authEmail = mutableStateOf("c4_shared_user@demo-contador-c44.test")
+    val authEmail = mutableStateOf("c4_pilot_user@demo-contador-c44.test")
     val statusMessage = mutableStateOf("Motor C4 inactivo. Activa el toggle para conectar al entorno aislado.")
     val beersList = mutableStateListOf<BeerEntity>()
     val mutationHistory = mutableStateListOf<LocalMutationHistoryEntity>()

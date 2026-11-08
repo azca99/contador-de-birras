@@ -115,12 +115,18 @@ abstract class BeerDatabase : RoomDatabase() {
             }
         }
 
-        fun getDatabase(context: Context): BeerDatabase {
+        fun getDatabase(context: Context, customDbName: String? = null): BeerDatabase {
+            val defaultDbName = if (context.packageName.endsWith(".c4pilot")) {
+                "c4_debug_disposable.db"
+            } else {
+                "beer_database"
+            }
+            val dbName = customDbName ?: defaultDbName
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
                     context.applicationContext,
                     BeerDatabase::class.java,
-                    "beer_database"
+                    dbName
                 )
                 .addMigrations(
                     MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5,
@@ -130,6 +136,15 @@ abstract class BeerDatabase : RoomDatabase() {
                 .build()
                 INSTANCE = instance
                 instance
+            }
+        }
+
+        fun resetInstanceForTesting() {
+            synchronized(this) {
+                try {
+                    INSTANCE?.close()
+                } catch (_: Exception) {}
+                INSTANCE = null
             }
         }
     }

@@ -34,7 +34,8 @@ class C4AppSyncManager(
     val persistence: RoomC4SyncPersistence,
     val coordinator: AndroidC4SyncCoordinator,
     val ownerUid: String,
-    val auth: FirebaseAuth? = null
+    val auth: FirebaseAuth? = null,
+    val isDisposableDatabase: Boolean = true
 ) : Closeable {
 
     private val allFieldsEncoded = BeerDirtyFieldsCodec.encode(BeerDirtyFieldsCodec.ALL_FIELDS)!!
@@ -300,7 +301,9 @@ class C4AppSyncManager(
 
     override fun close() {
         try {
-            database.close()
+            if (isDisposableDatabase) {
+                database.close()
+            }
         } catch (_: Exception) {}
     }
 
@@ -314,7 +317,8 @@ class C4AppSyncManager(
             host: String = C4SyncConstants.EMULATOR_HOST_ANDROID,
             inMemory: Boolean = true,
             dbName: String = "c4_disposable_${System.nanoTime()}.db",
-            instances: C4TestEnvironmentFactory.IsolatedFirebaseInstances? = null
+            instances: C4TestEnvironmentFactory.IsolatedFirebaseInstances? = null,
+            existingDatabase: BeerDatabase? = null
         ): C4AppSyncManager {
             val actualInstances = instances ?: C4TestEnvironmentFactory.createIsolatedInstances(
                 context = context,
@@ -325,14 +329,12 @@ class C4AppSyncManager(
                 projectId = C4SyncConstants.DEMO_PROJECT_ID
             )
 
-            val database = if (inMemory) {
+            val database = existingDatabase ?: if (inMemory) {
                 Room.inMemoryDatabaseBuilder(context, BeerDatabase::class.java)
                     .allowMainThreadQueries()
                     .build()
             } else {
-                Room.databaseBuilder(context, BeerDatabase::class.java, dbName)
-                    .allowMainThreadQueries()
-                    .build()
+                BeerDatabase.getDatabase(context, dbName)
             }
 
             val persistence = RoomC4SyncPersistence(database)
@@ -351,7 +353,8 @@ class C4AppSyncManager(
                 persistence = persistence,
                 coordinator = coordinator,
                 ownerUid = ownerUid,
-                auth = actualInstances.auth
+                auth = actualInstances.auth,
+                isDisposableDatabase = inMemory
             )
         }
     }
