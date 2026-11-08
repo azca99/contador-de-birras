@@ -97,4 +97,48 @@ object C4TestEnvironmentFactory {
 
         return IsolatedFirebaseInstances(app, auth, firestore, storage)
     }
+
+    /**
+     * Obtiene y valida las instancias predeterminadas de Firebase reutilizando de forma segura
+     * la sesión autenticada del usuario piloto en el proyecto demo-contador-c44.
+     *
+     * Valida de forma estricta:
+     * - projectId == "demo-contador-c44"
+     * - host local de emulador (127.0.0.1, 10.0.2.2 o localhost)
+     * - usuario autenticado presente
+     * - concordancia obligatoria con expectedUid si se proporciona
+     */
+    fun getAuthenticatedPilotInstances(
+        context: Context,
+        expectedUid: String? = null
+    ): IsolatedFirebaseInstances {
+        val app = try {
+            FirebaseApp.getInstance()
+        } catch (e: IllegalStateException) {
+            throw IllegalStateException("FirebaseApp no inicializada. Debe ejecutarse dentro de la aplicación piloto con emulador.", e)
+        }
+
+        val projectId = app.options.projectId
+        if (projectId != REQUIRED_PROJECT_ID) {
+            throw SecurityException("PROHIBIDO: projectId no autorizado '$projectId'. Exclusivamente se permite '$REQUIRED_PROJECT_ID'.")
+        }
+
+        val auth = FirebaseAuth.getInstance(app)
+        val currentUid = auth.currentUser?.uid
+        if (currentUid.isNullOrBlank()) {
+            throw IllegalStateException("No hay una sesión de usuario piloto autenticado en Firebase Auth Emulator.")
+        }
+        if (expectedUid != null && currentUid != expectedUid) {
+            throw IllegalStateException("El UID de Firestore/Auth ($currentUid) no coincide con el UID esperado ($expectedUid).")
+        }
+
+        val firestore = FirebaseFirestore.getInstance(app)
+        val host = firestore.firestoreSettings.host
+        if (!host.contains("127.0.0.1") && !host.contains("10.0.2.2") && !host.contains("localhost")) {
+            throw SecurityException("PROHIBIDO: Fallback a producción detectado en Firestore. Host actual: $host")
+        }
+
+        val storage = FirebaseStorage.getInstance(app)
+        return IsolatedFirebaseInstances(app, auth, firestore, storage)
+    }
 }

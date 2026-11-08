@@ -40,10 +40,17 @@ class ContadorDeBirrasApplication : Application() {
                     C4SyncConstants.EMULATOR_HOST_ANDROID,
                     C4TestEnvironmentFactory.REQUIRED_AUTH_PORT
                 )
-                FirebaseFirestore.getInstance().useEmulator(
+                val firestore = FirebaseFirestore.getInstance()
+                firestore.useEmulator(
                     C4SyncConstants.EMULATOR_HOST_ANDROID,
                     C4SyncConstants.FIRESTORE_PORT
                 )
+                firestore.firestoreSettings = com.google.firebase.firestore.FirebaseFirestoreSettings.Builder()
+                    .setHost("${C4SyncConstants.EMULATOR_HOST_ANDROID}:${C4SyncConstants.FIRESTORE_PORT}")
+                    .setSslEnabled(false)
+                    .setPersistenceEnabled(false)
+                    .build()
+
                 FirebaseStorage.getInstance().useEmulator(
                     C4SyncConstants.EMULATOR_HOST_ANDROID,
                     C4SyncConstants.STORAGE_PORT
@@ -58,10 +65,9 @@ class ContadorDeBirrasApplication : Application() {
             C4SyncProviderRegistry.setProvider(
                 StagingC4SyncProvider { context, ownerUid ->
                     val host = C4SyncConstants.EMULATOR_HOST_ANDROID
-                    val instances = C4TestEnvironmentFactory.createIsolatedInstances(
+                    val instances = C4TestEnvironmentFactory.getAuthenticatedPilotInstances(
                         context = context,
-                        host = host,
-                        projectId = C4SyncConstants.DEMO_PROJECT_ID
+                        expectedUid = ownerUid
                     )
                     C4AppSyncManager.createForTesting(
                         context = context,

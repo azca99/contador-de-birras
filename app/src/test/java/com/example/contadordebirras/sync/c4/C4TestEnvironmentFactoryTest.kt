@@ -75,4 +75,15 @@ class C4TestEnvironmentFactoryTest {
         }
         assertTrue(ex.message!!.contains("puerto Storage"))
     }
+
+    @Test
+    fun getAuthenticatedPilotInstances_rejects_whenFirebaseAppNotInitialized() {
+        val ex = assertThrows(IllegalStateException::class.java) {
+            C4TestEnvironmentFactory.getAuthenticatedPilotInstances(
+                context = context,
+                expectedUid = "pilot_uid"
+            )
+        }
+        assertTrue(ex.message!!.contains("FirebaseApp no inicializada") || ex.message!!.contains("usuario piloto"))
+    }
 }

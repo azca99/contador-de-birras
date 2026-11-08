@@ -63,22 +63,42 @@ class StagingC4SyncProvider(
     override suspend fun syncUser(context: Context, ownerUid: String): C4ProviderSyncResult {
         return try {
             val manager = syncManagerProvider(context, ownerUid)
-            // 1. PUSH de mutaciones pendientes locales
-            val pushResults = manager.pushAllPending()
-            val anyPushFailed = pushResults.values.any {
-                it !is C4CoordinatorPushResult.Success && it !is C4CoordinatorPushResult.IdempotentRecovery
-            }
-            // 2. PULL de descubrimiento por colección
-            val pullResults = manager.pullRemoteCollection()
-            val anyPullBlocked = pullResults.values.any { it is C4CoordinatorPullResult.Blocked }
+            try {
+                // Comprobación de que el UID de Firestore/Auth coincide con el UID del worker
+                val currentAuthUid = manager.auth?.currentUser?.uid
+                if (currentAuthUid.isNullOrBlank() || currentAuthUid != ownerUid) {
+                    return C4ProviderSyncResult.InactiveOrBlocked(
+                        "El UID de Firestore/Auth ($currentAuthUid) no coincide con el UID del worker ($ownerUid)"
+                    )
+                }
 
-            if (!anyPushFailed && !anyPullBlocked) {
-                C4ProviderSyncResult.Success
-            } else {
-                C4ProviderSyncResult.TransientError(
-                    "Sincronización incompleta en staging: pushFailed=$anyPushFailed, pullBlocked=$anyPullBlocked"
-                )
+                // 1. PUSH de mutaciones pendientes locales
+                val pushResults = manager.pushAllPending()
+                val anyPushFailed = pushResults.values.any {
+                    it !is C4CoordinatorPushResult.Success && it !is C4CoordinatorPushResult.IdempotentRecovery
+                }
+                // 2. PULL de descubrimiento por colección
+                val pullResults = manager.pullRemoteCollection()
+                val anyPullBlocked = pullResults.values.any { it is C4CoordinatorPullResult.Blocked }
+
+                if (!anyPushFailed && !anyPullBlocked) {
+                    C4ProviderSyncResult.Success
+                } else {
+                    C4ProviderSyncResult.TransientError(
+                        "Sincronización incompleta en staging: pushFailed=$anyPushFailed, pullBlocked=$anyPullBlocked"
+                    )
+                }
+            } finally {
+                manager.close()
             }
+        } catch (e: IllegalStateException) {
+            C4ProviderSyncResult.InactiveOrBlocked(
+                "Bloqueo en StagingC4SyncProvider: ${e.message}"
+            )
+        } catch (e: SecurityException) {
+            C4ProviderSyncResult.InactiveOrBlocked(
+                "Bloqueo de seguridad en StagingC4SyncProvider: ${e.message}"
+            )
         } catch (e: Exception) {
             C4ProviderSyncResult.TransientError(
                 "Excepción en StagingC4SyncProvider: ${e.message}"

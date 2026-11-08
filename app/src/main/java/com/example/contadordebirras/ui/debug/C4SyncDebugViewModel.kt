@@ -83,36 +83,25 @@ class C4SyncDebugViewModel(application: Application) : AndroidViewModel(applicat
                         }
                     }
 
-                    val instances = C4TestEnvironmentFactory.createIsolatedInstances(
-                        context = getApplication(),
-                        host = resolvedHost,
-                        authPort = 9099,
-                        firestorePort = C4SyncConstants.FIRESTORE_PORT,
-                        storagePort = C4SyncConstants.STORAGE_PORT,
-                        projectId = C4SyncConstants.DEMO_PROJECT_ID
-                    )
-
                     val targetEmail = authEmail.value.trim().ifBlank { "c4_shared_user@demo-contador-c44.test" }
                     val targetPassword = "password123456"
 
+                    val defaultAuth = com.google.firebase.auth.FirebaseAuth.getInstance()
                     val userCred = withContext(Dispatchers.IO) {
                         try {
-                            instances.auth.signInWithEmailAndPassword(targetEmail, targetPassword).await()
+                            defaultAuth.signInWithEmailAndPassword(targetEmail, targetPassword).await()
                         } catch (_: Exception) {
-                            instances.auth.createUserWithEmailAndPassword(targetEmail, targetPassword).await()
+                            defaultAuth.createUserWithEmailAndPassword(targetEmail, targetPassword).await()
                         }
                     }
                     val userUid = userCred.user?.uid
                         ?: throw IllegalStateException("Firebase Auth Emulator no devolvió un usuario autenticado válido.")
 
-                    // Sincronizar también sesión en el FirebaseAuth predeterminado para que BeerSyncWorker reconozca expectedUid
-                    withContext(Dispatchers.IO) {
-                        try {
-                            com.google.firebase.auth.FirebaseAuth.getInstance().signInWithEmailAndPassword(targetEmail, targetPassword).await()
-                        } catch (_: Exception) {
-                            com.google.firebase.auth.FirebaseAuth.getInstance().createUserWithEmailAndPassword(targetEmail, targetPassword).await()
-                        }
-                    }
+                    // Reutilizar la sesión autenticada del usuario piloto en demo-contador-c44
+                    val instances = C4TestEnvironmentFactory.getAuthenticatedPilotInstances(
+                        context = getApplication(),
+                        expectedUid = userUid
+                    )
 
                     syncManager = C4AppSyncManager.createForTesting(
                         context = getApplication(),
@@ -124,6 +113,7 @@ class C4SyncDebugViewModel(application: Application) : AndroidViewModel(applicat
                     )
 
                     // Activar el modo C4 persistido para este usuario piloto
+                    C4SyncConfig.isEnabled = true
                     C4SyncConfig.engineMode = com.example.contadordebirras.sync.c4.SyncEngineMode.C4_ACTIVE
                     com.example.contadordebirras.sync.c4.C4SyncStateStore.setEngineMode(
                         getApplication(),
@@ -136,31 +126,46 @@ class C4SyncDebugViewModel(application: Application) : AndroidViewModel(applicat
                     refreshState()
                 } catch (e: Exception) {
                     C4SyncConfig.isEnabled = false
-                    C4SyncConfig.engineMode = com.example.contadordebirras.sync.c4.SyncEngineMode.LEGACY
+                    C4SyncConfig.engineMode = com.example.contadordebirras.sync.c4.SyncEngineMode.HALTED
                     isC4Active.value = false
                     syncManager?.close()
                     syncManager = null
-                    statusMessage.value = "Error al iniciar C4: ${e.message}"
-                    log("ERROR de autenticación / conexión: ${e.message}")
+                    statusMessage.value = "Error al iniciar C4: ${e.message} (Estado: HALTED)"
+                    log("ERROR de autenticación / conexión: ${e.message}. Motor detenido en HALTED.")
                 }
             } else {
                 val oldUid = syncManager?.ownerUid
                 C4SyncConfig.isEnabled = false
-                C4SyncConfig.engineMode = com.example.contadordebirras.sync.c4.SyncEngineMode.LEGACY
+                isC4Active.value = false
+
                 if (!oldUid.isNullOrBlank()) {
+                    val currentPersisted = com.example.contadordebirras.sync.c4.C4SyncStateStore.getEngineMode(
+                        getApplication(),
+                        oldUid
+                    )
+                    // Si ya estaba en C4_ACTIVE o CUTOVER, NUNCA volver a LEGACY:
+                    // mantener el bloqueo del motor Legacy persistiendo HALTED y conservando las mutaciones pendientes.
+                    val targetMode = if (currentPersisted == com.example.contadordebirras.sync.c4.SyncEngineMode.C4_ACTIVE ||
+                        currentPersisted == com.example.contadordebirras.sync.c4.SyncEngineMode.CUTOVER_IN_PROGRESS
+                    ) {
+                        com.example.contadordebirras.sync.c4.SyncEngineMode.HALTED
+                    } else {
+                        currentPersisted
+                    }
                     com.example.contadordebirras.sync.c4.C4SyncStateStore.setEngineMode(
                         getApplication(),
                         oldUid,
-                        com.example.contadordebirras.sync.c4.SyncEngineMode.LEGACY
+                        targetMode
                     )
+                    C4SyncConfig.engineMode = targetMode
+                } else {
+                    C4SyncConfig.engineMode = com.example.contadordebirras.sync.c4.SyncEngineMode.HALTED
                 }
-                isC4Active.value = false
+
                 syncManager?.close()
                 syncManager = null
-                beersList.clear()
-                mutationHistory.clear()
-                statusMessage.value = "Motor C4 desactivado. Motor legacy activo para producción."
-                log("C4 desactivado. Base descartable cerrada.")
+                statusMessage.value = "Motor C4 desactivado en UI. Cuenta en HALTED (Legacy bloqueado; mutaciones locales conservadas)."
+                log("C4 desactivado. Cuenta en estado HALTED (Legacy bloqueado; mutaciones pendientes conservadas).")
             }
         }
     }
