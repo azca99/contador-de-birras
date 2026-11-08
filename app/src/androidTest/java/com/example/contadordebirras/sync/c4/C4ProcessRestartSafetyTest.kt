@@ -14,6 +14,8 @@ import com.example.contadordebirras.data.SyncStatus
 import com.example.contadordebirras.worker.BeerSyncWorker
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.FirebaseFirestoreException
+import com.google.firebase.firestore.Source
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.tasks.await
 import org.junit.Assert.assertEquals
@@ -35,7 +37,7 @@ import org.junit.runner.RunWith
  *    y el checkpoint de migración tras matar el proceso.
  * 4. Preservación estricta de datos locales: La mutación y entidad en Room permanecen en PENDING.
  * 5. Verificación efectiva de ausencia de escrituras remotas: Consulta directamente Firestore
- *    para comprobar que el documento no fue escrito en el servidor.
+ *    desde Source.SERVER (sin caché) para comprobar que el documento no fue escrito en el servidor.
  */
 @RunWith(AndroidJUnit4::class)
 class C4ProcessRestartSafetyTest {
@@ -57,16 +59,16 @@ class C4ProcessRestartSafetyTest {
                 C4SyncConstants.EMULATOR_HOST_ANDROID,
                 C4TestEnvironmentFactory.REQUIRED_AUTH_PORT
             )
-        } catch (_: IllegalStateException) {
-            // Ya configurado o en uso
-        }
-        try {
             FirebaseFirestore.getInstance().useEmulator(
                 C4SyncConstants.EMULATOR_HOST_ANDROID,
                 C4SyncConstants.FIRESTORE_PORT
             )
-        } catch (_: IllegalStateException) {
-            // Ya configurado o en uso
+        } catch (e: Exception) {
+            throw IllegalStateException(
+                "SEGURIDAD CRÍTICA: No se pudo garantizar la conexión exclusiva con Firebase Emulator " +
+                "(${C4SyncConstants.EMULATOR_HOST_ANDROID}). Se aborta inmediatamente para proteger Firebase de producción.",
+                e
+            )
         }
     }
 
@@ -240,16 +242,25 @@ class C4ProcessRestartSafetyTest {
             targetHistory!!.status
         )
 
-        // 4. VERIFICACIÓN EFECTIVA DE AUSENCIA DE ESCRITURAS REMOTAS EN FIRESTORE:
+        // 4. VERIFICACIÓN EFECTIVA DE AUSENCIA DE ESCRITURAS REMOTAS EN FIRESTORE (Source.SERVER):
         val firestore = FirebaseFirestore.getInstance()
-        val remoteDoc = firestore.collection(C4SyncConstants.BEERS_COLLECTION)
-            .document(TEST_SYNC_ID)
-            .get()
-            .await()
-        assertFalse(
-            "VERIFICACIÓN EFECTIVA: El documento remoto beers/$TEST_SYNC_ID NO debe existir en Firestore. " +
-            "Si el motor Legacy se hubiese ejecutado, el documento existiría.",
+        val existsOnServer = try {
+            val remoteDoc = firestore.collection(C4SyncConstants.BEERS_COLLECTION)
+                .document(TEST_SYNC_ID)
+                .get(Source.SERVER)
+                .await()
             remoteDoc.exists()
+        } catch (e: FirebaseFirestoreException) {
+            if (e.code == FirebaseFirestoreException.Code.NOT_FOUND) {
+                false
+            } else {
+                throw e
+            }
+        }
+        assertFalse(
+            "VERIFICACIÓN EFECTIVA (Source.SERVER): El documento remoto beers/$TEST_SYNC_ID NO debe existir en Firestore. " +
+            "Si el motor Legacy se hubiese ejecutado, el documento existiría.",
+            existsOnServer
         )
 
         println("[RESTART_TEST_STEP2] VERIFICATION_SUCCESS_HALTED_BLOCK_EFFECTIVE_NO_REMOTE_WRITES")
