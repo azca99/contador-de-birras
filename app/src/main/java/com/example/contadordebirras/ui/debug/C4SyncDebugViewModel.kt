@@ -105,6 +105,15 @@ class C4SyncDebugViewModel(application: Application) : AndroidViewModel(applicat
                     val userUid = userCred.user?.uid
                         ?: throw IllegalStateException("Firebase Auth Emulator no devolvió un usuario autenticado válido.")
 
+                    // Sincronizar también sesión en el FirebaseAuth predeterminado para que BeerSyncWorker reconozca expectedUid
+                    withContext(Dispatchers.IO) {
+                        try {
+                            com.google.firebase.auth.FirebaseAuth.getInstance().signInWithEmailAndPassword(targetEmail, targetPassword).await()
+                        } catch (_: Exception) {
+                            com.google.firebase.auth.FirebaseAuth.getInstance().createUserWithEmailAndPassword(targetEmail, targetPassword).await()
+                        }
+                    }
+
                     syncManager = C4AppSyncManager.createForTesting(
                         context = getApplication(),
                         ownerUid = userUid,
@@ -113,11 +122,21 @@ class C4SyncDebugViewModel(application: Application) : AndroidViewModel(applicat
                         dbName = "c4_debug_disposable.db",
                         instances = instances
                     )
+
+                    // Activar el modo C4 persistido para este usuario piloto
+                    C4SyncConfig.engineMode = com.example.contadordebirras.sync.c4.SyncEngineMode.C4_ACTIVE
+                    com.example.contadordebirras.sync.c4.C4SyncStateStore.setEngineMode(
+                        getApplication(),
+                        userUid,
+                        com.example.contadordebirras.sync.c4.SyncEngineMode.C4_ACTIVE
+                    )
+
                     statusMessage.value = "Conectado a Firebase Emulator ($resolvedHost) | UID: ${userUid.take(8)}... | Email: $targetEmail"
                     log("C4 inicializado con éxito en $resolvedHost (proyecto: ${C4SyncConstants.DEMO_PROJECT_ID}, authUid: $userUid, user: $targetEmail)")
                     refreshState()
                 } catch (e: Exception) {
                     C4SyncConfig.isEnabled = false
+                    C4SyncConfig.engineMode = com.example.contadordebirras.sync.c4.SyncEngineMode.LEGACY
                     isC4Active.value = false
                     syncManager?.close()
                     syncManager = null
@@ -125,7 +144,16 @@ class C4SyncDebugViewModel(application: Application) : AndroidViewModel(applicat
                     log("ERROR de autenticación / conexión: ${e.message}")
                 }
             } else {
+                val oldUid = syncManager?.ownerUid
                 C4SyncConfig.isEnabled = false
+                C4SyncConfig.engineMode = com.example.contadordebirras.sync.c4.SyncEngineMode.LEGACY
+                if (!oldUid.isNullOrBlank()) {
+                    com.example.contadordebirras.sync.c4.C4SyncStateStore.setEngineMode(
+                        getApplication(),
+                        oldUid,
+                        com.example.contadordebirras.sync.c4.SyncEngineMode.LEGACY
+                    )
+                }
                 isC4Active.value = false
                 syncManager?.close()
                 syncManager = null
@@ -133,6 +161,20 @@ class C4SyncDebugViewModel(application: Application) : AndroidViewModel(applicat
                 mutationHistory.clear()
                 statusMessage.value = "Motor C4 desactivado. Motor legacy activo para producción."
                 log("C4 desactivado. Base descartable cerrada.")
+            }
+        }
+    }
+
+    fun triggerWorkManagerSync() {
+        val manager = syncManager ?: return
+        viewModelScope.launch {
+            try {
+                log("Encolando BeerSyncWorker en WorkManager para ${manager.ownerUid.take(8)}...")
+                val scheduler = com.example.contadordebirras.worker.WorkManagerBeerSyncScheduler(getApplication())
+                scheduler.requestSync(manager.ownerUid)
+                log("BeerSyncWorker encolado con éxito. Se ejecutará en segundo plano contra Firebase Emulator.")
+            } catch (e: Exception) {
+                log("Error al encolar WorkManager: ${e.message}")
             }
         }
     }

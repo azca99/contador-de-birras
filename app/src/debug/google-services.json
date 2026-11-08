@@ -1,0 +1,25 @@
+{
+  "project_info": {
+    "project_number": "289878368752",
+    "project_id": "demo-contador-c44",
+    "storage_bucket": "demo-contador-c44.appspot.com"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:289878368752:android:4e71709683835e16e6bd35",
+        "android_client_info": {
+          "package_name": "com.daniel.contadordebirras.c4pilot"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "fake_c4_pilot_api_key_for_emulator"
+        }
+      ],
+      "services": {}
+    }
+  ],
+  "configuration_version": "1"
+}

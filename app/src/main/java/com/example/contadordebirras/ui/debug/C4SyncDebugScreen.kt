@@ -198,6 +198,16 @@ fun C4SyncDebugScreen(
                             }
                         }
 
+                        Button(
+                            onClick = { viewModel.triggerWorkManagerSync() },
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.tertiary)
+                        ) {
+                            Icon(Icons.Filled.CloudUpload, contentDescription = null)
+                            Spacer(modifier = Modifier.width(6.dp))
+                            Text("Sincronizar en Segundo Plano (WorkManager)")
+                        }
+
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.End
