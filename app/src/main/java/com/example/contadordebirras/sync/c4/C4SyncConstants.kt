@@ -8,6 +8,7 @@ package com.example.contadordebirras.sync.c4
  */
 object C4SyncConstants {
     const val DEMO_PROJECT_ID = "demo-contador-c44"
+    const val PILOT_USER_EMAIL = "c4_pilot_user@demo-contador-c44.test"
     const val FIRESTORE_PORT = 8888
     const val STORAGE_PORT = 9199
 

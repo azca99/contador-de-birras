@@ -12,12 +12,18 @@ import com.example.contadordebirras.domain.BeerType
 import com.example.contadordebirras.sync.c4.C4AppSyncManager
 import com.example.contadordebirras.sync.c4.C4CoordinatorPullResult
 import com.example.contadordebirras.sync.c4.C4CoordinatorPushResult
+import com.example.contadordebirras.sync.c4.C4HaltedDiagnosisResult
+import com.example.contadordebirras.sync.c4.C4HaltedRecoveryManager
+import com.example.contadordebirras.sync.c4.C4HaltedRecoveryResult
 import com.example.contadordebirras.sync.c4.C4StagingCutoverManager
 import com.example.contadordebirras.sync.c4.C4SyncConfig
 import com.example.contadordebirras.sync.c4.C4SyncConstants
+import com.example.contadordebirras.sync.c4.C4SyncStateStore
 import com.example.contadordebirras.sync.c4.C4TestEnvironmentFactory
 import com.example.contadordebirras.sync.c4.CutoverResult
+import com.example.contadordebirras.sync.c4.FirestoreC4SyncAdapter
 import com.example.contadordebirras.sync.c4.LegacyBeerFixtures
+import com.example.contadordebirras.sync.c4.SyncEngineMode
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -43,6 +49,9 @@ class C4SyncDebugViewModel(application: Application) : AndroidViewModel(applicat
     val isC4Active = mutableStateOf(C4SyncConfig.isEnabled)
     val authEmail = mutableStateOf("c4_pilot_user@demo-contador-c44.test")
     val statusMessage = mutableStateOf("Motor C4 inactivo. Activa el toggle para conectar al entorno aislado.")
+    val diagnosisResult = mutableStateOf<com.example.contadordebirras.sync.c4.C4HaltedDiagnosisResult?>(null)
+    val isDiagnosing = mutableStateOf(false)
+    val isRecovering = mutableStateOf(false)
     val beersList = mutableStateListOf<BeerEntity>()
     val mutationHistory = mutableStateListOf<LocalMutationHistoryEntity>()
     val executionLogs = mutableStateListOf<String>()
@@ -189,31 +198,131 @@ class C4SyncDebugViewModel(application: Application) : AndroidViewModel(applicat
         }
     }
 
+    private fun getRecoveryManager(expectedUid: String): C4HaltedRecoveryManager {
+        val instances = C4TestEnvironmentFactory.getAuthenticatedPilotInstances(getApplication(), expectedUid)
+        val adapter = syncManager?.coordinator?.firestoreAdapter ?: FirestoreC4SyncAdapter(instances.firestore)
+        val db = syncManager?.database ?: com.example.contadordebirras.data.BeerDatabase.getDatabase(getApplication())
+
+        return C4HaltedRecoveryManager(
+            context = getApplication(),
+            database = db,
+            firestoreAdapter = adapter,
+            auth = instances.auth,
+            expectedPilotEmail = authEmail.value.trim().ifBlank { C4SyncConstants.PILOT_USER_EMAIL }
+        )
+    }
+
     /**
-     * Recuperación explícita y consciente de una cuenta en estado HALTED.
+     * Paso 1: Ejecuta el diagnóstico formal de seguridad previo obligatorio para la cuenta HALTED.
+     * Es estrictamente de solo lectura y verifica todas las garantías locales y remotas.
+     */
+    fun runHaltedDiagnosis() {
+        viewModelScope.launch {
+            if (isDiagnosing.value || isRecovering.value) return@launch
+            isDiagnosing.value = true
+            statusMessage.value = "Ejecutando diagnóstico previo obligatorio de cuenta HALTED..."
+            log("Iniciando diagnóstico de seguridad de cuenta HALTED...")
+            try {
+                val defaultAuth = com.google.firebase.auth.FirebaseAuth.getInstance()
+                val userUid = defaultAuth.currentUser?.uid ?: syncManager?.ownerUid
+                if (userUid.isNullOrBlank()) {
+                    val msg = "No hay usuario autenticado en Firebase Emulator para realizar el diagnóstico."
+                    statusMessage.value = msg
+                    log("Diagnóstico bloqueado: UID no disponible.")
+                    diagnosisResult.value = C4HaltedDiagnosisResult.Blocked(
+                        reason = msg,
+                        checks = emptyList()
+                    )
+                    return@launch
+                }
+
+                val manager = getRecoveryManager(userUid)
+                val result = manager.diagnoseHaltedAccount(userUid)
+                diagnosisResult.value = result
+
+                when (result) {
+                    is C4HaltedDiagnosisResult.Eligible -> {
+                        statusMessage.value = "Diagnóstico FAVORABLE. Recuperación a C4_ACTIVE autorizada."
+                        log("DIAGNÓSTICO SUPERADO: Cervezas locales: ${result.localBeersCount}, Mutaciones pendientes: ${result.pendingMutationsCount}, Docs remotos: ${result.remoteDocumentsCount}")
+                    }
+                    is C4HaltedDiagnosisResult.Blocked -> {
+                        statusMessage.value = "Diagnóstico BLOQUEADO: ${result.reason}"
+                        log("DIAGNÓSTICO BLOQUEADO: ${result.reason}")
+                    }
+                }
+                result.checks.forEach { check ->
+                    val mark = if (check.passed) "✔" else "✖"
+                    log(" [$mark] ${check.title}: ${check.detail}")
+                }
+            } catch (e: Exception) {
+                val err = "Error durante el diagnóstico: ${e.message}"
+                statusMessage.value = err
+                log(err)
+                diagnosisResult.value = C4HaltedDiagnosisResult.Blocked(
+                    reason = err,
+                    checks = emptyList()
+                )
+            } finally {
+                isDiagnosing.value = false
+                refreshState()
+            }
+        }
+    }
+
+    /**
+     * Paso 2: Ejecuta la recuperación segura y no destructiva a C4_ACTIVE.
+     * Solo procede si el diagnóstico previo es favorable y concluyente.
+     */
+    fun executeSafeRecovery() {
+        viewModelScope.launch {
+            if (isRecovering.value || isDiagnosing.value) return@launch
+            isRecovering.value = true
+            statusMessage.value = "Ejecutando recuperación segura a C4_ACTIVE..."
+            log("Iniciando procedimiento seguro de recuperación...")
+            try {
+                val defaultAuth = com.google.firebase.auth.FirebaseAuth.getInstance()
+                val userUid = defaultAuth.currentUser?.uid ?: syncManager?.ownerUid
+                if (userUid.isNullOrBlank()) {
+                    val msg = "Recuperación fallida: UID no disponible."
+                    statusMessage.value = msg
+                    log(msg)
+                    return@launch
+                }
+
+                val manager = getRecoveryManager(userUid)
+                val result = manager.recoverHaltedAccount(userUid)
+                when (result) {
+                    is C4HaltedRecoveryResult.Success -> {
+                        statusMessage.value = "Cuenta recuperada exitosamente a C4_ACTIVE."
+                        log("RECUPERACIÓN EXITOSA: ${result.message}")
+                        isC4Active.value = true
+                        toggleC4(true)
+                    }
+                    is C4HaltedRecoveryResult.Blocked -> {
+                        statusMessage.value = "Recuperación BLOQUEADA: ${result.reason}"
+                        log("RECUPERACIÓN RECHAZADA: ${result.reason}")
+                    }
+                    is C4HaltedRecoveryResult.Error -> {
+                        statusMessage.value = "Error en recuperación: ${result.message}"
+                        log("ERROR EN RECUPERACIÓN: ${result.message}")
+                    }
+                }
+            } catch (e: Exception) {
+                val err = "Error inesperado durante la recuperación: ${e.message}"
+                statusMessage.value = err
+                log(err)
+            } finally {
+                isRecovering.value = false
+                refreshState()
+            }
+        }
+    }
+
+    /**
+     * Delegación para compatibilidad hacia atrás: siempre ejecuta el flujo seguro.
      */
     fun recoverHaltedAccountExplicitly() {
-        viewModelScope.launch {
-            val defaultAuth = com.google.firebase.auth.FirebaseAuth.getInstance()
-            val userUid = defaultAuth.currentUser?.uid ?: syncManager?.ownerUid
-            if (userUid.isNullOrBlank()) {
-                statusMessage.value = "No se puede recuperar: no hay usuario autenticado en Firebase Emulator."
-                log("Recuperación fallida: UID no disponible.")
-                return@launch
-            }
-            log("Ejecutando recuperación explícita para UID: $userUid a C4_ACTIVE...")
-            com.example.contadordebirras.sync.c4.C4SyncStateStore.setEngineMode(
-                getApplication(),
-                userUid,
-                com.example.contadordebirras.sync.c4.SyncEngineMode.C4_ACTIVE
-            )
-            C4SyncConfig.isEnabled = true
-            C4SyncConfig.engineMode = com.example.contadordebirras.sync.c4.SyncEngineMode.C4_ACTIVE
-            isC4Active.value = true
-            statusMessage.value = "Cuenta recuperada explícitamente a C4_ACTIVE."
-            log("Recuperación completada con éxito. C4_ACTIVE establecido.")
-            toggleC4(true)
-        }
+        executeSafeRecovery()
     }
 
     fun triggerWorkManagerSync() {

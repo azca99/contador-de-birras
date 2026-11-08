@@ -34,6 +34,8 @@ class FirestoreC4SyncAdapter(
         }
     }
 
+    val firestoreHost: String get() = firestore.firestoreSettings.host
+
     private val beersCollection = firestore.collection(C4SyncConstants.BEERS_COLLECTION)
 
     fun getDocRef(syncId: String): DocumentReference = beersCollection.document(syncId)

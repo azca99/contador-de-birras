@@ -43,6 +43,9 @@ fun C4SyncDebugScreen(
 ) {
     val isC4Active by viewModel.isC4Active
     val statusMessage by viewModel.statusMessage
+    val diagnosisResult by viewModel.diagnosisResult
+    val isDiagnosing by viewModel.isDiagnosing
+    val isRecovering by viewModel.isRecovering
     val beers = viewModel.beersList
     val history = viewModel.mutationHistory
     val logs = viewModel.executionLogs
@@ -130,13 +133,168 @@ fun C4SyncDebugScreen(
                         )
 
                         if (com.example.contadordebirras.sync.c4.C4SyncConfig.engineMode == com.example.contadordebirras.sync.c4.SyncEngineMode.HALTED) {
-                            Spacer(modifier = Modifier.height(12.dp))
-                            Button(
-                                onClick = { viewModel.recoverHaltedAccountExplicitly() },
-                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
-                                modifier = Modifier.fillMaxWidth()
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Card(
+                                modifier = Modifier.fillMaxWidth(),
+                                colors = CardDefaults.cardColors(
+                                    containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.25f)
+                                ),
+                                shape = RoundedCornerShape(8.dp)
                             ) {
-                                Text("Recuperar cuenta HALTED a C4_ACTIVE (Explícito)")
+                                Column(
+                                    modifier = Modifier.padding(12.dp),
+                                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Text(
+                                        text = "🛡️ Recuperación Segura de Cuenta HALTED",
+                                        style = MaterialTheme.typography.titleSmall,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.error
+                                    )
+                                    Text(
+                                        text = "La cuenta está en estado HALTED. Para reactivar C4 se requiere un diagnóstico previo obligatorio que certifique la integridad local y remota.",
+                                        style = MaterialTheme.typography.bodySmall
+                                    )
+
+                                    // Paso 1: Botón de Diagnóstico
+                                    Button(
+                                        onClick = { viewModel.runHaltedDiagnosis() },
+                                        enabled = !isDiagnosing && !isRecovering,
+                                        modifier = Modifier.fillMaxWidth(),
+                                        colors = ButtonDefaults.buttonColors(
+                                            containerColor = MaterialTheme.colorScheme.secondary
+                                        )
+                                    ) {
+                                        if (isDiagnosing) {
+                                            CircularProgressIndicator(
+                                                modifier = Modifier.size(16.dp),
+                                                strokeWidth = 2.dp,
+                                                color = MaterialTheme.colorScheme.onSecondary
+                                            )
+                                            Spacer(modifier = Modifier.width(8.dp))
+                                            Text("Diagnosticando cuenta...")
+                                        } else {
+                                            Text("1. Diagnosticar cuenta HALTED")
+                                        }
+                                    }
+
+                                    // Resultado del Diagnóstico
+                                    diagnosisResult?.let { result ->
+                                        Spacer(modifier = Modifier.height(4.dp))
+                                        Text(
+                                            text = "Resultado del Diagnóstico:",
+                                            style = MaterialTheme.typography.labelMedium,
+                                            fontWeight = FontWeight.SemiBold
+                                        )
+
+                                        val checks = when (result) {
+                                            is com.example.contadordebirras.sync.c4.C4HaltedDiagnosisResult.Eligible -> result.checks
+                                            is com.example.contadordebirras.sync.c4.C4HaltedDiagnosisResult.Blocked -> result.checks
+                                        }
+
+                                        Column(
+                                            verticalArrangement = Arrangement.spacedBy(4.dp),
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clip(RoundedCornerShape(6.dp))
+                                                .background(MaterialTheme.colorScheme.surface)
+                                                .padding(8.dp)
+                                        ) {
+                                            checks.forEach { check ->
+                                                Row(
+                                                    verticalAlignment = Alignment.Top,
+                                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                                ) {
+                                                    Text(
+                                                        text = if (check.passed) "✅" else "❌",
+                                                        fontSize = 12.sp
+                                                    )
+                                                    Column {
+                                                        Text(
+                                                            text = check.title,
+                                                            style = MaterialTheme.typography.labelSmall,
+                                                            fontWeight = FontWeight.Bold,
+                                                            color = if (check.passed) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.error
+                                                        )
+                                                        Text(
+                                                            text = check.detail,
+                                                            style = MaterialTheme.typography.bodySmall,
+                                                            fontSize = 11.sp,
+                                                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        when (result) {
+                                            is com.example.contadordebirras.sync.c4.C4HaltedDiagnosisResult.Blocked -> {
+                                                Surface(
+                                                    color = MaterialTheme.colorScheme.errorContainer,
+                                                    shape = RoundedCornerShape(6.dp),
+                                                    modifier = Modifier.fillMaxWidth()
+                                                ) {
+                                                    Column(modifier = Modifier.padding(8.dp)) {
+                                                        Text(
+                                                            text = "⛔ RECUPERACIÓN BLOQUEADA",
+                                                            style = MaterialTheme.typography.labelMedium,
+                                                            fontWeight = FontWeight.Bold,
+                                                            color = MaterialTheme.colorScheme.onErrorContainer
+                                                        )
+                                                        Text(
+                                                            text = result.reason,
+                                                            style = MaterialTheme.typography.bodySmall,
+                                                            color = MaterialTheme.colorScheme.onErrorContainer
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                            is com.example.contadordebirras.sync.c4.C4HaltedDiagnosisResult.Eligible -> {
+                                                Surface(
+                                                    color = MaterialTheme.colorScheme.primaryContainer,
+                                                    shape = RoundedCornerShape(6.dp),
+                                                    modifier = Modifier.fillMaxWidth()
+                                                ) {
+                                                    Column(modifier = Modifier.padding(8.dp)) {
+                                                        Text(
+                                                            text = "✔ DIAGNÓSTICO FAVORABLE",
+                                                            style = MaterialTheme.typography.labelMedium,
+                                                            fontWeight = FontWeight.Bold,
+                                                            color = MaterialTheme.colorScheme.onPrimaryContainer
+                                                        )
+                                                        Text(
+                                                            text = "${result.localBeersCount} cervezas locales, ${result.pendingMutationsCount} mutaciones pendientes legítimas, ${result.remoteDocumentsCount} documentos remotos verificados con Source.SERVER.",
+                                                            style = MaterialTheme.typography.bodySmall,
+                                                            color = MaterialTheme.colorScheme.onPrimaryContainer
+                                                        )
+                                                    }
+                                                }
+
+                                                // Paso 2: Botón de Recuperación Autorizada
+                                                Button(
+                                                    onClick = { viewModel.executeSafeRecovery() },
+                                                    enabled = !isRecovering && !isDiagnosing,
+                                                    colors = ButtonDefaults.buttonColors(
+                                                        containerColor = Color(0xFF2E7D32)
+                                                    ),
+                                                    modifier = Modifier.fillMaxWidth()
+                                                ) {
+                                                    if (isRecovering) {
+                                                        CircularProgressIndicator(
+                                                            modifier = Modifier.size(16.dp),
+                                                            strokeWidth = 2.dp,
+                                                            color = Color.White
+                                                        )
+                                                        Spacer(modifier = Modifier.width(8.dp))
+                                                        Text("Recuperando a C4_ACTIVE...", color = Color.White)
+                                                    } else {
+                                                        Text("2. Recuperar C4 (Autorizado)", color = Color.White, fontWeight = FontWeight.Bold)
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
