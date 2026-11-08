@@ -243,24 +243,17 @@ class C4ProcessRestartSafetyTest {
         )
 
         // 4. VERIFICACIÓN EFECTIVA DE AUSENCIA DE ESCRITURAS REMOTAS EN FIRESTORE (Source.SERVER):
+        // Únicamente una respuesta válida del servidor con exists() == false demuestra que el documento no existe.
+        // Si la llamada lanza una excepción (RPC, red, etc.), no se asume ausencia; el test falla inmediatamente.
         val firestore = FirebaseFirestore.getInstance()
-        val existsOnServer = try {
-            val remoteDoc = firestore.collection(C4SyncConstants.BEERS_COLLECTION)
-                .document(TEST_SYNC_ID)
-                .get(Source.SERVER)
-                .await()
-            remoteDoc.exists()
-        } catch (e: FirebaseFirestoreException) {
-            if (e.code == FirebaseFirestoreException.Code.NOT_FOUND) {
-                false
-            } else {
-                throw e
-            }
-        }
+        val remoteDoc = firestore.collection(C4SyncConstants.BEERS_COLLECTION)
+            .document(TEST_SYNC_ID)
+            .get(Source.SERVER)
+            .await()
         assertFalse(
             "VERIFICACIÓN EFECTIVA (Source.SERVER): El documento remoto beers/$TEST_SYNC_ID NO debe existir en Firestore. " +
-            "Si el motor Legacy se hubiese ejecutado, el documento existiría.",
-            existsOnServer
+            "Únicamente exists() == false demuestra su ausencia.",
+            remoteDoc.exists()
         )
 
         println("[RESTART_TEST_STEP2] VERIFICATION_SUCCESS_HALTED_BLOCK_EFFECTIVE_NO_REMOTE_WRITES")
