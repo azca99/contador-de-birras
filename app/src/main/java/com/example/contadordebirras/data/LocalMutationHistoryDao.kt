@@ -59,6 +59,16 @@ interface LocalMutationHistoryDao {
     fun getPendingMutations(ownerUid: String): List<LocalMutationHistoryEntity>
 
     /**
+     * Obtiene el historial completo de mutaciones registradas para un usuario, independientemente de su estado.
+     */
+    @Query("""
+        SELECT * FROM local_mutation_history
+        WHERE ownerUid = :ownerUid
+        ORDER BY timestamp ASC
+    """)
+    fun getAllMutations(ownerUid: String): List<LocalMutationHistoryEntity>
+
+    /**
      * Obtiene la lista ordenada de identificadores de mutación para una cerveza concreta.
      * Facilita la construcción de `pastLocalMutationIds` en operaciones de sincronización.
      */

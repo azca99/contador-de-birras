@@ -95,10 +95,22 @@ fun C4SyncDebugScreen(
                                     style = MaterialTheme.typography.titleMedium,
                                     fontWeight = FontWeight.Bold
                                 )
+                                val engineMode = com.example.contadordebirras.sync.c4.C4SyncConfig.engineMode
+                                val switchStatusText = when {
+                                    isC4Active -> "Activo (Base Descartable + Emulator)"
+                                    engineMode == com.example.contadordebirras.sync.c4.SyncEngineMode.HALTED -> "Inactivo (Cuenta DETENIDA / HALTED)"
+                                    engineMode == com.example.contadordebirras.sync.c4.SyncEngineMode.CUTOVER_IN_PROGRESS -> "Inactivo (Cutover en progreso)"
+                                    else -> "Inactivo (Legacy Activo)"
+                                }
+                                val switchStatusColor = when {
+                                    isC4Active -> MaterialTheme.colorScheme.primary
+                                    engineMode == com.example.contadordebirras.sync.c4.SyncEngineMode.HALTED -> MaterialTheme.colorScheme.error
+                                    else -> MaterialTheme.colorScheme.outline
+                                }
                                 Text(
-                                    text = if (isC4Active) "Activo (Base Descartable + Emulator)" else "Inactivo (Legacy Activo)",
+                                    text = switchStatusText,
                                     style = MaterialTheme.typography.bodySmall,
-                                    color = if (isC4Active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
+                                    color = switchStatusColor
                                 )
                             }
                             Switch(

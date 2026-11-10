@@ -39,10 +39,11 @@ import org.robolectric.annotation.Config
  * 2. Identidad inmutable del usuario piloto (estrictamente C4SyncConstants.PILOT_USER_EMAIL).
  * 3. Criterio conservador para checkpoints y bloqueo remoto (rechazo de checkpoints desconocidos o incompletos,
  *    bloqueo remoto incompatible, y excepción justificada de piloto en emulador).
- * 4. Integridad exhaustiva:
+ * 4. Integridad exhaustiva de tombstones y mutaciones:
+ *    - Distinción rigurosa de tombstones confirmados, tombstones remotos y tombstones pendientes legítimos.
+ *    - Bloqueo de tombstones corruptos (sin deletedAt), desaparecidos o con conflicto concurrente.
  *    - Mutaciones PENDING huérfanas o incoherentes con entidades locales.
  *    - Cervezas SYNCED desaparecidas del servidor.
- *    - Verificación rigurosa de tombstones pendientes.
  *    - Ediciones pendientes con revisión incompatible vs. recuperación idempotente demostrable.
  *    - Garantía no destructiva: ante cualquier rechazo, Room, SharedPreferences y Config quedan inalterados.
  */
@@ -203,7 +204,227 @@ class C4HaltedRecoveryManagerTest {
     }
 
     // ---------------------------------------------------------------------------------------------
-    // 4. Integridad exhaustiva: mutaciones, tombstones, revisiones y documentos remotos
+    // 4. Distinción exhaustiva de tombstones (Confirmado, Remoto y Pendiente)
+    // ---------------------------------------------------------------------------------------------
+
+    @Test
+    fun `diagnoseHaltedAccount succeeds for confirmed tombstone`() = runBlocking {
+        // Cerveza DELETED con mutación ya confirmada en historial (confirmTombstonePushSuccess)
+        val confirmedTombstoneBeer = BeerEntity(
+            id = 1,
+            syncId = "beer_confirmed_tomb",
+            ownerUid = pilotUid,
+            type = BeerType.CANA,
+            timestamp = 1000L,
+            syncStatus = SyncStatus.DELETED,
+            deletedAt = 1200L,
+            baseRevision = 2L,
+            remoteRevision = 2L,
+            lastMutationId = null
+        )
+        beerDao.insertBeer(confirmedTombstoneBeer)
+
+        val confirmedMutation = LocalMutationHistoryEntity(
+            mutationId = "mut_confirmed_tomb",
+            syncId = "beer_confirmed_tomb",
+            ownerUid = pilotUid,
+            timestamp = 1100L,
+            dirtyFields = "isDeleted",
+            baseRevision = 1L,
+            status = MutationStatus.CONFIRMED,
+            confirmedRevision = 2L,
+            confirmedAt = 1200L
+        )
+        mutationDao.insertMutation(confirmedMutation)
+
+        // En Firestore existe el documento con isDeleted = true y revisión >= 2L
+        val remoteDoc = C4FirestoreDocument(
+            syncId = "beer_confirmed_tomb",
+            userId = pilotUid,
+            type = BeerType.CANA.name,
+            timestamp = 1000L,
+            revision = 2L,
+            isDeleted = true,
+            lastMutationId = "mut_confirmed_tomb"
+        )
+        coEvery { firestoreAdapter.queryServerDocuments(pilotUid) } returns listOf(remoteDoc)
+
+        val result = manager.diagnoseHaltedAccount(pilotUid)
+        assertTrue("Un tombstone confirmado coherente con servidor no debe bloquear el diagnóstico", result is C4HaltedDiagnosisResult.Eligible)
+    }
+
+    @Test
+    fun `diagnoseHaltedAccount succeeds for remote tombstone applied from server`() = runBlocking {
+        // Cerveza DELETED aplicada desde el servidor sin mutación local propia
+        val remoteTombstoneBeer = BeerEntity(
+            id = 2,
+            syncId = "beer_remote_tomb",
+            ownerUid = pilotUid,
+            type = BeerType.JARRA,
+            timestamp = 1000L,
+            syncStatus = SyncStatus.DELETED,
+            deletedAt = 1300L,
+            baseRevision = 3L,
+            remoteRevision = 3L,
+            lastMutationId = null
+        )
+        beerDao.insertBeer(remoteTombstoneBeer)
+
+        // En Firestore existe el documento con isDeleted = true y revisión >= 3L
+        val remoteDoc = C4FirestoreDocument(
+            syncId = "beer_remote_tomb",
+            userId = pilotUid,
+            type = BeerType.JARRA.name,
+            timestamp = 1000L,
+            revision = 3L,
+            isDeleted = true,
+            lastMutationId = "mut_server_device_2"
+        )
+        coEvery { firestoreAdapter.queryServerDocuments(pilotUid) } returns listOf(remoteDoc)
+
+        val result = manager.diagnoseHaltedAccount(pilotUid)
+        assertTrue("Un tombstone remoto aplicado desde el servidor debe ser Eligible", result is C4HaltedDiagnosisResult.Eligible)
+    }
+
+    @Test
+    fun `diagnoseHaltedAccount succeeds for legitimate pending tombstone`() = runBlocking {
+        // Creación local-only borrada offline antes de sincronizar (baseRevision = 0, no existe en servidor)
+        val pendingLocalOnlyTombstone = BeerEntity(
+            id = 3,
+            syncId = "beer_local_only_tomb",
+            ownerUid = pilotUid,
+            type = BeerType.CANA,
+            timestamp = 1000L,
+            syncStatus = SyncStatus.DELETED,
+            deletedAt = 1100L,
+            baseRevision = 0L,
+            remoteRevision = 0L,
+            lastMutationId = "mut_delete_local"
+        )
+        beerDao.insertBeer(pendingLocalOnlyTombstone)
+
+        val pendingMutation = LocalMutationHistoryEntity(
+            mutationId = "mut_delete_local",
+            syncId = "beer_local_only_tomb",
+            ownerUid = pilotUid,
+            timestamp = 1100L,
+            dirtyFields = "isDeleted",
+            baseRevision = 0L,
+            status = MutationStatus.PENDING
+        )
+        mutationDao.insertMutation(pendingMutation)
+
+        coEvery { firestoreAdapter.queryServerDocuments(pilotUid) } returns emptyList()
+
+        val result = manager.diagnoseHaltedAccount(pilotUid)
+        assertTrue("Borrado pendiente de documento local-only debe ser Eligible", result is C4HaltedDiagnosisResult.Eligible)
+    }
+
+    @Test
+    fun `diagnoseHaltedAccount blocks corrupted or conflicting tombstones`() = runBlocking {
+        // Caso A: DELETED sin deletedAt
+        val corruptBeer = BeerEntity(
+            id = 4,
+            syncId = "beer_no_deleted_at",
+            ownerUid = pilotUid,
+            type = BeerType.CANA,
+            timestamp = 1000L,
+            syncStatus = SyncStatus.DELETED,
+            deletedAt = null,
+            baseRevision = 1L
+        )
+        beerDao.insertBeer(corruptBeer)
+
+        val resultNoDeletedAt = manager.diagnoseHaltedAccount(pilotUid)
+        assertTrue(resultNoDeletedAt is C4HaltedDiagnosisResult.Blocked)
+        assertTrue((resultNoDeletedAt as C4HaltedDiagnosisResult.Blocked).reason.contains("sin deletedAt válido"))
+
+        database.clearAllTables()
+
+        // Caso B: Tombstone confirmado pero en Firestore isDeleted = false
+        val beerConf = BeerEntity(
+            id = 5,
+            syncId = "beer_conflict_is_deleted",
+            ownerUid = pilotUid,
+            type = BeerType.CANA,
+            timestamp = 1000L,
+            syncStatus = SyncStatus.DELETED,
+            deletedAt = 1200L,
+            baseRevision = 2L,
+            remoteRevision = 2L
+        )
+        beerDao.insertBeer(beerConf)
+        val histConf = LocalMutationHistoryEntity(
+            mutationId = "mut_tomb_5",
+            syncId = "beer_conflict_is_deleted",
+            ownerUid = pilotUid,
+            timestamp = 1200L,
+            dirtyFields = "isDeleted",
+            baseRevision = 1L,
+            status = MutationStatus.CONFIRMED,
+            confirmedRevision = 2L
+        )
+        mutationDao.insertMutation(histConf)
+
+        val remoteDocNotDeleted = C4FirestoreDocument(
+            syncId = "beer_conflict_is_deleted",
+            userId = pilotUid,
+            type = BeerType.CANA.name,
+            timestamp = 1000L,
+            revision = 2L,
+            isDeleted = false,
+            lastMutationId = "mut_active"
+        )
+        coEvery { firestoreAdapter.queryServerDocuments(pilotUid) } returns listOf(remoteDocNotDeleted)
+
+        val resultNotDeleted = manager.diagnoseHaltedAccount(pilotUid)
+        assertTrue(resultNotDeleted is C4HaltedDiagnosisResult.Blocked)
+        assertTrue((resultNotDeleted as C4HaltedDiagnosisResult.Blocked).reason.contains("isDeleted = false"))
+
+        database.clearAllTables()
+
+        // Caso C: Tombstone pendiente con conflicto concurrente en servidor (revisión 2 > baseRevision 1)
+        val pendingBeer = BeerEntity(
+            id = 6,
+            syncId = "beer_conflict_pending",
+            ownerUid = pilotUid,
+            type = BeerType.CANA,
+            timestamp = 1000L,
+            syncStatus = SyncStatus.DELETED,
+            deletedAt = 1500L,
+            baseRevision = 1L,
+            lastMutationId = "mut_delete_6"
+        )
+        beerDao.insertBeer(pendingBeer)
+        val mutDelete = LocalMutationHistoryEntity(
+            mutationId = "mut_delete_6",
+            syncId = "beer_conflict_pending",
+            ownerUid = pilotUid,
+            timestamp = 1500L,
+            dirtyFields = "isDeleted",
+            baseRevision = 1L,
+            status = MutationStatus.PENDING
+        )
+        mutationDao.insertMutation(mutDelete)
+
+        val remoteDocConflict = C4FirestoreDocument(
+            syncId = "beer_conflict_pending",
+            userId = pilotUid,
+            type = BeerType.CANA.name,
+            timestamp = 1000L,
+            revision = 2L,
+            isDeleted = false,
+            lastMutationId = "mut_remote_concurrent"
+        )
+        coEvery { firestoreAdapter.queryServerDocuments(pilotUid) } returns listOf(remoteDocConflict)
+
+        val resultConflict = manager.diagnoseHaltedAccount(pilotUid)
+        assertTrue(resultConflict is C4HaltedDiagnosisResult.Blocked)
+        assertTrue((resultConflict as C4HaltedDiagnosisResult.Blocked).reason.contains("Conflicto en tombstone pendiente"))
+    }
+
+    // ---------------------------------------------------------------------------------------------
+    // 5. Integridad de mutaciones y consistencia documental
     // ---------------------------------------------------------------------------------------------
 
     @Test
@@ -278,55 +499,6 @@ class C4HaltedRecoveryManagerTest {
     }
 
     @Test
-    fun `diagnoseHaltedAccount verifies pending tombstones`() = runBlocking {
-        // Caso A: Cerveza DELETED sin mutación en historial (tombstone huérfano)
-        val orphanTombstone = BeerEntity(
-            id = 1,
-            syncId = "beer_tomb_orphan",
-            ownerUid = pilotUid,
-            type = BeerType.CANA,
-            timestamp = 1000L,
-            syncStatus = SyncStatus.DELETED,
-            deletedAt = 1500L,
-            baseRevision = 1L,
-            lastMutationId = "mut_tomb_1"
-        )
-        beerDao.insertBeer(orphanTombstone)
-
-        val resultOrphan = manager.diagnoseHaltedAccount(pilotUid)
-        assertTrue(resultOrphan is C4HaltedDiagnosisResult.Blocked)
-        assertTrue((resultOrphan as C4HaltedDiagnosisResult.Blocked).reason.contains("Tombstone local huérfano"))
-
-        // Añadir mutación para corregir el caso huérfano
-        val mutation = LocalMutationHistoryEntity(
-            mutationId = "mut_tomb_1",
-            syncId = "beer_tomb_orphan",
-            ownerUid = pilotUid,
-            timestamp = 1500L,
-            dirtyFields = "isDeleted",
-            baseRevision = 1L,
-            status = MutationStatus.PENDING
-        )
-        mutationDao.insertMutation(mutation)
-
-        // Caso B: El documento remoto fue modificado concurrentemente (revisión 2 > baseRevision 1)
-        val remoteDoc = C4FirestoreDocument(
-            syncId = "beer_tomb_orphan",
-            userId = pilotUid,
-            type = BeerType.CANA.name,
-            timestamp = 1000L,
-            revision = 2L,
-            isDeleted = false,
-            lastMutationId = "mut_remote_concurrent"
-        )
-        coEvery { firestoreAdapter.queryServerDocuments(pilotUid) } returns listOf(remoteDoc)
-
-        val resultConflict = manager.diagnoseHaltedAccount(pilotUid)
-        assertTrue(resultConflict is C4HaltedDiagnosisResult.Blocked)
-        assertTrue((resultConflict as C4HaltedDiagnosisResult.Blocked).reason.contains("Conflicto en tombstone pendiente"))
-    }
-
-    @Test
     fun `diagnoseHaltedAccount handles pending edits with incompatible revision vs demonstrable idempotent recovery`() = runBlocking {
         val pendingEdit = BeerEntity(
             id = 1,
@@ -376,7 +548,7 @@ class C4HaltedRecoveryManagerTest {
     }
 
     // ---------------------------------------------------------------------------------------------
-    // 5. Escenarios generales y garantías de no modificación
+    // 6. Escenarios generales y garantías de no modificación
     // ---------------------------------------------------------------------------------------------
 
     @Test

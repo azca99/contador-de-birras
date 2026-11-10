@@ -58,7 +58,10 @@ sealed class C4HaltedRecoveryResult {
  * 4. El estado persistente debe ser exactamente [SyncEngineMode.HALTED] (se rechaza LEGACY, C4_ACTIVE y CUTOVER_IN_PROGRESS).
  * 5. Criterio conservador de migración: no se autoriza recuperación ante checkpoints desconocidos o inconclusos.
  * 6. Bloqueo remoto estricto: requiere syncProtocolVersion == C4 y state == MIGRATED_TO_C4 (salvo excepción justificada de piloto en emulador).
- * 7. Integridad de mutaciones y tombstones: cada mutación PENDING debe pertenecer a una cerveza local coherente.
+ * 7. Integridad exhaustiva de mutaciones y tombstones:
+ *    - Distingue rigurosamente tombstones pendientes de envío, tombstones confirmados y tombstones aplicados desde el servidor.
+ *    - Consulta el historial completo en local_mutation_history para cada cerveza cuando corresponda.
+ *    - Valida coherencia con los documentos remotos consultados mediante Source.SERVER.
  * 8. Una cerveza SYNCED no puede haber desaparecido del servidor sin explicación.
  * 9. Ediciones pendientes con revisión incompatible se bloquean salvo recuperación idempotente demostrable.
  * 10. Ante cualquier error, anomalía o evidencia insuficiente, prevalece la seguridad manteniendo HALTED.
@@ -154,17 +157,23 @@ class C4HaltedRecoveryManager(
         checks.add(C4DiagnosisCheck("checkpoints", "Estado persistente y checkpoints", true, "Modo: $persistedMode (exacto HALTED), Checkpoint: ${checkpoint ?: "ninguno"}"))
 
         // -----------------------------------------------------------------------------------------
-        // 4. Integridad de las cervezas locales y de local_mutation_history
+        // 4. Integridad de las cervezas locales y de local_mutation_history (completo)
         // -----------------------------------------------------------------------------------------
         val allLocalBeers: List<BeerEntity>
+        val allMutations: List<LocalMutationHistoryEntity>
         val pendingMutations: List<LocalMutationHistoryEntity>
         val localBeersMap: Map<String, BeerEntity>
+        val mutationsBySyncId: Map<String, List<LocalMutationHistoryEntity>>
         try {
             val active = database.beerDao().getActiveBeersSync(ownerUid)
             val pending = database.beerDao().getPendingSyncBeers(ownerUid)
             allLocalBeers = (active + pending).distinctBy { it.syncId }
             localBeersMap = allLocalBeers.associateBy { it.syncId }
-            pendingMutations = database.localMutationHistoryDao().getPendingMutations(ownerUid)
+            allMutations = database.localMutationHistoryDao().getAllMutations(ownerUid)
+            mutationsBySyncId = allMutations.groupBy { it.syncId }
+            pendingMutations = allMutations.filter {
+                it.status == MutationStatus.PENDING || it.status == MutationStatus.PARTIALLY_CONFIRMED
+            }
 
             // Validar cada cerveza local
             for (beer in allLocalBeers) {
@@ -206,12 +215,8 @@ class C4HaltedRecoveryManager(
                         checks.add(C4DiagnosisCheck("local_integrity", "Integridad local Room", false, detail))
                         return@withContext C4HaltedDiagnosisResult.Blocked(detail, checks)
                     }
-                    val hasPendingTombstoneMutation = pendingMutations.any { it.syncId == beer.syncId }
-                    if (!hasPendingTombstoneMutation) {
-                        val detail = "Tombstone local huérfano en ${beer.syncId}: estado DELETED sin mutación en local_mutation_history"
-                        checks.add(C4DiagnosisCheck("local_integrity", "Integridad local Room", false, detail))
-                        return@withContext C4HaltedDiagnosisResult.Blocked(detail, checks)
-                    }
+                    // La coherencia de procedencia (pendiente, confirmado o aplicado desde servidor)
+                    // se evalúa rigurosamente en la sección de coherencia documental remota contra Source.SERVER.
                 }
             }
 
@@ -238,8 +243,8 @@ class C4HaltedRecoveryManager(
                     checks.add(C4DiagnosisCheck("local_integrity", "Integridad local Room", false, detail))
                     return@withContext C4HaltedDiagnosisResult.Blocked(detail, checks)
                 }
-                if (localBeer.syncStatus == SyncStatus.DELETED && localBeer.deletedAt == null) {
-                    val detail = "Incoherencia local en tombstone ${mut.syncId}: mutación PENDING asociada a cerveza DELETED sin deletedAt"
+                if (localBeer.syncStatus == SyncStatus.DELETED && (localBeer.deletedAt == null || localBeer.deletedAt <= 0L)) {
+                    val detail = "Incoherencia local en tombstone ${mut.syncId}: mutación PENDING asociada a cerveza DELETED sin deletedAt válido"
                     checks.add(C4DiagnosisCheck("local_integrity", "Integridad local Room", false, detail))
                     return@withContext C4HaltedDiagnosisResult.Blocked(detail, checks)
                 }
@@ -255,7 +260,7 @@ class C4HaltedRecoveryManager(
                 "local_integrity",
                 "Integridad local Room",
                 true,
-                "${allLocalBeers.size} cervezas (${pendingMutations.size} mutaciones pendientes legítimas coherentes con entidades locales)"
+                "${allLocalBeers.size} cervezas (${pendingMutations.size} mutaciones pendientes legítimas, historial completo verificado)"
             )
         )
 
@@ -323,10 +328,15 @@ class C4HaltedRecoveryManager(
                     checks.add(C4DiagnosisCheck("remote_docs", "Consistencia documental remota (SERVER)", false, detail))
                     return@withContext C4HaltedDiagnosisResult.Blocked(detail, checks)
                 }
+                if (remoteDoc.isDeleted) {
+                    val detail = "Inconsistencia: cerveza local SYNCED (${localBeer.syncId}) está marcada como eliminada en servidor (isDeleted = true, rev ${remoteDoc.revision})"
+                    checks.add(C4DiagnosisCheck("remote_docs", "Consistencia documental remota (SERVER)", false, detail))
+                    return@withContext C4HaltedDiagnosisResult.Blocked(detail, checks)
+                }
             }
         }
 
-        // B) Validar todos los documentos remotos y la relación con el estado local
+        // B) Validar todos los documentos remotos y su coherencia con el estado local e historial
         for (remoteDoc in remoteDocs) {
             if (remoteDoc.userId != ownerUid) {
                 val detail = "Documento remoto ${remoteDoc.syncId} pertenece a un usuario ajeno: ${remoteDoc.userId}"
@@ -336,6 +346,14 @@ class C4HaltedRecoveryManager(
 
             val localBeer = localBeersMap[remoteDoc.syncId]
             if (localBeer != null) {
+                val beerHistory = mutationsBySyncId[localBeer.syncId] ?: emptyList()
+                val hasPendingTombstone = beerHistory.any {
+                    it.status == MutationStatus.PENDING || it.status == MutationStatus.PARTIALLY_CONFIRMED
+                }
+                val hasConfirmedTombstone = beerHistory.any {
+                    it.status == MutationStatus.CONFIRMED
+                }
+
                 when (localBeer.syncStatus) {
                     SyncStatus.SYNCED -> {
                         // Monotonía: la revisión local no puede superar la del servidor
@@ -377,17 +395,44 @@ class C4HaltedRecoveryManager(
                         }
                     }
                     SyncStatus.DELETED -> {
-                        // Verificación de tombstone pendiente contra servidor
-                        if (remoteDoc.revision < localBeer.baseRevision) {
-                            val detail = "Inconsistencia en revisión base de tombstone: servidor (${remoteDoc.revision}) < base local (${localBeer.baseRevision}) en ${remoteDoc.syncId}"
-                            checks.add(C4DiagnosisCheck("remote_docs", "Consistencia documental remota (SERVER)", false, detail))
-                            return@withContext C4HaltedDiagnosisResult.Blocked(detail, checks)
-                        }
-                        if (remoteDoc.revision > localBeer.baseRevision) {
-                            if (remoteDoc.isDeleted && remoteDoc.lastMutationId == localBeer.lastMutationId) {
-                                // Idempotente demostrable: tombstone ya confirmado remotamente
-                            } else {
-                                val detail = "Conflicto en tombstone pendiente: documento remoto en ${remoteDoc.syncId} modificado concurrentemente (rev remota ${remoteDoc.revision} > base local ${localBeer.baseRevision})"
+                        // Distinguir tombstones pendientes, confirmados y aplicados desde el servidor
+                        if (hasPendingTombstone) {
+                            // Caso A: Tombstone local pendiente de envío
+                            if (remoteDoc.revision < localBeer.baseRevision) {
+                                val detail = "Inconsistencia en revisión base de tombstone pendiente: servidor (${remoteDoc.revision}) < base local (${localBeer.baseRevision}) en ${remoteDoc.syncId}"
+                                checks.add(C4DiagnosisCheck("remote_docs", "Consistencia documental remota (SERVER)", false, detail))
+                                return@withContext C4HaltedDiagnosisResult.Blocked(detail, checks)
+                            }
+                            if (remoteDoc.revision > localBeer.baseRevision) {
+                                if (remoteDoc.isDeleted && (remoteDoc.lastMutationId == localBeer.lastMutationId || beerHistory.any { it.mutationId == remoteDoc.lastMutationId })) {
+                                    // Idempotente demostrable: tombstone ya confirmado remotamente
+                                } else {
+                                    val detail = "Conflicto en tombstone pendiente: documento remoto en ${remoteDoc.syncId} modificado concurrentemente (rev remota ${remoteDoc.revision} > base local ${localBeer.baseRevision})"
+                                    checks.add(C4DiagnosisCheck("remote_docs", "Consistencia documental remota (SERVER)", false, detail))
+                                    return@withContext C4HaltedDiagnosisResult.Blocked(detail, checks)
+                                }
+                            }
+                        } else if (hasConfirmedTombstone) {
+                            // Caso B: Tombstone local confirmado (la mutación en historial ya fue confirmada)
+                            if (!remoteDoc.isDeleted) {
+                                val detail = "Inconsistencia en tombstone confirmado: documento remoto en ${remoteDoc.syncId} no está marcado como eliminado en Firestore (isDeleted = false)"
+                                checks.add(C4DiagnosisCheck("remote_docs", "Consistencia documental remota (SERVER)", false, detail))
+                                return@withContext C4HaltedDiagnosisResult.Blocked(detail, checks)
+                            }
+                            if (remoteDoc.revision < localBeer.remoteRevision) {
+                                val detail = "Inconsistencia de revisión en tombstone confirmado: servidor (${remoteDoc.revision}) < local (${localBeer.remoteRevision}) en ${remoteDoc.syncId}"
+                                checks.add(C4DiagnosisCheck("remote_docs", "Consistencia documental remota (SERVER)", false, detail))
+                                return@withContext C4HaltedDiagnosisResult.Blocked(detail, checks)
+                            }
+                        } else {
+                            // Caso C: Tombstone aplicado desde el servidor (remoto)
+                            if (!remoteDoc.isDeleted) {
+                                val detail = "Inconsistencia en tombstone remoto: documento remoto en ${remoteDoc.syncId} no está marcado como eliminado en Firestore (isDeleted = false)"
+                                checks.add(C4DiagnosisCheck("remote_docs", "Consistencia documental remota (SERVER)", false, detail))
+                                return@withContext C4HaltedDiagnosisResult.Blocked(detail, checks)
+                            }
+                            if (remoteDoc.revision < localBeer.remoteRevision) {
+                                val detail = "Inconsistencia de revisión en tombstone remoto: servidor (${remoteDoc.revision}) < local (${localBeer.remoteRevision}) en ${remoteDoc.syncId}"
                                 checks.add(C4DiagnosisCheck("remote_docs", "Consistencia documental remota (SERVER)", false, detail))
                                 return@withContext C4HaltedDiagnosisResult.Blocked(detail, checks)
                             }
@@ -397,13 +442,28 @@ class C4HaltedRecoveryManager(
             }
         }
 
-        // C) Validar que documentos con ediciones o tombstones pendientes no hayan desaparecido si tenían baseRevision > 0
+        // C) Validar documentos locales DELETED o PENDING que no existen en remoteDocsMap
         for (localBeer in allLocalBeers) {
-            if (localBeer.syncStatus == SyncStatus.DELETED && localBeer.baseRevision > 0L) {
+            if (localBeer.syncStatus == SyncStatus.DELETED) {
+                val beerHistory = mutationsBySyncId[localBeer.syncId] ?: emptyList()
+                val hasPendingTombstone = beerHistory.any {
+                    it.status == MutationStatus.PENDING || it.status == MutationStatus.PARTIALLY_CONFIRMED
+                }
+
                 if (remoteDocsMap[localBeer.syncId] == null) {
-                    val detail = "Tombstone pendiente sobre documento base desaparecido del servidor: ${localBeer.syncId} (baseRevision ${localBeer.baseRevision})"
-                    checks.add(C4DiagnosisCheck("remote_docs", "Consistencia documental remota (SERVER)", false, detail))
-                    return@withContext C4HaltedDiagnosisResult.Blocked(detail, checks)
+                    if (hasPendingTombstone && localBeer.baseRevision == 0L) {
+                        // Creación local-only que fue borrada antes de enviarse al servidor.
+                        // Nunca existió en el servidor, por lo que es legítimo que no esté en Firestore.
+                    } else {
+                        val kind = if (hasPendingTombstone) {
+                            "Tombstone pendiente sobre documento base desaparecido del servidor"
+                        } else {
+                            "Tombstone confirmado o remoto desaparecido del servidor"
+                        }
+                        val detail = "$kind: ${localBeer.syncId} (baseRevision ${localBeer.baseRevision}, rev local ${localBeer.remoteRevision}) no existe en Firestore (Source.SERVER)"
+                        checks.add(C4DiagnosisCheck("remote_docs", "Consistencia documental remota (SERVER)", false, detail))
+                        return@withContext C4HaltedDiagnosisResult.Blocked(detail, checks)
+                    }
                 }
             }
             if (localBeer.syncStatus == SyncStatus.PENDING && (localBeer.baseRevision > 0L || localBeer.remoteRevision > 0L)) {
