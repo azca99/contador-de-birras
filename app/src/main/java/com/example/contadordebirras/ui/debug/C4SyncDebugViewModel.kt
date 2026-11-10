@@ -207,8 +207,7 @@ class C4SyncDebugViewModel(application: Application) : AndroidViewModel(applicat
             context = getApplication(),
             database = db,
             firestoreAdapter = adapter,
-            auth = instances.auth,
-            expectedPilotEmail = authEmail.value.trim().ifBlank { C4SyncConstants.PILOT_USER_EMAIL }
+            auth = instances.auth
         )
     }
 
