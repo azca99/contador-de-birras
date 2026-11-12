@@ -20,7 +20,7 @@ fun SecureFirebaseImage(
     contentScale: ContentScale = ContentScale.Fit
 ) {
     if (model == null) return
-    if (model.startsWith("http") || model.startsWith("content://") || model.startsWith("file://")) {
+    if (model.startsWith("http") || model.startsWith("content://") || model.startsWith("file://") || model.startsWith("/")) {
         AsyncImage(
             model = model,
             contentDescription = contentDescription,

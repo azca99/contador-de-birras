@@ -35,10 +35,54 @@ class C4AppSyncManager(
     val coordinator: AndroidC4SyncCoordinator,
     val ownerUid: String,
     val auth: FirebaseAuth? = null,
-    val isDisposableDatabase: Boolean = true
+    val isDisposableDatabase: Boolean = true,
+    val context: Context? = null,
+    val customPhotoResolver: (suspend (String) -> ByteArray?)? = null
 ) : Closeable {
 
     private val allFieldsEncoded = BeerDirtyFieldsCodec.encode(BeerDirtyFieldsCodec.ALL_FIELDS)!!
+    private val inMemoryPhotoBytes = mutableMapOf<String, ByteArray>()
+
+    /**
+     * Registra un buffer de imagen en memoria (útil para pruebas o transferencias directas).
+     */
+    fun registerInMemoryPhoto(uriOrKey: String, bytes: ByteArray) {
+        inMemoryPhotoBytes[uriOrKey] = bytes
+    }
+
+    /**
+     * Resuelve de forma robusta los bytes binarios de una fotografía local
+     * a partir de su URI o ruta de archivo, permitiendo a WorkManager
+     * leer la imagen tras cierres o reinicios de la aplicación sin depender
+     * de URIs temporales volátiles.
+     */
+    suspend fun resolvePhotoBytes(photoUriStr: String): ByteArray? {
+        if (inMemoryPhotoBytes.containsKey(photoUriStr)) {
+            return inMemoryPhotoBytes[photoUriStr]
+        }
+        if (customPhotoResolver != null) {
+            val custom = customPhotoResolver.invoke(photoUriStr)
+            if (custom != null) return custom
+        }
+        return withContext(Dispatchers.IO) {
+            try {
+                val uri = android.net.Uri.parse(photoUriStr)
+                if (uri.scheme == "file") {
+                    val file = java.io.File(uri.path ?: photoUriStr)
+                    if (file.exists() && file.isFile) file.readBytes()
+                    else context?.contentResolver?.openInputStream(uri)?.use { it.readBytes() }
+                } else if (uri.scheme == "content") {
+                    context?.contentResolver?.openInputStream(uri)?.use { it.readBytes() }
+                } else {
+                    val file = java.io.File(photoUriStr)
+                    if (file.exists() && file.isFile) file.readBytes()
+                    else context?.contentResolver?.openInputStream(uri)?.use { it.readBytes() }
+                }
+            } catch (_: Exception) {
+                null
+            }
+        }
+    }
 
     /**
      * 1. CREACIÓN:
@@ -59,6 +103,17 @@ class C4AppSyncManager(
         val syncId = UUID.randomUUID().toString()
         val mutationId = UUID.randomUUID().toString()
 
+        val effectivePhotoUri = photoUri ?: if (photoBytes != null) {
+            "c4_memory_photo://$syncId"
+        } else null
+
+        if (photoBytes != null) {
+            if (effectivePhotoUri != null) {
+                inMemoryPhotoBytes[effectivePhotoUri] = photoBytes
+            }
+            inMemoryPhotoBytes[syncId] = photoBytes
+        }
+
         // 1. Registro durable previo en Room
         val recorded = persistence.recordDurableMutationBeforeNetwork(
             syncId = syncId,
@@ -78,7 +133,7 @@ class C4AppSyncManager(
             type = type,
             comment = comment,
             timestamp = now,
-            photoUri = photoUri,
+            photoUri = effectivePhotoUri,
             latitude = latitude,
             longitude = longitude,
             locationName = locationName,
@@ -243,9 +298,13 @@ class C4AppSyncManager(
             pastLocalMutationIds = pastMutationIds
         )
         val beer = persistence.beerDao.getBeerBySyncId(syncId, ownerUid)
-        val resolvedBytes = photoBytes ?: beer?.photoUri?.let { uriStr ->
-            photoResolver?.invoke(uriStr)
-        }
+        val resolvedBytes = photoBytes
+            ?: inMemoryPhotoBytes[syncId]
+            ?: beer?.photoUri?.let { uriStr ->
+                inMemoryPhotoBytes[uriStr]
+                    ?: photoResolver?.invoke(uriStr)
+                    ?: resolvePhotoBytes(uriStr)
+            }
         coordinator.executePush(syncId, ownerUid, resolvedBytes, evidence)
     }
 
@@ -266,9 +325,13 @@ class C4AppSyncManager(
                 isProvenNeverSyncedCreation = isProvenCreation,
                 pastLocalMutationIds = pastMutationIds
             )
-            val resolvedBytes = photoBytesMap[beer.syncId] ?: beer.photoUri?.let { uriStr ->
-                photoResolver?.invoke(uriStr)
-            }
+            val resolvedBytes = photoBytesMap[beer.syncId]
+                ?: inMemoryPhotoBytes[beer.syncId]
+                ?: beer.photoUri?.let { uriStr ->
+                    inMemoryPhotoBytes[uriStr]
+                        ?: photoResolver?.invoke(uriStr)
+                        ?: resolvePhotoBytes(uriStr)
+                }
             results[beer.syncId] = coordinator.executePush(
                 syncId = beer.syncId,
                 ownerUid = ownerUid,
@@ -318,7 +381,8 @@ class C4AppSyncManager(
             inMemory: Boolean = true,
             dbName: String = "c4_disposable_${System.nanoTime()}.db",
             instances: C4TestEnvironmentFactory.IsolatedFirebaseInstances? = null,
-            existingDatabase: BeerDatabase? = null
+            existingDatabase: BeerDatabase? = null,
+            photoResolver: (suspend (String) -> ByteArray?)? = null
         ): C4AppSyncManager {
             val actualInstances = instances ?: C4TestEnvironmentFactory.createIsolatedInstances(
                 context = context,
@@ -354,7 +418,9 @@ class C4AppSyncManager(
                 coordinator = coordinator,
                 ownerUid = ownerUid,
                 auth = actualInstances.auth,
-                isDisposableDatabase = inMemory
+                isDisposableDatabase = inMemory,
+                context = context,
+                customPhotoResolver = photoResolver
             )
         }
     }

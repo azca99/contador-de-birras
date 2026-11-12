@@ -73,10 +73,25 @@ class StorageC4SyncAdapter(
                             "Archivo remoto existente difiere en contenido o tamaño del esperado (remoteSize=$remoteSize vs expected=$expectedSize). Sobrescritura prohibida."
                         )
                     }
+                } else if (remoteSize == expectedSize) {
+                    // Si md5Hash no está presente en los metadatos pero el tamaño coincide,
+                    // validar equivalencia binaria directa para permitir recuperación idempotente segura
+                    val isEquivalent = try {
+                        val downloaded = storageRef.getBytes(expectedSize + 1).await()
+                        downloaded.contentEquals(photoBytes)
+                    } catch (_: Exception) {
+                        false
+                    }
+                    if (isEquivalent) {
+                        return C4StorageResult.Success(remotePath = remotePath, alreadyExisted = true)
+                    } else {
+                        return C4StorageResult.OverwriteRejected(
+                            "Archivo remoto existente difiere en contenido binario. Sobrescritura prohibida."
+                        )
+                    }
                 } else {
-                    // Si no puede validarse la equivalencia sin hash, bloquear el reintento y documentarlo
                     return C4StorageResult.OverwriteRejected(
-                        "No se puede validar la equivalencia de contenido del archivo existente (md5Hash ausente en metadatos remotos). Reintento bloqueado."
+                        "Archivo remoto existente difiere en tamaño (remoteSize=$remoteSize vs expected=$expectedSize). Sobrescritura prohibida."
                     )
                 }
             }
@@ -117,6 +132,17 @@ class StorageC4SyncAdapter(
             storage.reference.child(remotePath).metadata.await() != null
         } catch (_: Exception) {
             false
+        }
+    }
+
+    /**
+     * Descarga el contenido binario de una fotografía remota desde Firebase Storage Emulator.
+     */
+    suspend fun downloadPhoto(remotePath: String, maxBytes: Long = 10 * 1024 * 1024): ByteArray? {
+        return try {
+            storage.reference.child(remotePath).getBytes(maxBytes).await()
+        } catch (_: Exception) {
+            null
         }
     }
 }
