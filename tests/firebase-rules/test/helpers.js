@@ -3,7 +3,13 @@ const { doc, setDoc } = require('firebase/firestore');
 const fs = require('fs');
 const path = require('path');
 
-const PROJECT_ID = 'demo-contador-c43';
+const PROJECT_ID = process.env.TEST_PROJECT_ID || 'demo-rules-readiness';
+
+const FIRESTORE_HOST_ENV = process.env.FIRESTORE_EMULATOR_HOST;
+const STORAGE_HOST_ENV = process.env.FIREBASE_STORAGE_EMULATOR_HOST;
+
+const [defaultFsHost, defaultFsPort] = FIRESTORE_HOST_ENV ? FIRESTORE_HOST_ENV.split(':') : ['127.0.0.1', process.env.FIRESTORE_EMULATOR_PORT || '18888'];
+const [defaultStorageHost, defaultStoragePort] = STORAGE_HOST_ENV ? STORAGE_HOST_ENV.split(':') : ['127.0.0.1', process.env.STORAGE_EMULATOR_PORT || '19199'];
 
 const RULES_PATHS = {
   FIRESTORE_BASELINE: path.resolve(__dirname, '../fixtures/firestore.baseline.rules'),
@@ -12,6 +18,8 @@ const RULES_PATHS = {
   STORAGE_LEGACY_COMPAT: path.resolve(__dirname, '../fixtures/storage.legacy-compat.rules'),
   FIRESTORE_MODERN_STRICT: path.resolve(__dirname, '../fixtures/firestore.modern-strict.rules'),
   STORAGE_MODERN_STRICT: path.resolve(__dirname, '../fixtures/storage.modern-strict.rules'),
+  FIRESTORE_CANDIDATE: path.resolve(__dirname, '../fixtures/firestore.candidate.rules'),
+  STORAGE_CANDIDATE: path.resolve(__dirname, '../fixtures/storage.candidate.rules'),
 };
 
 function readRules(filePath) {
@@ -29,13 +37,13 @@ async function createTestEnv(firestoreRulesKey, storageRulesKey) {
     projectId: PROJECT_ID,
     firestore: firestoreRules ? {
       rules: firestoreRules,
-      host: '127.0.0.1',
-      port: 8888,
+      host: defaultFsHost,
+      port: parseInt(defaultFsPort, 10),
     } : undefined,
     storage: storageRules ? {
       rules: storageRules,
-      host: '127.0.0.1',
-      port: 9199,
+      host: defaultStorageHost,
+      port: parseInt(defaultStoragePort, 10),
     } : undefined,
   });
 }
@@ -96,6 +104,16 @@ function createLegacyBeerPayload(userId, overrides = {}) {
   };
 }
 
+function createProtocolLockPayload(overrides = {}) {
+  return {
+    syncProtocolVersion: 'C4',
+    minSupportedAppVersionCode: 3,
+    c4MigratedAt: 1729000000000,
+    accountSyncState: 'MIGRATED_TO_C4',
+    ...overrides,
+  };
+}
+
 /**
  * Helper to generate dummy image bytes
  */
@@ -110,6 +128,7 @@ module.exports = {
   seedDocument,
   createModernBeerPayload,
   createLegacyBeerPayload,
+  createProtocolLockPayload,
   createDummyImageBuffer,
   assertFails,
   assertSucceeds,

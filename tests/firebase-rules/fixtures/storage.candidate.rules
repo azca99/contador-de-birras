@@ -1,0 +1,49 @@
+rules_version = '2';
+
+// =============================================================================
+// STORAGE CANDIDATE SECURITY RULES (C4 RELEASE READINESS)
+// Preparación para producción: compatibilidad de fotografías de transición Legacy <-> C4.
+// Permite actualización y borrado de fotos legacy no versionadas.
+// Protege fotos versionadas con inmutabilidad estricta (no overwrite, no update, no delete).
+// =============================================================================
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /users/{userId}/beers/{fileName} {
+      function isFriend() {
+        let id1 = request.auth.uid;
+        let id2 = userId;
+        let friendshipId = id1 < id2 ? (id1 + '_' + id2) : (id2 + '_' + id1);
+        let doc = firestore.get(/databases/(default)/documents/friendships/$(friendshipId));
+        return doc != null && doc.data.status == 'ACCEPTED';
+      }
+
+      function isOwner() {
+        return request.auth != null && request.auth.uid == userId;
+      }
+
+      function isValidImage() {
+        return request.resource.size < 5 * 1024 * 1024
+            && request.resource.contentType.matches('image/.*');
+      }
+
+      // Check if photo is unambiguously versioned:
+      // Requires: (UUID or sync-*)_(UUID or mut-*).(jpg|jpeg|png|webp)
+      // Legacy files like mi_cerveza.jpg or foto_1.jpg do NOT match and remain legacy-compatible.
+      function isVersionedPhoto() {
+        return fileName.matches('^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|sync-[a-zA-Z0-9-]+)_([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|mut-[a-zA-Z0-9-]+)\\.(jpg|jpeg|png|webp)$');
+      }
+
+      allow read: if request.auth != null && (request.auth.uid == userId || isFriend());
+
+      // Versioned photos can only be created if they do NOT already exist (resource == null).
+      // Legacy photos can be created normally.
+      allow create: if isOwner() && isValidImage() && (isVersionedPhoto() ? resource == null : true);
+
+      // Versioned photos are strictly immutable: cannot be updated or overwritten.
+      // Legacy unversioned photos (including those with underscores) can still be updated or deleted by owner.
+      allow update: if isOwner() && !isVersionedPhoto() && isValidImage();
+      allow delete: if isOwner() && !isVersionedPhoto();
+    }
+  }
+}

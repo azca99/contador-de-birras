@@ -4,6 +4,7 @@
   "description": "Suite automatizada de validacion de reglas de seguridad Firebase para C4.3",
   "scripts": {
     "test": "mocha --timeout 30000 --exit \"test/**/*.test.js\"",
+    "test:candidate": "mocha --timeout 30000 --exit \"test/candidate-readiness.test.js\"",
     "test:single": "mocha --timeout 30000 --exit"
   },
   "keywords": [
