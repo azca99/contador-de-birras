@@ -192,6 +192,7 @@ service cloud.firestore {
         return isSignedIn() &&
           request.auth.uid == request.resource.data.userId &&
           request.resource.data.userId is string &&
+          ('revision' in request.resource.data) &&
           (request.resource.data.revision is int || request.resource.data.revision is number) &&
           request.resource.data.revision == 1 &&
           'isDeleted' in request.resource.data &&

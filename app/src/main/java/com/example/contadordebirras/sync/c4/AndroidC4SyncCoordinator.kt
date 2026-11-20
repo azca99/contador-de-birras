@@ -496,7 +496,14 @@ class AndroidC4SyncCoordinator(
             }
 
             is PushPlan.DeleteAlreadySatisfied -> {
-                C4CoordinatorPushResult.Success(plan, remoteDoc?.revision ?: 0L)
+                val targetRev = remoteDoc?.revision ?: effectiveRemoteRev
+                persistence.confirmTombstonePushSuccess(
+                    syncId = syncId,
+                    ownerUid = ownerUid,
+                    expectedMutationId = mutationId,
+                    newRemoteRevision = targetRev
+                )
+                C4CoordinatorPushResult.Success(plan, targetRev)
             }
 
             is PushPlan.RemoteAbsentForKnownEntity -> {
