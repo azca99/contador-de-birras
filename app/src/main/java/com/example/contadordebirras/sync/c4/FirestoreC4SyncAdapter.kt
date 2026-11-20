@@ -19,18 +19,25 @@ import kotlinx.coroutines.tasks.await
  */
 class FirestoreC4SyncAdapter(
     private val firestore: FirebaseFirestore,
-    val expectedProjectId: String = C4SyncConstants.DEMO_PROJECT_ID
+    val expectedProjectId: String = C4SyncConstants.DEMO_PROJECT_ID,
+    val allowProduction: Boolean = false
 ) {
 
     init {
         val app = firestore.app
         val projectId = app.options.projectId
-        require(projectId == expectedProjectId) {
-            "PROHIBIDO: Intento de inicializar FirestoreC4SyncAdapter con projectId no autorizado: $projectId (esperado: $expectedProjectId)"
-        }
-        val host = firestore.firestoreSettings.host
-        require(host.contains("127.0.0.1") || host.contains("10.0.2.2") || host.contains("localhost")) {
-            "PROHIBIDO: Fallback a producción detectado. Firestore debe apuntar a un host de emulador local (127.0.0.1 o 10.0.2.2). Host actual: $host"
+        if (!allowProduction) {
+            require(projectId == expectedProjectId) {
+                "PROHIBIDO: Intento de inicializar FirestoreC4SyncAdapter con projectId no autorizado: $projectId (esperado: $expectedProjectId)"
+            }
+            val host = firestore.firestoreSettings.host
+            require(host.contains("127.0.0.1") || host.contains("10.0.2.2") || host.contains("localhost")) {
+                "PROHIBIDO: Fallback a producción detectado. Firestore debe apuntar a un host de emulador local (127.0.0.1 o 10.0.2.2). Host actual: $host"
+            }
+        } else {
+            require(!projectId.isNullOrBlank()) {
+                "PROHIBIDO: Inicialización de FirestoreC4SyncAdapter sin projectId válido."
+            }
         }
     }
 

@@ -39,6 +39,13 @@ object C4SyncConfig {
     var isEnabled: Boolean = false
 
     /**
+     * Feature Flag para activación de C4 en producción/release.
+     * Desactivado por defecto hasta autorización expresa.
+     */
+    @Volatile
+    var isProductionC4FeatureEnabled: Boolean = false
+
+    /**
      * Modo de motor de sincronización. Por defecto LEGACY.
      */
     @Volatile
@@ -79,6 +86,7 @@ object C4SyncConfig {
      */
     fun reset() {
         isEnabled = false
+        isProductionC4FeatureEnabled = false
         engineMode = SyncEngineMode.LEGACY
     }
 }

@@ -16,14 +16,21 @@ import kotlinx.coroutines.tasks.await
  */
 class StorageC4SyncAdapter(
     private val storage: FirebaseStorage,
-    val expectedBucket: String = "${C4SyncConstants.DEMO_PROJECT_ID}.appspot.com"
+    val expectedBucket: String = "${C4SyncConstants.DEMO_PROJECT_ID}.appspot.com",
+    val allowProduction: Boolean = false
 ) {
 
     init {
         val app = storage.app
         val projectId = app.options.projectId
-        require(projectId == C4SyncConstants.DEMO_PROJECT_ID) {
-            "PROHIBIDO: Intento de inicializar StorageC4SyncAdapter con projectId no autorizado: $projectId (esperado: ${C4SyncConstants.DEMO_PROJECT_ID})"
+        if (!allowProduction) {
+            require(projectId == C4SyncConstants.DEMO_PROJECT_ID) {
+                "PROHIBIDO: Intento de inicializar StorageC4SyncAdapter con projectId no autorizado: $projectId (esperado: ${C4SyncConstants.DEMO_PROJECT_ID})"
+            }
+        } else {
+            require(!projectId.isNullOrBlank()) {
+                "PROHIBIDO: Inicialización de StorageC4SyncAdapter sin projectId válido."
+            }
         }
     }
 

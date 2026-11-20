@@ -65,6 +65,10 @@ class MainActivity : ComponentActivity() {
         authRepository.currentUser.collect { user ->
             if (user != null) {
                 profileHydrator.hydrateIfActive(user.uid) { authRepository.currentUser.value?.uid }
+                // En la aplicación normal, restaurar el modo C4 persistente del usuario (siempre LEGACY por defecto)
+                if (!packageName.endsWith(".c4pilot")) {
+                    com.example.contadordebirras.sync.c4.C4SyncConfig.restoreUserEngineMode(applicationContext, user.uid)
+                }
             }
         }
     }

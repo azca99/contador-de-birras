@@ -105,15 +105,27 @@ class BeerRepository(
             } catch (_: Exception) {
                 com.example.contadordebirras.sync.c4.SyncEngineMode.LEGACY
             }
-            if (persistedMode == com.example.contadordebirras.sync.c4.SyncEngineMode.HALTED ||
+            val effectiveMode = if (persistedMode == com.example.contadordebirras.sync.c4.SyncEngineMode.HALTED ||
                 com.example.contadordebirras.sync.c4.C4SyncConfig.engineMode == com.example.contadordebirras.sync.c4.SyncEngineMode.HALTED
             ) {
-                throw IllegalStateException("Operación bloqueada: la cuenta está en estado HALTED para proteger los datos C4.")
+                com.example.contadordebirras.sync.c4.SyncEngineMode.HALTED
+            } else if (persistedMode == com.example.contadordebirras.sync.c4.SyncEngineMode.CUTOVER_IN_PROGRESS ||
+                com.example.contadordebirras.sync.c4.C4SyncConfig.engineMode == com.example.contadordebirras.sync.c4.SyncEngineMode.CUTOVER_IN_PROGRESS
+            ) {
+                com.example.contadordebirras.sync.c4.SyncEngineMode.CUTOVER_IN_PROGRESS
+            } else {
+                persistedMode
+            }
+
+            if (effectiveMode == com.example.contadordebirras.sync.c4.SyncEngineMode.HALTED ||
+                effectiveMode == com.example.contadordebirras.sync.c4.SyncEngineMode.CUTOVER_IN_PROGRESS
+            ) {
+                throw IllegalStateException("Operación bloqueada: la cuenta está en estado $effectiveMode para proteger los datos C4.")
             }
             val isC4 = com.example.contadordebirras.sync.c4.C4SyncConfig.isC4Active() ||
                     persistedMode == com.example.contadordebirras.sync.c4.SyncEngineMode.C4_ACTIVE
             if (isC4 && (ownerUid.isBlank() || ownerUid == "guest_local")) {
-                throw IllegalStateException("Operación bloqueada: el piloto C4 requiere una sesión de usuario autenticada.")
+                throw IllegalStateException("Operación bloqueada: el protocolo C4 requiere una sesión de usuario autenticada.")
             }
             return isC4
         }
