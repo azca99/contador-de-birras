@@ -68,7 +68,8 @@ object C4SyncConfig {
     fun restoreUserEngineMode(context: Context, ownerUid: String): SyncEngineMode {
         val persistedMode = C4SyncStateStore.getEngineMode(context, ownerUid)
         this.engineMode = persistedMode
-        this.isEnabled = (persistedMode == SyncEngineMode.C4_ACTIVE)
+        val isPilot = context.packageName?.endsWith(".c4pilot") == true
+        this.isEnabled = (persistedMode == SyncEngineMode.C4_ACTIVE) && (isPilot || isProductionC4FeatureEnabled)
         return persistedMode
     }
 
@@ -78,7 +79,8 @@ object C4SyncConfig {
     fun setUserEngineMode(context: Context, ownerUid: String, mode: SyncEngineMode) {
         C4SyncStateStore.setEngineMode(context, ownerUid, mode)
         this.engineMode = mode
-        this.isEnabled = (mode == SyncEngineMode.C4_ACTIVE)
+        val isPilot = context.packageName?.endsWith(".c4pilot") == true
+        this.isEnabled = (mode == SyncEngineMode.C4_ACTIVE) && (isPilot || isProductionC4FeatureEnabled)
     }
 
     /**

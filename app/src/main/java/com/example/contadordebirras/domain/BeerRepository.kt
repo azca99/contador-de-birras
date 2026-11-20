@@ -122,12 +122,30 @@ class BeerRepository(
             ) {
                 throw IllegalStateException("Operación bloqueada: la cuenta está en estado $effectiveMode para proteger los datos C4.")
             }
-            val isC4 = com.example.contadordebirras.sync.c4.C4SyncConfig.isC4Active() ||
-                    persistedMode == com.example.contadordebirras.sync.c4.SyncEngineMode.C4_ACTIVE
-            if (isC4 && (ownerUid.isBlank() || ownerUid == "guest_local")) {
-                throw IllegalStateException("Operación bloqueada: el protocolo C4 requiere una sesión de usuario autenticada.")
+            val isAccountC4 = persistedMode == com.example.contadordebirras.sync.c4.SyncEngineMode.C4_ACTIVE ||
+                    com.example.contadordebirras.sync.c4.C4SyncConfig.engineMode == com.example.contadordebirras.sync.c4.SyncEngineMode.C4_ACTIVE
+
+            if (isAccountC4) {
+                val isRealProductionApp = context.packageName?.endsWith(".c4pilot") == false &&
+                        !context.packageName.isNullOrBlank()
+                val isOperational = if (isRealProductionApp) {
+                    com.example.contadordebirras.sync.c4.C4SyncConfig.isProductionC4FeatureEnabled &&
+                            com.example.contadordebirras.sync.c4.C4SyncConfig.isC4Active()
+                } else {
+                    com.example.contadordebirras.sync.c4.C4SyncConfig.isC4Active()
+                }
+                if (!isOperational) {
+                    throw IllegalStateException(
+                        "Operación bloqueada: la cuenta está migrada a C4 pero el protocolo C4 está deshabilitado en este entorno. Se impiden nuevas escrituras para evitar mutaciones sin sincronización."
+                    )
+                }
+                if (ownerUid.isBlank() || ownerUid == "guest_local") {
+                    throw IllegalStateException("Operación bloqueada: el protocolo C4 requiere una sesión de usuario autenticada.")
+                }
+                return true
             }
-            return isC4
+
+            return false
         }
     }
 

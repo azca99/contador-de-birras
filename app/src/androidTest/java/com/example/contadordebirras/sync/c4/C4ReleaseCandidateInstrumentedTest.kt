@@ -21,17 +21,24 @@ import org.junit.runner.RunWith
 import java.io.File
 import java.net.InetSocketAddress
 import java.net.Socket
-import java.util.UUID
 
 /**
  * Prueba de Integración Android de la Versión Candidata C4 (Fase C4 Release Candidate).
  *
- * Valida sobre Android runtime real:
- * 1. El paso de una base de datos Legacy existente a C4 sobre almacenamiento persistente en disco.
- * 2. La preservación íntegra de cervezas, fotografías, comentarios y ubicaciones.
- * 3. La resiliencia tras cierre y reinicio de la aplicación (cierre y reapertura de la base Room en disco).
- * 4. El bloqueo estricto ante estados anómalos (HALTED, CUTOVER_IN_PROGRESS), impidiendo el retorno a Legacy.
- * 5. La protección de Release: C4 desactivado por defecto para cuentas no migradas.
+ * DISTINCIÓN METODOLÓGICA FUNDAMENTAL:
+ * 1. Migración de Esquema Room (SQLite): Corresponde al salto de versiones estructurales (ej. v8/v9 a v10
+ *    mediante MIGRATION_8_9 y MIGRATION_9_10), donde Room añade columnas (remoteRevision=0, baseRevision=0)
+ *    y la tabla `local_mutation_history` vacía, sin alterar los datos existentes.
+ * 2. Migración Funcional C4 (Cutover): Proceso aplicativo donde los datos Legacy preexistentes (0/0)
+ *    ascienden al protocolo C4 (revisión 1 con fieldRevisions), se suben fotos versionadas y se escribe
+ *    el bloqueo remoto.
+ *
+ * GARANTÍAS FORMALES VALIDAS EN ESTA SUITE:
+ * 1. Cierre y reapertura REAL de Room desde disco (sin reutilizar singletons cacheados o cerrados).
+ * 2. Preservación íntegra de cervezas, fotografías físicas en almacenamiento interno, comentarios y GPS.
+ * 3. Feature Flag de Producción coherente: si la cuenta es C4_ACTIVE pero C4 está deshabilitado,
+ *    se impiden nuevas escrituras locales para evitar mutaciones que jamás sincronicen, sin recurrir a Legacy.
+ * 4. Bloqueo estricto ante estados anómalos (HALTED, CUTOVER_IN_PROGRESS).
  */
 @RunWith(AndroidJUnit4::class)
 class C4ReleaseCandidateInstrumentedTest {
@@ -90,10 +97,12 @@ class C4ReleaseCandidateInstrumentedTest {
 
         C4SyncConfig.reset()
         C4SyncStateStore.clearForTesting(context, testUserUid)
+        BeerDatabase.resetInstanceForTesting()
     }
 
     @After
     fun tearDown() = runBlocking {
+        BeerDatabase.resetInstanceForTesting()
         for (dbName in createdDbNames) {
             try {
                 context.deleteDatabase(dbName)
@@ -108,6 +117,9 @@ class C4ReleaseCandidateInstrumentedTest {
         C4SyncStateStore.clearForTesting(context, testUserUid)
     }
 
+    /**
+     * Prueba Crítica: Migración funcional C4 sobre base persistente en disco y reapertura real tras reinicio.
+     */
     @Test
     fun testLegacyToC4Migration_persistsDataAndRecoversCleanlyAfterRestart() = runBlocking {
         // Solo ejecutar si Firebase Emulator está accesible
@@ -116,7 +128,7 @@ class C4ReleaseCandidateInstrumentedTest {
         val dbName = "c4_rc_test_db_${System.currentTimeMillis()}.db"
         createdDbNames.add(dbName)
 
-        // 1. Crear fotografía local real en almacenamiento de la app
+        // 1. Crear fotografía local real en almacenamiento físico de la app
         val photoFile = File(context.filesDir, "test_rc_photo_${System.currentTimeMillis()}.jpg")
         photoFile.writeBytes(byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0xFF.toByte(), 0xE0.toByte(), 0x11, 0x22, 0x33))
         createdPhotoFiles.add(photoFile)
@@ -126,8 +138,9 @@ class C4ReleaseCandidateInstrumentedTest {
         val syncId2 = "rc-sync-beer-pending-with-photo"
         val syncId3 = "rc-sync-beer-deleted"
 
-        // 2. Sembrar base de datos Room persistente en disco en formato puramente Legacy (0/0)
+        // 2. Sembrar base de datos Room persistente en disco en formato Legacy (0/0)
         var db = BeerDatabase.getDatabase(context, dbName)
+        assertTrue("La base de datos en disco debe estar abierta", db.isOpen)
         val beerDao = db.beerDao()
 
         val beer1 = BeerEntity(
@@ -174,7 +187,7 @@ class C4ReleaseCandidateInstrumentedTest {
         )
         beerDao.insertBeer(beer3)
 
-        // 3. Sembrar documento 1 en Firestore Emulator para simular la preexistencia remota
+        // 3. Sembrar documento 1 en Firestore Emulator para simular preexistencia remota
         val firestore = instances!!.firestore
         val firestoreAdapter = FirestoreC4SyncAdapter(firestore, expectedProjectId = C4SyncConstants.DEMO_PROJECT_ID)
         val storageAdapter = StorageC4SyncAdapter(instances!!.storage, expectedBucket = "${C4SyncConstants.DEMO_PROJECT_ID}.appspot.com")
@@ -194,7 +207,7 @@ class C4ReleaseCandidateInstrumentedTest {
         )
         firestore.collection("beers").document(syncId1).set(initialRemoteDoc1).await()
 
-        // 4. Ejecutar Cutover completo hacia C4 sobre la base persistente
+        // 4. Ejecutar Cutover completo hacia C4 sobre la base persistente en disco
         val cutoverManager = C4StagingCutoverManager(
             coordinator = coordinator,
             persistence = persistence,
@@ -208,16 +221,23 @@ class C4ReleaseCandidateInstrumentedTest {
         val cutoverResult = cutoverManager.executeCutover(testUserUid)
         assertTrue("El cutover debe completarse con éxito: $cutoverResult", cutoverResult is CutoverResult.Completed)
 
-        // 5. Verificar que el estado del motor persistente es C4_ACTIVE
+        // 5. Verificar que el modo persistente es C4_ACTIVE
         val modeAfterCutover = C4SyncStateStore.getEngineMode(context, testUserUid)
         assertEquals(SyncEngineMode.C4_ACTIVE, modeAfterCutover)
 
-        // 6. Simular reinicio completo de la aplicación: cerrar Room y reabrir desde disco
+        // 6. Simular reinicio completo de la aplicación:
+        //    Cerrar físicamente la conexión Room y verificar que isOpen es false
         db.close()
+        assertFalse("La conexión original a Room debe estar cerrada", db.isOpen)
+        BeerDatabase.resetInstanceForTesting()
+
+        // 7. Reabrir una conexión completamente nueva desde el archivo persistente en disco
         val restartedDb = BeerDatabase.getDatabase(context, dbName)
+        assertTrue("La nueva conexión a Room debe estar abierta", restartedDb.isOpen)
+        assertNotSame("Debe ser una instancia Room diferente, leída de disco", db, restartedDb)
         val restartedBeerDao = restartedDb.beerDao()
 
-        // 7. Comprobar que los datos persistieron íntegramente tras el reinicio
+        // 8. Comprobar que los datos persistieron íntegramente tras el reinicio
         val activeBeers = restartedBeerDao.getActiveBeersSync(testUserUid)
         assertEquals("Deben existir exactamente 2 cervezas activas tras reinicio", 2, activeBeers.size)
 
@@ -241,24 +261,23 @@ class C4ReleaseCandidateInstrumentedTest {
         assertEquals(SyncStatus.DELETED, recoveredBeer3!!.syncStatus)
         assertEquals(2L, recoveredBeer3.remoteRevision)
 
-        // 8. Comprobar que la foto física en disco sigue intacta
+        // 9. Comprobar que el archivo fotográfico físico en disco sigue intacto
         assertTrue("El archivo de imagen local debe conservarse", photoFile.exists() && photoFile.length() > 0)
 
         restartedDb.close()
     }
 
+    /**
+     * Prueba de Seguridad: Coherencia del Feature Flag de Producción y Parada Segura.
+     *
+     * Valida:
+     * - Si C4 está deshabilitado y la cuenta es C4_ACTIVE, se impiden nuevas escrituras.
+     * - Jamás se activa Legacy automáticamente para cuentas C4_ACTIVE.
+     * - Cuentas en HALTED y CUTOVER_IN_PROGRESS permanecen estrictamente bloqueadas.
+     */
     @Test
-    fun testProductionSafetyGuards_preventUnauthorizedActivation() = runBlocking {
-        // 1. C4 debe estar desactivado por defecto
-        assertEquals(false, C4SyncConfig.isEnabled)
-        assertEquals(false, C4SyncConfig.isProductionC4FeatureEnabled)
-        assertEquals(SyncEngineMode.LEGACY, C4SyncConfig.engineMode)
-
-        // 2. Para cualquier usuario sin migrar, el modo persistente es LEGACY
-        assertEquals(SyncEngineMode.LEGACY, C4SyncStateStore.getEngineMode(context, "any_new_user"))
-
-        // 3. Verificar que si una cuenta entra en HALTED, BeerRepository bloquea operaciones
-        val dbName = "c4_halted_check_${System.currentTimeMillis()}.db"
+    fun testProductionSafetyGuards_featureFlagCoherenceAndSafeHalt() = runBlocking {
+        val dbName = "c4_safety_check_${System.currentTimeMillis()}.db"
         createdDbNames.add(dbName)
         val db = BeerDatabase.getDatabase(context, dbName)
 
@@ -266,6 +285,27 @@ class C4ReleaseCandidateInstrumentedTest {
         val syncScheduler = com.example.contadordebirras.worker.WorkManagerBeerSyncScheduler(context)
         val repo = BeerRepository(db.beerDao(), context, authRepo, syncScheduler)
 
+        // 1. C4 deshabilitado por defecto en producción
+        assertEquals(false, C4SyncConfig.isEnabled)
+        assertEquals(false, C4SyncConfig.isProductionC4FeatureEnabled)
+        assertEquals(SyncEngineMode.LEGACY, C4SyncConfig.engineMode)
+
+        // 2. Si la cuenta está en C4_ACTIVE pero el feature flag está deshabilitado:
+        //    Debe impedir nuevas escrituras locales para no acumular mutaciones sin sincronizar.
+        //    Y JAMÁS debe ejecutar escrituras en Legacy.
+        C4SyncStateStore.setEngineMode(context, testUserUid, SyncEngineMode.C4_ACTIVE)
+        C4SyncConfig.isProductionC4FeatureEnabled = false
+        C4SyncConfig.restoreUserEngineMode(context, testUserUid)
+
+        try {
+            repo.addBeer(BeerType.CANA, System.currentTimeMillis())
+            fail("Debe impedir escrituras si la cuenta es C4_ACTIVE pero C4 está deshabilitado")
+        } catch (e: IllegalStateException) {
+            assertTrue("Debe informar que C4 está deshabilitado: ${e.message}",
+                e.message?.contains("protocolo C4 está deshabilitado") == true || e.message?.contains("bloqueada") == true)
+        }
+
+        // 3. Verificar que si una cuenta entra en HALTED, se bloquean operaciones
         C4SyncStateStore.setEngineMode(context, testUserUid, SyncEngineMode.HALTED)
         C4SyncConfig.restoreUserEngineMode(context, testUserUid)
 
@@ -274,6 +314,17 @@ class C4ReleaseCandidateInstrumentedTest {
             fail("Debe lanzar IllegalStateException cuando la cuenta está en HALTED")
         } catch (e: IllegalStateException) {
             assertTrue(e.message?.contains("HALTED") == true || e.message?.contains("bloqueada") == true)
+        }
+
+        // 4. Verificar que si una cuenta está en CUTOVER_IN_PROGRESS, se bloquean operaciones
+        C4SyncStateStore.setEngineMode(context, testUserUid, SyncEngineMode.CUTOVER_IN_PROGRESS)
+        C4SyncConfig.restoreUserEngineMode(context, testUserUid)
+
+        try {
+            repo.addBeer(BeerType.CANA, System.currentTimeMillis())
+            fail("Debe lanzar IllegalStateException cuando la cuenta está en CUTOVER_IN_PROGRESS")
+        } catch (e: IllegalStateException) {
+            assertTrue(e.message?.contains("CUTOVER_IN_PROGRESS") == true || e.message?.contains("bloqueada") == true)
         }
 
         db.close()

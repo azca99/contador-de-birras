@@ -116,26 +116,46 @@ abstract class BeerDatabase : RoomDatabase() {
         }
 
         fun getDatabase(context: Context, customDbName: String? = null): BeerDatabase {
+            if (customDbName != null) {
+                return Room.databaseBuilder(
+                    context.applicationContext,
+                    BeerDatabase::class.java,
+                    customDbName
+                ).addMigrations(
+                    MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5,
+                    MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9,
+                    MIGRATION_9_10
+                ).build()
+            }
+
             val defaultDbName = if (context.packageName.endsWith(".c4pilot")) {
                 "c4_debug_disposable.db"
             } else {
                 "beer_database"
             }
-            val dbName = customDbName ?: defaultDbName
-            return INSTANCE ?: synchronized(this) {
-                val instance = Room.databaseBuilder(
-                    context.applicationContext,
-                    BeerDatabase::class.java,
-                    dbName
-                )
-                .addMigrations(
-                    MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5,
-                    MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9,
-                    MIGRATION_9_10
-                )
-                .build()
-                INSTANCE = instance
-                instance
+            val existing = INSTANCE
+            if (existing != null && existing.isOpen) {
+                return existing
+            }
+            return synchronized(this) {
+                val current = INSTANCE
+                if (current != null && current.isOpen) {
+                    current
+                } else {
+                    val instance = Room.databaseBuilder(
+                        context.applicationContext,
+                        BeerDatabase::class.java,
+                        defaultDbName
+                    )
+                    .addMigrations(
+                        MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5,
+                        MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8, MIGRATION_8_9,
+                        MIGRATION_9_10
+                    )
+                    .build()
+                    INSTANCE = instance
+                    instance
+                }
             }
         }
 
