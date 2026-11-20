@@ -902,4 +902,235 @@ class C4MigrationRehearsalTest {
         assertFalse(C4SyncConfig.isEnabled)
         assertEquals(SyncEngineMode.HALTED, C4SyncStateStore.getEngineMode(context, aliceUid))
     }
+
+    /**
+     * Integración con Base de Datos Legacy Existente (con esquema legacy 0/0) y Recuperación en Cliente B.
+     *
+     * Demuestra:
+     * 1. Una base Room con datos puramente legacy (0/0, sin historial previo en local_mutation_history)
+     *    migra íntegramente sin pérdidas hacia el protocolo C4.
+     * 2. Todas las entidades preexistentes se alinean o promueven, y las mutaciones se confirman.
+     * 3. Recuperación completa desde un cliente con base local totalmente nueva (Cliente B).
+     */
+    @Test
+    fun testMigration_existingLegacyDatabase_preservesAllDataAndRecoversCleanly() = runBlocking {
+        val legacyDb = Room.inMemoryDatabaseBuilder(context, BeerDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+
+        val syncId1 = "sync-leg-01-synced"
+        val syncId2 = "sync-leg-02-offline-pending"
+        val syncId3 = "sync-leg-03-deleted"
+
+        val photoBytes = byteArrayOf(0x0A, 0x0B, 0x0C, 0x0D)
+        val photoUri = "file:///data/user/0/com.daniel.contadordebirras/photos/$syncId2.jpg"
+
+        try {
+            val legacyDao = legacyDb.beerDao()
+
+            // 1. Sembrar base legacy existente (0/0, sin historial de mutaciones previo)
+            val legacyBeer1 = LegacyBeerFixtures.createLegacyRoomBeer(
+                ownerUid = aliceUid,
+                syncId = syncId1,
+                syncStatus = SyncStatus.SYNCED,
+                comment = "Cerveza legacy preexistente",
+                hasRemotePhoto = true
+            )
+            legacyDao.insertBeer(legacyBeer1)
+
+            val legacyBeer2 = LegacyBeerFixtures.createLegacyRoomBeer(
+                ownerUid = aliceUid,
+                syncId = syncId2,
+                syncStatus = SyncStatus.PENDING,
+                comment = "Cerveza offline preexistente",
+                photoUri = photoUri
+            )
+            legacyDao.insertBeer(legacyBeer2)
+
+            val legacyBeer3 = LegacyBeerFixtures.createLegacyRoomBeer(
+                ownerUid = aliceUid,
+                syncId = syncId3,
+                syncStatus = SyncStatus.DELETED,
+                comment = "Cerveza borrada preexistente"
+            )
+            legacyDao.insertBeer(legacyBeer3)
+
+            // Comprobar que en la base legacy inicial NO hay historial de mutaciones
+            assertEquals(0, legacyDb.localMutationHistoryDao().getPendingMutations(aliceUid).size)
+
+            // 2. Mock de respuestas de Firestore & Storage
+            val remoteDoc1 = C4FirestoreDocument(
+                syncId = syncId1,
+                userId = aliceUid,
+                type = "CANA",
+                timestamp = legacyBeer1.timestamp,
+                latitude = legacyBeer1.latitude,
+                longitude = legacyBeer1.longitude,
+                comment = legacyBeer1.comment,
+                remotePhotoUrl = legacyBeer1.remotePhotoUrl,
+                updatedAt = legacyBeer1.updatedAt,
+                revision = 0L,
+                isDeleted = false,
+                lastMutationId = "",
+                fieldRevisions = emptyMap()
+            )
+            val upgradedDoc1 = remoteDoc1.copy(
+                revision = 1L,
+                lastMutationId = "mut-upg-leg-1",
+                fieldRevisions = C4FirestoreDocument.canonicalCreationFieldRevisions(1L)
+            )
+
+            val remoteDoc3 = C4FirestoreDocument(
+                syncId = syncId3,
+                userId = aliceUid,
+                type = "CANA",
+                timestamp = legacyBeer3.timestamp,
+                latitude = legacyBeer3.latitude,
+                longitude = legacyBeer3.longitude,
+                comment = legacyBeer3.comment,
+                remotePhotoUrl = null,
+                updatedAt = legacyBeer3.updatedAt,
+                revision = 0L,
+                isDeleted = false,
+                lastMutationId = "",
+                fieldRevisions = emptyMap()
+            )
+            val upgradedDoc3 = remoteDoc3.copy(
+                revision = 1L,
+                lastMutationId = "mut-upg-leg-3",
+                fieldRevisions = C4FirestoreDocument.canonicalCreationFieldRevisions(1L)
+            )
+
+            coEvery { firestoreAdapter.queryServerDocuments(aliceUid) } returnsMany listOf(
+                listOf(remoteDoc1, remoteDoc3),
+                listOf(upgradedDoc1, upgradedDoc3)
+            )
+            coEvery { firestoreAdapter.executeLegacyUpgrade(syncId1, aliceUid, any()) } returns C4TransactionResult.Success(1L, "mut-upg-leg-1")
+            coEvery { firestoreAdapter.executeLegacyUpgrade(syncId3, aliceUid, any()) } returns C4TransactionResult.Success(1L, "mut-upg-leg-3")
+            coEvery { firestoreAdapter.readServerDocument(syncId1) } returns upgradedDoc1
+            coEvery { firestoreAdapter.readServerDocument(syncId2) } returns null
+            coEvery { firestoreAdapter.readServerDocument(syncId3) } returns upgradedDoc3
+
+            coEvery {
+                storageAdapter.uploadVersionedPhoto(aliceUid, syncId2, any(), photoBytes, any())
+            } answers {
+                val mutId = thirdArg<String>()
+                C4StorageResult.Success("users/$aliceUid/beers/${syncId2}_$mutId.jpg", alreadyExisted = false)
+            }
+            coEvery { storageAdapter.photoExists(any()) } returns true
+
+            coEvery {
+                firestoreAdapter.executeCreateActive(syncId = syncId2, ownerUid = aliceUid, newDocument = any(), mutationId = any())
+            } answers {
+                C4TransactionResult.Success(1L, args[3] as String)
+            }
+            coEvery {
+                firestoreAdapter.executeWriteTombstone(syncId = syncId3, ownerUid = aliceUid, mutationId = any(), baseRevision = 1L)
+            } answers {
+                C4TransactionResult.Success(2L, thirdArg())
+            }
+            coEvery { firestoreAdapter.writeAccountProtocolLock(eq(aliceUid), eq(3), any()) } returns true
+
+            val legacyPersistence = RoomC4SyncPersistence(legacyDb)
+            val legacyCoordinator = AndroidC4SyncCoordinator(
+                firestoreAdapter = firestoreAdapter,
+                storageAdapter = storageAdapter,
+                persistence = legacyPersistence
+            )
+            val legacyCutoverManager = C4StagingCutoverManager(
+                coordinator = legacyCoordinator,
+                persistence = legacyPersistence,
+                firestoreAdapter = firestoreAdapter,
+                context = context,
+                photoResolver = { uri -> if (uri == photoUri) photoBytes else null }
+            )
+
+            // 3. Ejecutar migración sobre la base existente
+            val result = legacyCutoverManager.executeCutover(aliceUid)
+            assertTrue("Cutover debe ser Completed", result is CutoverResult.Completed)
+
+            val activeBeers = legacyDao.getActiveBeersSync(aliceUid)
+            assertEquals("Deben existir 2 cervezas activas", 2, activeBeers.size)
+
+            val final1 = legacyDao.getBeerBySyncId(syncId1, aliceUid)!!
+            assertEquals(SyncStatus.SYNCED, final1.syncStatus)
+            assertEquals(1L, final1.remoteRevision)
+            assertEquals("users/$aliceUid/beers/$syncId1.jpg", final1.remotePhotoUrl)
+
+            val final2 = legacyDao.getBeerBySyncId(syncId2, aliceUid)!!
+            assertEquals(SyncStatus.SYNCED, final2.syncStatus)
+            assertEquals(1L, final2.remoteRevision)
+            assertEquals(photoUri, final2.photoUri)
+            assertTrue(final2.remotePhotoUrl?.startsWith("users/$aliceUid/beers/${syncId2}_") == true)
+
+            val final3 = legacyDao.getBeerBySyncId(syncId3, aliceUid)!!
+            assertEquals(SyncStatus.DELETED, final3.syncStatus)
+            assertEquals(2L, final3.remoteRevision)
+
+            val pendingMutations = legacyDb.localMutationHistoryDao().getPendingMutations(aliceUid)
+            assertEquals("Cero mutaciones pendientes tras migración", 0, pendingMutations.size)
+
+            // 4. Simular recuperación desde Cliente B (base local nueva)
+            val clientBDb = Room.inMemoryDatabaseBuilder(context, BeerDatabase::class.java)
+                .allowMainThreadQueries()
+                .build()
+
+            // Remoto post-migración: doc1 (rev 1), doc2 (rev 1), doc3 (rev 2, tombstone)
+            val modernDoc2 = C4FirestoreDocument(
+                syncId = syncId2,
+                userId = aliceUid,
+                type = "CANA",
+                timestamp = legacyBeer2.timestamp,
+                latitude = legacyBeer2.latitude,
+                longitude = legacyBeer2.longitude,
+                comment = legacyBeer2.comment,
+                remotePhotoUrl = final2.remotePhotoUrl,
+                photoSource = null,
+                updatedAt = legacyBeer2.updatedAt,
+                revision = 1L,
+                isDeleted = false,
+                lastMutationId = "mut-create-leg-2",
+                fieldRevisions = C4FirestoreDocument.canonicalCreationFieldRevisions(1L)
+            )
+            val tombstoneDoc3 = upgradedDoc3.copy(
+                revision = 2L,
+                isDeleted = true,
+                lastMutationId = "mut-tomb-leg-3",
+                fieldRevisions = C4FirestoreDocument.canonicalCreationFieldRevisions(2L)
+            )
+
+            coEvery { firestoreAdapter.queryServerDocuments(aliceUid) } returns listOf(upgradedDoc1, modernDoc2, tombstoneDoc3)
+            coEvery { firestoreAdapter.readServerDocument(syncId1) } returns upgradedDoc1
+            coEvery { firestoreAdapter.readServerDocument(syncId2) } returns modernDoc2
+            coEvery { firestoreAdapter.readServerDocument(syncId3) } returns tombstoneDoc3
+
+            val clientBPersistence = RoomC4SyncPersistence(clientBDb)
+            val clientBCoordinator = AndroidC4SyncCoordinator(
+                firestoreAdapter = firestoreAdapter,
+                storageAdapter = storageAdapter,
+                persistence = clientBPersistence
+            )
+
+            // Cliente B ejecuta PULL de colección
+            val pullResults = clientBCoordinator.executePullCollection(aliceUid)
+            assertTrue("Cliente B debe procesar la colección remota", pullResults.isNotEmpty())
+
+            val clientBActiveBeers = clientBDb.beerDao().getActiveBeersSync(aliceUid)
+            assertEquals("Cliente B debe haber recuperado exactamente 2 cervezas activas", 2, clientBActiveBeers.size)
+
+            val clientBBeer1 = clientBDb.beerDao().getBeerBySyncId(syncId1, aliceUid)!!
+            assertEquals(SyncStatus.SYNCED, clientBBeer1.syncStatus)
+            assertEquals(1L, clientBBeer1.remoteRevision)
+            assertEquals("users/$aliceUid/beers/$syncId1.jpg", clientBBeer1.remotePhotoUrl)
+
+            val clientBBeer2 = clientBDb.beerDao().getBeerBySyncId(syncId2, aliceUid)!!
+            assertEquals(SyncStatus.SYNCED, clientBBeer2.syncStatus)
+            assertEquals(1L, clientBBeer2.remoteRevision)
+            assertEquals(final2.remotePhotoUrl, clientBBeer2.remotePhotoUrl)
+
+            clientBDb.close()
+        } finally {
+            legacyDb.close()
+        }
+    }
 }

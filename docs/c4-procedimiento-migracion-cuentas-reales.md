@@ -124,7 +124,7 @@ Para minimizar el radio de impacto, la migración productiva se organizará en c
 
 ### 4.1 Requisitos Previos por Dispositivo Cliente
 
-1. **Actualización de la Aplicación:** El usuario debe disponer de la versión de la app con `versionCode >= 3`. Las versiones obsoletas no disponen del motor C4 ni de la base de datos Room v10 compatible.
+1. **Actualización de la Aplicación:** El usuario debe disponer de una versión de la app con `versionCode >= 3` (el código actual en `app/build.gradle.kts` tiene `versionCode = 2`, por lo que el primer despliegue con C4 requerirá incrementar a 3). Las versiones obsoletas no disponen del motor C4 ni de la base de datos Room v10 compatible.
 2. **Reglas de Seguridad Candidatas Desplegadas:** El archivo `firestore.candidate.rules` y `storage.rules` debe estar activo en producción.
 3. **Ejecución del Cutover:**
    - Se activa mediante el orquestador `C4CutoverManager` en el arranque o inicio de sesión.
@@ -132,14 +132,13 @@ Para minimizar el radio de impacto, la migración productiva se organizará en c
 
 ### 4.2 Formato del Bloqueo Remoto de Protocolo
 
-La confirmación final en `/users/{uid}` escribe de forma transaccional:
+La confirmación final en `/users/{uid}` se realiza mediante `writeAccountProtocolLock(uid)`, que efectúa una escritura atómica e idempotente con fusión de campos (`set(..., SetOptions.merge())`) sin sobreescribir otros datos del perfil de usuario:
 ```json
 {
   "syncProtocolVersion": "C4",
   "minSupportedAppVersionCode": 3,
-  "accountSyncState": "MIGRATED_TO_C4",
-  "migratedAt": 1700000000000,
-  "updatedAt": 1700000000000
+  "c4MigratedAt": 1700000000000,
+  "accountSyncState": "MIGRATED_TO_C4"
 }
 ```
 Una vez presente este documento, las reglas de Firestore deniegan cualquier creación, actualización o borrado desde clientes que no utilicen el protocolo C4.
@@ -211,13 +210,13 @@ Para compilar y distribuir la versión final de producción de la aplicación, e
 
 | Componente / Archivo | Configuración en Piloto (DEBUG/Staging) | Configuración Requerida para Producción (RELEASE) |
 | :--- | :--- | :--- |
-| **`C4SyncConstants.PILOT_USER_EMAIL`** | `"piloto-c4@azcaratech.com"` (fijo) | **Eliminar dependencia:** Utilizar exclusivamente `FirebaseAuth.getInstance().currentUser?.email`. |
+| **`C4SyncConstants.PILOT_USER_EMAIL`** | `"c4_pilot_user@demo-contador-c44.test"` (fijo) | **Eliminar dependencia:** Utilizar exclusivamente `FirebaseAuth.getInstance().currentUser?.email`. |
 | **`C4SyncConstants.PILOT_FIREBASE_PROJECT_ID`** | `"demo-contador-c44"` (ficticio) | **Eliminar dependencia:** Utilizar el proyecto real de producción `FirebaseApp.getInstance().options.projectId`. |
 | **Endpoints de Emuladores** | `10.0.2.2:8888` (Firestore), `10.0.2.2:9199` (Storage), `10.0.2.2:9099` (Auth) | **Desconectar:** No invocar `useEmulator()`. Conectar a los servicios gestionados de Google Cloud. |
-| **`StagingC4SyncProvider`** | Instanciación manual con puertos de emulador y sesión forzada | **Sustituir por `ProductionC4SyncProvider`:** Inyección de dependencias Hilt con las instancias estándar de Firebase del contenedor de producción. |
-| **`applicationIdSuffix`** | `".c4pilot"` en `build.gradle.kts` | **Retirar:** Compilar bajo el `applicationId` oficial de la aplicación (`com.azcaratech.birras`). |
+| **`StagingC4SyncProvider`** | Instanciación manual con puertos de emulador y sesión forzada | **Sustituir por `ProductionC4SyncProvider`:** Proveedor de producción integrado en la arquitectura existente (`ContadorDeBirrasApplication`, sin dependencias inexistentes de Hilt) con las instancias estándar de Firebase del contenedor oficial. |
+| **`applicationIdSuffix`** | `".c4pilot"` en `build.gradle.kts` | **Retirar:** Compilar bajo el `applicationId` oficial de la aplicación (`com.daniel.contadordebirras`). |
+| **`versionCode` / `minSupportedAppVersionCode`** | `versionCode = 2` actual en `app/build.gradle.kts` | **Incrementar `versionCode = 3`:** Para el lanzamiento de producción con C4, la versión de la app debe subir de 2 a 3 para cumplir el requisito de seguridad perimetral `minSupportedAppVersionCode >= 3`. |
 | **Panel de Depuración (`C4SyncDebugScreen`)** | Accesible desde la interfaz o menú de desarrollo | **Ocultar / Deshabilitar:** Excluir de los builds de tipo `release` mediante sourceSets o directivas `@VisibleForTesting`. |
-| **`minSupportedAppVersionCode`** | Valor de prueba en piloto | Establecer en el `versionCode` oficial de la primera versión release que contenga C4 (mínimo 3). |
 | **Trazas y Logs Verbosos** | `Log.d("C4Cutover", ...)` imprimiendo payloads y estados intermedios | Desactivar logs detallados en Release para prevenir fugas de información sensible en Logcat. |
 
 ---
@@ -231,6 +230,6 @@ Antes de autorizar la migración de la primera cuenta real:
 - [ ] `firestore.candidate.rules` desplegadas y validadas con la suite de 108 pruebas de seguridad.
 - [ ] `storage.rules` desplegadas con validación de fotos versionadas e inmutabilidad.
 - [ ] Suite de pruebas unitarias Robolectric (`C4MigrationRehearsalTest` y `C4StagingCutoverManagerTest`) superadas al 100%.
-- [ ] Piezas del piloto desacopladas y aplicación release compilada con `versionCode >= 3`.
+- [ ] Piezas del piloto desacopladas y aplicación release compilada con `versionCode = 3` (subido desde 2) y `applicationId = com.daniel.contadordebirras`.
 - [ ] Cohorte 0 identificada y notificada.
 - [ ] Protocolo de contingencia y equipo de guardia asignado durante las ventanas de ejecución.
