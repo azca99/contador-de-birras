@@ -482,6 +482,38 @@ describe('C4 Release Readiness: Candidate Security Rules Verification Suite', ()
       // Delete legacy unversioned photo
       await assertSucceeds(deleteObject(legacyPhotoRef));
     });
+
+    it('strictly forbids legacy operations (create, update, hard-delete) when account is locked to C4', async () => {
+      // Seed user account locked to C4
+      await seedDocument(testEnv, 'users/alice', createProtocolLockPayload({
+        email: 'alice@example.com',
+        alias: 'Alice Locked C4',
+      }));
+
+      // Seed an unversioned legacy beer
+      await seedDocument(testEnv, 'beers/beer-legacy-existing', createLegacyBeerPayload('alice'));
+
+      const aliceDb = testEnv.authenticatedContext('alice').firestore();
+
+      // 1. Legacy create without revision must FAIL when account is locked to C4
+      await assertFails(setDoc(doc(aliceDb, 'beers/beer-legacy-new'), createLegacyBeerPayload('alice')));
+
+      // 2. Legacy update without revision must FAIL when account is locked to C4
+      await assertFails(updateDoc(doc(aliceDb, 'beers/beer-legacy-existing'), {
+        comment: 'Attempted legacy update on C4-locked account',
+      }));
+
+      // 3. Legacy hard delete must FAIL when account is locked to C4
+      await assertFails(deleteDoc(doc(aliceDb, 'beers/beer-legacy-existing')));
+
+      // 4. BUT upgrading that legacy beer to C4 revision 1 remains ALLOWED
+      await assertSucceeds(setDoc(doc(aliceDb, 'beers/beer-legacy-existing'), createModernBeerPayload('alice', {
+        revision: 1,
+        isDeleted: false,
+        lastMutationId: 'mut-upgrade-locked-001',
+        fieldRevisions: { TYPE: 1, TIMESTAMP: 1, LOCATION: 1, COMMENT: 1, PHOTO: 1 },
+      })));
+    });
   });
 
   // ===========================================================================
@@ -495,6 +527,37 @@ describe('C4 Release Readiness: Candidate Security Rules Verification Suite', ()
       await assertSucceeds(setDoc(userRef, createProtocolLockPayload({
         email: 'alice@example.com',
         alias: 'Alice Pilot',
+      })));
+    });
+
+    it('hardens C4 protocol lock creation by requiring minSupportedAppVersionCode >= 3 and accountSyncState MIGRATED_TO_C4', async () => {
+      const aliceDb = testEnv.authenticatedContext('alice').firestore();
+      const userRef = doc(aliceDb, 'users/alice');
+
+      // Attempt with minSupportedAppVersionCode < 3 (e.g. 2 or 1) MUST FAIL
+      await assertFails(setDoc(userRef, createProtocolLockPayload({
+        minSupportedAppVersionCode: 2,
+      })));
+
+      await assertFails(setDoc(userRef, createProtocolLockPayload({
+        minSupportedAppVersionCode: 1,
+      })));
+
+      // Attempt with invalid accountSyncState (e.g. 'INVALID_STATE' or 'HACKED') MUST FAIL
+      await assertFails(setDoc(userRef, createProtocolLockPayload({
+        minSupportedAppVersionCode: 3,
+        accountSyncState: 'INVALID_STATE',
+      })));
+
+      await assertFails(setDoc(userRef, createProtocolLockPayload({
+        minSupportedAppVersionCode: 3,
+        accountSyncState: 'HACKED',
+      })));
+
+      // Valid lock with minSupportedAppVersionCode >= 3 and accountSyncState == 'MIGRATED_TO_C4' SUCCEEDS
+      await assertSucceeds(setDoc(userRef, createProtocolLockPayload({
+        minSupportedAppVersionCode: 3,
+        accountSyncState: 'MIGRATED_TO_C4',
       })));
     });
 

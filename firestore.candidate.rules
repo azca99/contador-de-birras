@@ -41,13 +41,12 @@ service cloud.firestore {
           (data.get('syncProtocolVersion', '') == 'C4' ? (
             ('minSupportedAppVersionCode' in data) &&
             (data.minSupportedAppVersionCode is int || data.minSupportedAppVersionCode is number) &&
-            data.minSupportedAppVersionCode >= 1 &&
+            data.minSupportedAppVersionCode >= 3 &&
             ('c4MigratedAt' in data) &&
             (data.c4MigratedAt is int || data.c4MigratedAt is number) &&
             data.c4MigratedAt > 0 &&
             ('accountSyncState' in data) &&
-            data.accountSyncState is string &&
-            data.accountSyncState.size() > 0
+            data.accountSyncState in ['MIGRATED_TO_C4']
           ) : true);
       }
 
@@ -133,6 +132,11 @@ service cloud.firestore {
         return isSignedIn() && (resource == null || request.auth.uid == resource.data.userId);
       }
 
+      function isAccountLockedToC4(uid) {
+        let userPath = /databases/$(database)/documents/users/$(uid);
+        return exists(userPath) && get(userPath).data.get('syncProtocolVersion', '') == 'C4';
+      }
+
       function isValidLastMutationId(id) {
         return id is string && id.size() > 0 && id.size() <= 128;
       }
@@ -197,11 +201,12 @@ service cloud.firestore {
           areCreationFieldRevisionsValid(request.resource.data.get('fieldRevisions', null));
       }
 
-      // Legacy create: no revision field present
+      // Legacy create: no revision field present AND account is NOT locked to C4
       function isLegacyCreate() {
         return isSignedIn() &&
           request.auth.uid == request.resource.data.userId &&
-          !('revision' in request.resource.data);
+          !('revision' in request.resource.data) &&
+          !isAccountLockedToC4(request.auth.uid);
       }
 
       // Modern update: strictly monotonic (+1), owner immutable, anti-resurrection, causal fieldRevisions integrity
@@ -225,12 +230,13 @@ service cloud.firestore {
           );
       }
 
-      // Legacy update: both resource and request lack revision
+      // Legacy update: both resource and request lack revision AND account is NOT locked to C4
       function isLegacyUpdate() {
         return isBeerOwner() &&
           request.resource.data.userId == resource.data.userId &&
           !('revision' in resource.data) &&
-          !('revision' in request.resource.data);
+          !('revision' in request.resource.data) &&
+          !isAccountLockedToC4(request.auth.uid);
       }
 
       // Legacy upgrade: legacy document upgraded to modern protocol revision 1
@@ -254,8 +260,11 @@ service cloud.firestore {
 
       allow update: if isModernUpdate() || isLegacyUpdate() || isLegacyUpgrade();
 
-      // Only legacy documents can be hard deleted. Modern documents forbid hard deletion.
-      allow delete: if isBeerOwner() && !('revision' in resource.data);
+      // Only legacy documents can be hard deleted, provided account is NOT locked to C4.
+      // Modern documents and C4-locked accounts forbid hard deletion.
+      allow delete: if isBeerOwner() &&
+                    !('revision' in resource.data) &&
+                    !isAccountLockedToC4(request.auth.uid);
     }
 
     // --- SHARED BEERS ---

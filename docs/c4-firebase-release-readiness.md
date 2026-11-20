@@ -145,17 +145,21 @@ flowchart TD
 
 ---
 
-## 6. Plan de Contingencia y Rollback Seguro
+## 6. Plan de Contingencia y Estrategia de Mitigación Defensiva
 
-En caso de detectarse anomalías imprevistas tras un futuro despliegue en producción, se seguirá este protocolo:
+> [!CAUTION]
+> **Prohibición de Rollback Ciego a Reglas Baseline:**
+> Revertir las reglas de seguridad a las reglas baseline originales de producción **NO es una estrategia admisible ni segura** una vez que se han migrado cuentas a C4.
+> Las reglas baseline permiten escrituras no tipadas sin revisión, borrado físico de documentos, resurrección de tombstones y sobrescritura de fotografías. Un rollback ciego a baseline abriría la puerta a que clientes antiguos o escrituras concurrentes destruyan irreparablemente el historial causal (`fieldRevisions`), borren físicamente tombstones indispensables para multidispositivo o corrompan fotos inmutables.
 
-1. **Rollback Rápido de Reglas Firebase:**
-   - Firebase conserva el historial inmutable de reglas desplegadas. Desde Firebase CLI o Firebase Console, se puede reactivar la versión anterior en menos de 60 segundos:
-     ```bash
-     firebase deploy --only firestore:rules,storage:rules
-     ```
-     (utilizando las copias de seguridad de las reglas previas).
-2. **Inocuidad de Datos en Rollback:**
-   - Los datos ya migrados a C4 (documentos con `revision`, `fieldRevisions` y tombstones) son compatibles hacia adelante con las reglas baseline: las reglas baseline permiten lecturas y escrituras por propietario sin evaluar revisiones, por lo que los clientes C4 no perderán acceso a sus datos.
-3. **Recuperación de Cuentas Bloqueadas:**
-   - Si alguna cuenta entra en modo defensivo `HALTED`, se aplica el procedimiento de diagnóstico e integridad validado en `C4HaltedRecoveryManager` (inspección de tombstones, verificación de mutaciones locales y chequeo de estado remoto).
+En caso de detectarse anomalías imprevistas tras un futuro despliegue en producción, se aplicará la siguiente **estrategia de contingencia basada en corrección hacia adelante (`fix-forward`) y contención perimetral**:
+
+1. **Mantenimiento del Perímetro de Transición (Reglas Candidatas):**
+   - Las reglas candidatas (`firestore.candidate.rules` y `storage.candidate.rules`) son intrínsecamente tolerantes: los clientes legacy conservan su operativa completa sobre datos no migrados. No existe necesidad operativa de retirar las reglas candidatas para dar servicio a usuarios antiguos.
+2. **Corrección Hacia Adelante (`Fix-Forward`):**
+   - Si se detecta un bloqueo legítimo no previsto en las reglas, la remediación consistirá en corregir la regla específica manteniendo activos los escudos fundamentales (inmutabilidad de revisión, anti-resurrección, bloqueo de protocolo en `/users/{uid}` e inmutabilidad en Storage).
+3. **Contención a Nivel de Cliente (Modo Defensivo `HALTED`):**
+   - Si un cliente C4 encuentra una inconsistencia de red o un desacuerdo de estado durante la sincronización, el motor local se detiene inmediatamente en modo `HALTED`.
+   - Todas las mutaciones locales (`local_mutation_history`) y fotos locales permanecen intactas en Room sin pérdidas de información.
+4. **Recuperación Controlada de Cuentas Afectadas:**
+   - La reactivación de cualquier cuenta en `HALTED` se realiza mediante el procedimiento asistido de diagnóstico e integridad formalizado en `C4HaltedRecoveryManager`, verificando la concordancia entre los tombstones locales, el historial de mutaciones y el estado remoto en Firestore.
