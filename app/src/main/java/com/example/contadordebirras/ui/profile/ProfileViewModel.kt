@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.example.contadordebirras.data.UserRepository
 import com.example.contadordebirras.domain.AuthRepository
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -57,6 +58,23 @@ class ProfileViewModel(
 
     fun signOut() {
         authRepository.signOut()
+    }
+
+    fun signInTestUser(email: String = "test_internal@demo-contador-c44.test", password: String = "password123456", onResult: (Boolean, String?) -> Unit) {
+        viewModelScope.launch {
+            try {
+                val auth = com.google.firebase.auth.FirebaseAuth.getInstance()
+                try {
+                    auth.signInWithEmailAndPassword(email, password).await()
+                } catch (_: Exception) {
+                    auth.createUserWithEmailAndPassword(email, password).await()
+                }
+                authRepository.updateCurrentUser()
+                onResult(true, null)
+            } catch (e: Exception) {
+                onResult(false, e.message)
+            }
+        }
     }
 
     fun updateCurrentUser() {

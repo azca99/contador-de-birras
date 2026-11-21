@@ -28,7 +28,8 @@ class ContadorDeBirrasApplication : Application() {
         com.example.contadordebirras.sync.c4.C4SyncConfig.restoreConfiguration(this)
 
         val isPilot = packageName.endsWith(".c4pilot")
-        if (BuildConfig.DEBUG && isPilot) {
+        val isInternal = packageName.endsWith(".internal")
+        if (BuildConfig.DEBUG && (isPilot || isInternal)) {
             // Entorno exclusivo de pruebas y piloto aislados
             val currentProject = FirebaseApp.getInstance().options.projectId
             if (currentProject == C4SyncConstants.DEMO_PROJECT_ID) {
@@ -52,29 +53,34 @@ class ContadorDeBirrasApplication : Application() {
                         C4SyncConstants.EMULATOR_HOST_ANDROID,
                         C4SyncConstants.STORAGE_PORT
                     )
-                    Log.i("C4PilotSecurity", "Firebase Emulator configurado con éxito para piloto C4 (${C4SyncConstants.EMULATOR_HOST_ANDROID})")
+                    Log.i("C4PilotSecurity", "Firebase Emulator configurado con éxito para entorno emulador (${C4SyncConstants.EMULATOR_HOST_ANDROID})")
                 } catch (e: Exception) {
                     Log.e("C4PilotSecurity", "Error al configurar emulador Firebase: ${e.message}", e)
                 }
             }
 
-            C4SyncProviderRegistry.setProvider(
-                StagingC4SyncProvider { context, ownerUid ->
-                    val host = C4SyncConstants.EMULATOR_HOST_ANDROID
-                    val instances = C4TestEnvironmentFactory.getAuthenticatedPilotInstances(
-                        context = context,
-                        expectedUid = ownerUid
-                    )
-                    C4AppSyncManager.createForTesting(
-                        context = context,
-                        ownerUid = ownerUid,
-                        host = host,
-                        inMemory = false,
-                        dbName = "c4_debug_disposable.db",
-                        instances = instances
-                    )
-                }
-            )
+            if (isPilot) {
+                C4SyncProviderRegistry.setProvider(
+                    StagingC4SyncProvider { context, ownerUid ->
+                        val host = C4SyncConstants.EMULATOR_HOST_ANDROID
+                        val instances = C4TestEnvironmentFactory.getAuthenticatedPilotInstances(
+                            context = context,
+                            expectedUid = ownerUid
+                        )
+                        C4AppSyncManager.createForTesting(
+                            context = context,
+                            ownerUid = ownerUid,
+                            host = host,
+                            inMemory = false,
+                            dbName = "c4_debug_disposable.db",
+                            instances = instances
+                        )
+                    }
+                )
+            } else {
+                // APK interno: arquitectura normal de la aplicación, Room persistente real ("beer_database"), C4 desactivado por defecto
+                C4SyncProviderRegistry.setProvider(ProductionC4SyncProvider())
+            }
         } else {
             // Arquitectura normal de la aplicación y Release:
             // Registrar ProductionC4SyncProvider (desactivado por defecto hasta autorización expresa)

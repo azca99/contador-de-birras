@@ -24,8 +24,8 @@ android {
 
     buildTypes {
         debug {
-            applicationIdSuffix = ".c4pilot"
-            versionNameSuffix = "-c4pilot"
+            applicationIdSuffix = ".internal"
+            versionNameSuffix = "-internal"
         }
         release {
             isMinifyEnabled = false

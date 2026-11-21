@@ -161,8 +161,8 @@ class BeerRepository(
             }
 
             if (!isAccountC4 && ownerUid.isNotBlank() && ownerUid != "guest_local") {
-                val hasReliableLocalState = com.example.contadordebirras.sync.c4.C4SyncStateStore.hasReliableLocalState(context, ownerUid)
-                if (!hasReliableLocalState) {
+                val isSessionVerified = com.example.contadordebirras.sync.c4.C4SyncConfig.isSessionProtocolVerified(ownerUid)
+                if (!isSessionVerified) {
                     val activationMgr = com.example.contadordebirras.sync.c4.C4ControlledActivationManager(context)
                     val protocolResult = activationMgr.detectAndEnforceAccountProtocol(ownerUid)
                     when (protocolResult) {
@@ -173,7 +173,7 @@ class BeerRepository(
                         }
                         is com.example.contadordebirras.sync.c4.ProtocolResult.Unverified -> {
                             throw IllegalStateException(
-                                "Operación bloqueada: No se puede verificar el protocolo de la cuenta con el servidor y no existe un estado local fiable. Conéctate a la red para verificar el estado de la cuenta."
+                                "Operación bloqueada: No se puede verificar el protocolo de la cuenta con el servidor y no existe un estado local fiable en esta sesión. Conéctate a la red para verificar el estado de la cuenta."
                             )
                         }
                     }

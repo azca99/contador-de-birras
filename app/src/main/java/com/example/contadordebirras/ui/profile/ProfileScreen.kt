@@ -156,6 +156,22 @@ fun ProfileScreen(
             Button(onClick = { launcher.launch(googleSignInClient.signInIntent) }) {
                 Text("Iniciar Sesión con Google")
             }
+            if (com.example.contadordebirras.BuildConfig.DEBUG) {
+                Spacer(modifier = Modifier.height(8.dp))
+                OutlinedButton(
+                    onClick = {
+                        viewModel.signInTestUser { success, error ->
+                            if (success) {
+                                Toast.makeText(context, "Sesión de prueba iniciada", Toast.LENGTH_SHORT).show()
+                            } else {
+                                Toast.makeText(context, "Error al iniciar sesión: $error", Toast.LENGTH_LONG).show()
+                            }
+                        }
+                    }
+                ) {
+                    Text("Iniciar Sesión de Prueba (Emulador)")
+                }
+            }
         }
 
         if (com.example.contadordebirras.BuildConfig.DEBUG) {

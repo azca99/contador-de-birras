@@ -19,6 +19,21 @@
         }
       ],
       "services": {}
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:289878368752:android:5f82810794946f27f7ce46",
+        "android_client_info": {
+          "package_name": "com.daniel.contadordebirras.internal"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "fake_c4_pilot_api_key_for_emulator"
+        }
+      ],
+      "services": {}
     }
   ],
   "configuration_version": "1"

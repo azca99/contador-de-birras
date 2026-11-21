@@ -148,6 +148,37 @@ object C4SyncConfig {
     val syncExecutionMutex = Mutex()
 
     /**
+     * Mutex para impedir que comprobaciones concurrentes del protocolo produzcan
+     * cambios de estado incompatibles o condiciones de carrera.
+     */
+    val protocolDetectionMutex = Mutex()
+
+    /**
+     * Conjunto de UIDs cuyo protocolo ha sido verificado con el servidor en la sesión actual en memoria.
+     * Evita confiar indefinidamente en verificaciones legacy antiguas tras reiniciar la aplicación.
+     */
+    private val sessionVerifiedUids = java.util.Collections.synchronizedSet(mutableSetOf<String>())
+
+    fun isSessionProtocolVerified(ownerUid: String): Boolean {
+        if (ownerUid.isBlank() || ownerUid == "guest_local") return false
+        return sessionVerifiedUids.contains(ownerUid)
+    }
+
+    fun markSessionProtocolVerified(ownerUid: String) {
+        if (ownerUid.isNotBlank() && ownerUid != "guest_local") {
+            sessionVerifiedUids.add(ownerUid)
+        }
+    }
+
+    fun clearSessionProtocolVerification(ownerUid: String? = null) {
+        if (ownerUid != null) {
+            sessionVerifiedUids.remove(ownerUid)
+        } else {
+            sessionVerifiedUids.clear()
+        }
+    }
+
+    /**
      * Consulta segura de activación general.
      */
     fun isC4Active(): Boolean = isEnabled && engineMode == SyncEngineMode.C4_ACTIVE
@@ -201,6 +232,7 @@ object C4SyncConfig {
         isProductionC4FeatureEnabled = false
         authorizedPilotUids = emptySet()
         currentActiveOwnerUid = null
+        clearSessionProtocolVerification()
         engineMode = SyncEngineMode.LEGACY
     }
 }
