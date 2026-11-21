@@ -20,6 +20,8 @@ object C4SyncStateStore {
     private const val KEY_PREFIX_MODE = "sync_mode_"
     private const val KEY_PREFIX_CHECKPOINT = "migration_checkpoint_"
     private const val KEY_PREFIX_CHECKPOINT_TS = "migration_checkpoint_ts_"
+    private const val KEY_PRODUCTION_FEATURE_ENABLED = "c4_production_feature_enabled"
+    private const val KEY_AUTHORIZED_PILOT_UIDS = "c4_authorized_pilot_uids"
 
     private fun getPrefs(context: Context): SharedPreferences {
         return context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -91,6 +93,58 @@ object C4SyncStateStore {
     fun isLegacyBlocked(context: Context, ownerUid: String): Boolean {
         val mode = getEngineMode(context, ownerUid)
         return mode != SyncEngineMode.LEGACY
+    }
+
+    /**
+     * Consulta el estado del feature flag de producción persistido.
+     * Desactivado (false) por defecto.
+     */
+    fun isProductionFeatureEnabled(context: Context): Boolean {
+        return getPrefs(context).getBoolean(KEY_PRODUCTION_FEATURE_ENABLED, false)
+    }
+
+    /**
+     * Persiste el estado del feature flag de producción.
+     */
+    fun setProductionFeatureEnabled(context: Context, enabled: Boolean, commitSync: Boolean = true) {
+        val editor = getPrefs(context).edit().putBoolean(KEY_PRODUCTION_FEATURE_ENABLED, enabled)
+        if (commitSync) editor.commit() else editor.apply()
+    }
+
+    /**
+     * Obtiene el conjunto de UIDs autorizados persistido.
+     * Conjunto vacío por defecto.
+     */
+    fun getAuthorizedPilotUids(context: Context): Set<String> {
+        val set = getPrefs(context).getStringSet(KEY_AUTHORIZED_PILOT_UIDS, null)
+        return set?.toSet() ?: emptySet()
+    }
+
+    /**
+     * Persiste el conjunto de UIDs autorizados.
+     */
+    fun setAuthorizedPilotUids(context: Context, uids: Set<String>, commitSync: Boolean = true) {
+        val editor = getPrefs(context).edit().putStringSet(KEY_AUTHORIZED_PILOT_UIDS, uids.toSet())
+        if (commitSync) editor.commit() else editor.apply()
+    }
+
+    /**
+     * Añade un UID a la lista autorizada persistente.
+     */
+    fun addAuthorizedPilotUid(context: Context, uid: String, commitSync: Boolean = true) {
+        if (uid.isBlank() || uid == "guest_local") return
+        val current = getAuthorizedPilotUids(context).toMutableSet()
+        current.add(uid)
+        setAuthorizedPilotUids(context, current, commitSync)
+    }
+
+    /**
+     * Elimina un UID de la lista autorizada persistente.
+     */
+    fun removeAuthorizedPilotUid(context: Context, uid: String, commitSync: Boolean = true) {
+        val current = getAuthorizedPilotUids(context).toMutableSet()
+        current.remove(uid)
+        setAuthorizedPilotUids(context, current, commitSync)
     }
 
     /**

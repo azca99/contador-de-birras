@@ -89,7 +89,7 @@ class C4ControlledActivationManager(
     private val storageProvider: () -> FirebaseStorage = { FirebaseStorage.getInstance() },
     private val authProvider: () -> FirebaseAuth = { FirebaseAuth.getInstance() },
     private val databaseProvider: (Context) -> BeerDatabase = { ctx -> BeerDatabase.getDatabase(ctx) },
-    private val allowProduction: Boolean = false
+    private val allowProduction: Boolean? = null
 ) {
 
     /**
@@ -143,10 +143,13 @@ class C4ControlledActivationManager(
             return@withContext ActivationDiagnosisResult.Blocked(ownerUid, "Error accediendo a Firestore: ${e.message}")
         }
         val projectId = firestore.app.options.projectId.orEmpty()
+        val effectiveAllowProduction = allowProduction ?: (
+            C4SyncConfig.isProductionC4FeatureEnabled && C4SyncConfig.isUserAuthorizedForC4(ownerUid)
+        )
         val firestoreAdapter = FirestoreC4SyncAdapter(
             firestore = firestore,
             expectedProjectId = projectId,
-            allowProduction = allowProduction
+            allowProduction = effectiveAllowProduction
         )
 
         val remoteDocs = try {
@@ -243,10 +246,11 @@ class C4ControlledActivationManager(
             )
         }
         val projectId = firestore.app.options.projectId.orEmpty()
+        val effectiveAllowProduction = allowProduction ?: true
         val firestoreAdapter = FirestoreC4SyncAdapter(
             firestore = firestore,
             expectedProjectId = projectId,
-            allowProduction = allowProduction
+            allowProduction = effectiveAllowProduction
         )
 
         // 6. Verificar estado remoto del protocolo en Firestore ANTES del Cutover
@@ -299,7 +303,7 @@ class C4ControlledActivationManager(
         val storageAdapter = StorageC4SyncAdapter(
             storage = storage,
             expectedBucket = bucket,
-            allowProduction = allowProduction
+            allowProduction = effectiveAllowProduction
         )
 
         val coordinator = AndroidC4SyncCoordinator(
@@ -340,10 +344,8 @@ class C4ControlledActivationManager(
 
                 if (verifiedLock == null || verifiedLock.syncProtocolVersion != "C4" || verifiedLock.accountSyncState != "MIGRATED_TO_C4") {
                     // Ante fallo de verificación de bloqueo, forzar HALTED para proteger los datos
-                    C4SyncStateStore.setEngineMode(context, ownerUid, SyncEngineMode.HALTED)
                     C4SyncStateStore.recordMigrationCheckpoint(context, ownerUid, "HALTED_LOCK_VERIFICATION_FAILED")
-                    C4SyncConfig.engineMode = SyncEngineMode.HALTED
-                    C4SyncConfig.isEnabled = false
+                    C4SyncConfig.setUserEngineMode(context, ownerUid, SyncEngineMode.HALTED)
                     return@withContext ActivationResult.Blocked(
                         ownerUid,
                         "Fallo crítico: El Cutover finalizó pero no se pudo verificar el bloqueo remoto 'C4'/'MIGRATED_TO_C4' en /users/$ownerUid. La cuenta se detiene en HALTED por seguridad."
@@ -352,10 +354,8 @@ class C4ControlledActivationManager(
 
                 val pendingMutations = persistence.historyDao.getPendingMutations(ownerUid)
                 if (pendingMutations.isNotEmpty()) {
-                    C4SyncStateStore.setEngineMode(context, ownerUid, SyncEngineMode.HALTED)
                     C4SyncStateStore.recordMigrationCheckpoint(context, ownerUid, "HALTED_PENDING_MUTATIONS_REMAIN")
-                    C4SyncConfig.engineMode = SyncEngineMode.HALTED
-                    C4SyncConfig.isEnabled = false
+                    C4SyncConfig.setUserEngineMode(context, ownerUid, SyncEngineMode.HALTED)
                     return@withContext ActivationResult.Blocked(
                         ownerUid,
                         "Fallo de postcondición: Restan ${pendingMutations.size} mutaciones pendientes en Room tras el Cutover. Se establece HALTED."
@@ -402,10 +402,11 @@ class C4ControlledActivationManager(
         val database = databaseProvider(context)
         val firestore = firestoreProvider()
         val projectId = firestore.app.options.projectId.orEmpty()
+        val effectiveAllowProduction = allowProduction ?: false
         val firestoreAdapter = FirestoreC4SyncAdapter(
             firestore = firestore,
             expectedProjectId = projectId,
-            allowProduction = allowProduction
+            allowProduction = effectiveAllowProduction
         )
         val auth = authProvider()
         val recoveryManager = C4HaltedRecoveryManager(

@@ -53,6 +53,39 @@ object C4SyncConfig {
     var authorizedPilotUids: Set<String> = emptySet()
 
     /**
+     * UID del usuario actualmente activo en la sesión o proceso de sincronización.
+     * Permite aislar el estado en memoria para que una cuenta C4 no altere el estado de otra en Legacy.
+     */
+    @Volatile
+    var currentActiveOwnerUid: String? = null
+
+    /**
+     * Restaura la configuración persistente desde SharedPreferences (feature flag y UIDs autorizados).
+     * Mantiene valores seguros por defecto (false y lista vacía).
+     */
+    fun restoreConfiguration(context: Context) {
+        this.isProductionC4FeatureEnabled = C4SyncStateStore.isProductionFeatureEnabled(context)
+        this.authorizedPilotUids = C4SyncStateStore.getAuthorizedPilotUids(context)
+    }
+
+    /**
+     * Configuración reproducible de activación controlada en el arranque.
+     * Permite habilitar o deshabilitar C4 para un UID específico autorizado de forma persistente.
+     */
+    fun configureControlledActivation(
+        context: Context,
+        featureEnabled: Boolean,
+        authorizedUid: String? = null
+    ) {
+        this.isProductionC4FeatureEnabled = featureEnabled
+        C4SyncStateStore.setProductionFeatureEnabled(context, featureEnabled)
+
+        if (!authorizedUid.isNullOrBlank() && authorizedUid != "guest_local") {
+            authorizePilotUid(context, authorizedUid)
+        }
+    }
+
+    /**
      * Verifica si un usuario está expresamente autorizado para operar con C4 en entornos normales/producción.
      */
     fun isUserAuthorizedForC4(ownerUid: String): Boolean {
@@ -61,7 +94,7 @@ object C4SyncConfig {
     }
 
     /**
-     * Autoriza un UID para la activación controlada de C4.
+     * Autoriza un UID para la activación controlada de C4 (en memoria y opcionalmente persistente).
      */
     fun authorizePilotUid(ownerUid: String) {
         if (ownerUid.isNotBlank() && ownerUid != "guest_local") {
@@ -70,17 +103,36 @@ object C4SyncConfig {
     }
 
     /**
-     * Revoca la autorización de un UID para C4.
+     * Autoriza un UID para la activación controlada de C4 persistiendo en SharedPreferences.
+     */
+    fun authorizePilotUid(context: Context, ownerUid: String) {
+        authorizePilotUid(ownerUid)
+        C4SyncStateStore.addAuthorizedPilotUid(context, ownerUid)
+    }
+
+    /**
+     * Revoca la autorización de un UID para C4 (en memoria y opcionalmente persistente).
      */
     fun revokePilotUid(ownerUid: String) {
         authorizedPilotUids = authorizedPilotUids - ownerUid
     }
 
     /**
+     * Revoca la autorización de un UID para C4 persistiendo en SharedPreferences.
+     */
+    fun revokePilotUid(context: Context, ownerUid: String) {
+        revokePilotUid(ownerUid)
+        C4SyncStateStore.removeAuthorizedPilotUid(context, ownerUid)
+    }
+
+    /**
      * Limpia todos los UIDs autorizados.
      */
-    fun clearAuthorizedPilotUids() {
+    fun clearAuthorizedPilotUids(context: Context? = null) {
         authorizedPilotUids = emptySet()
+        context?.let { ctx ->
+            C4SyncStateStore.setAuthorizedPilotUids(ctx, emptySet())
+        }
     }
 
     /**
@@ -96,16 +148,33 @@ object C4SyncConfig {
     val syncExecutionMutex = Mutex()
 
     /**
-     * Consulta segura de activación.
+     * Consulta segura de activación general.
      */
     fun isC4Active(): Boolean = isEnabled && engineMode == SyncEngineMode.C4_ACTIVE
+
+    /**
+     * Consulta segura de activación aislada para un usuario específico.
+     * Garantiza que una cuenta en Legacy jamás se vea afectada por el estado de una cuenta C4.
+     */
+    fun isC4ActiveForUser(context: Context, ownerUid: String): Boolean {
+        if (ownerUid.isBlank() || ownerUid == "guest_local") return false
+        val persistedMode = C4SyncStateStore.getEngineMode(context, ownerUid)
+        val isPilot = context.packageName?.endsWith(".c4pilot") == true
+        val isAuthorized = isPilot || isUserAuthorizedForC4(ownerUid)
+        return (persistedMode == SyncEngineMode.C4_ACTIVE) && isAuthorized
+    }
 
     /**
      * Consulta el modo persistente y sincroniza el estado en memoria para un usuario.
      */
     fun restoreUserEngineMode(context: Context, ownerUid: String): SyncEngineMode {
+        // Asegurar que la configuración persistente esté cargada si en memoria aún no se ha inicializado
+        if (!isProductionC4FeatureEnabled && C4SyncStateStore.isProductionFeatureEnabled(context)) {
+            restoreConfiguration(context)
+        }
         val persistedMode = C4SyncStateStore.getEngineMode(context, ownerUid)
         this.engineMode = persistedMode
+        this.currentActiveOwnerUid = ownerUid
         val isPilot = context.packageName?.endsWith(".c4pilot") == true
         val isAuthorized = isPilot || isUserAuthorizedForC4(ownerUid)
         this.isEnabled = (persistedMode == SyncEngineMode.C4_ACTIVE) && isAuthorized
@@ -118,6 +187,7 @@ object C4SyncConfig {
     fun setUserEngineMode(context: Context, ownerUid: String, mode: SyncEngineMode) {
         C4SyncStateStore.setEngineMode(context, ownerUid, mode)
         this.engineMode = mode
+        this.currentActiveOwnerUid = ownerUid
         val isPilot = context.packageName?.endsWith(".c4pilot") == true
         val isAuthorized = isPilot || isUserAuthorizedForC4(ownerUid)
         this.isEnabled = (mode == SyncEngineMode.C4_ACTIVE) && isAuthorized
@@ -130,6 +200,7 @@ object C4SyncConfig {
         isEnabled = false
         isProductionC4FeatureEnabled = false
         authorizedPilotUids = emptySet()
+        currentActiveOwnerUid = null
         engineMode = SyncEngineMode.LEGACY
     }
 }

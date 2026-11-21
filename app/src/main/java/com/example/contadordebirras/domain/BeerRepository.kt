@@ -113,12 +113,13 @@ class BeerRepository(
             } catch (_: Exception) {
                 com.example.contadordebirras.sync.c4.SyncEngineMode.LEGACY
             }
+            val isCurrentUid = com.example.contadordebirras.sync.c4.C4SyncConfig.currentActiveOwnerUid == ownerUid
             val effectiveMode = if (persistedMode == com.example.contadordebirras.sync.c4.SyncEngineMode.HALTED ||
-                com.example.contadordebirras.sync.c4.C4SyncConfig.engineMode == com.example.contadordebirras.sync.c4.SyncEngineMode.HALTED
+                (isCurrentUid && com.example.contadordebirras.sync.c4.C4SyncConfig.engineMode == com.example.contadordebirras.sync.c4.SyncEngineMode.HALTED)
             ) {
                 com.example.contadordebirras.sync.c4.SyncEngineMode.HALTED
             } else if (persistedMode == com.example.contadordebirras.sync.c4.SyncEngineMode.CUTOVER_IN_PROGRESS ||
-                com.example.contadordebirras.sync.c4.C4SyncConfig.engineMode == com.example.contadordebirras.sync.c4.SyncEngineMode.CUTOVER_IN_PROGRESS
+                (isCurrentUid && com.example.contadordebirras.sync.c4.C4SyncConfig.engineMode == com.example.contadordebirras.sync.c4.SyncEngineMode.CUTOVER_IN_PROGRESS)
             ) {
                 com.example.contadordebirras.sync.c4.SyncEngineMode.CUTOVER_IN_PROGRESS
             } else {
@@ -131,7 +132,7 @@ class BeerRepository(
                 throw IllegalStateException("Operación bloqueada: la cuenta está en estado $effectiveMode para proteger los datos C4.")
             }
             val isAccountC4 = persistedMode == com.example.contadordebirras.sync.c4.SyncEngineMode.C4_ACTIVE ||
-                    com.example.contadordebirras.sync.c4.C4SyncConfig.engineMode == com.example.contadordebirras.sync.c4.SyncEngineMode.C4_ACTIVE
+                    (isCurrentUid && com.example.contadordebirras.sync.c4.C4SyncConfig.engineMode == com.example.contadordebirras.sync.c4.SyncEngineMode.C4_ACTIVE)
 
             if (isAccountC4) {
                 val isRealProductionApp = context.packageName?.endsWith(".c4pilot") == false &&
@@ -139,7 +140,7 @@ class BeerRepository(
                 val isOperational = if (isRealProductionApp) {
                     com.example.contadordebirras.sync.c4.C4SyncConfig.isProductionC4FeatureEnabled &&
                             com.example.contadordebirras.sync.c4.C4SyncConfig.isUserAuthorizedForC4(ownerUid) &&
-                            com.example.contadordebirras.sync.c4.C4SyncConfig.isC4Active()
+                            (if (isCurrentUid) com.example.contadordebirras.sync.c4.C4SyncConfig.isC4Active() else persistedMode == com.example.contadordebirras.sync.c4.SyncEngineMode.C4_ACTIVE)
                 } else {
                     com.example.contadordebirras.sync.c4.C4SyncConfig.isC4Active()
                 }

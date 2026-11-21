@@ -70,11 +70,13 @@ class BeerSyncWorker(
             }
         }
 
-        // Si el estado es CUTOVER_IN_PROGRESS o HALTED, o C4 está activo en memoria, NO ejecutar escrituras legacy
-        if (persistedMode != com.example.contadordebirras.sync.c4.SyncEngineMode.LEGACY ||
+        // Si el estado es CUTOVER_IN_PROGRESS o HALTED, o C4 está activo en memoria para este usuario, NO ejecutar escrituras legacy
+        val isCurrentExpectedUid = com.example.contadordebirras.sync.c4.C4SyncConfig.currentActiveOwnerUid == expectedUid
+        val isMemoryActiveForExpectedUid = isCurrentExpectedUid && (
             com.example.contadordebirras.sync.c4.C4SyncConfig.isEnabled ||
             com.example.contadordebirras.sync.c4.C4SyncConfig.engineMode != com.example.contadordebirras.sync.c4.SyncEngineMode.LEGACY
-        ) {
+        )
+        if (persistedMode != com.example.contadordebirras.sync.c4.SyncEngineMode.LEGACY || isMemoryActiveForExpectedUid) {
             return Result.success()
         }
 
@@ -97,10 +99,11 @@ class BeerSyncWorker(
                 }
 
                 val recheckedMode = com.example.contadordebirras.sync.c4.C4SyncStateStore.getEngineMode(applicationContext, expectedUid)
-                if (recheckedMode != com.example.contadordebirras.sync.c4.SyncEngineMode.LEGACY ||
+                val recheckedMemoryActive = (com.example.contadordebirras.sync.c4.C4SyncConfig.currentActiveOwnerUid == expectedUid) && (
                     com.example.contadordebirras.sync.c4.C4SyncConfig.isEnabled ||
                     com.example.contadordebirras.sync.c4.C4SyncConfig.engineMode != com.example.contadordebirras.sync.c4.SyncEngineMode.LEGACY
-                ) {
+                )
+                if (recheckedMode != com.example.contadordebirras.sync.c4.SyncEngineMode.LEGACY || recheckedMemoryActive) {
                     return@withLock Result.success()
                 }
 

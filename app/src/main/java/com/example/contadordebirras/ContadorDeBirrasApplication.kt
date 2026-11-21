@@ -24,6 +24,9 @@ class ContadorDeBirrasApplication : Application() {
             FirebaseApp.initializeApp(this)
         }
 
+        // Restaurar configuración reproducible de activación controlada C4 (desactivado por defecto, lista vacía)
+        com.example.contadordebirras.sync.c4.C4SyncConfig.restoreConfiguration(this)
+
         val isPilot = packageName.endsWith(".c4pilot")
         if (BuildConfig.DEBUG && isPilot) {
             // Entorno exclusivo de pruebas y piloto aislados
