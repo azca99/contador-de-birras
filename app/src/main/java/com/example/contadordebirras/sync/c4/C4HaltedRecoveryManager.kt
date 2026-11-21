@@ -70,7 +70,8 @@ class C4HaltedRecoveryManager(
     private val context: Context,
     private val database: BeerDatabase,
     private val firestoreAdapter: FirestoreC4SyncAdapter,
-    private val auth: FirebaseAuth
+    private val auth: FirebaseAuth,
+    private val expectedPilotEmail: String? = null
 ) {
 
     companion object {
@@ -103,8 +104,11 @@ class C4HaltedRecoveryManager(
         }
 
         val userEmail = currentUser.email
-        if (userEmail != authorizedPilotEmail) {
-            val detail = "Cuenta no autorizada: $userEmail (se requiere estrictamente $authorizedPilotEmail)"
+        val isAuthorized = (expectedPilotEmail != null && userEmail == expectedPilotEmail) ||
+                (userEmail == authorizedPilotEmail) ||
+                C4SyncConfig.isUserAuthorizedForC4(ownerUid)
+        if (!isAuthorized) {
+            val detail = "Cuenta no autorizada: $userEmail (se requiere estrictamente $authorizedPilotEmail o UID autorizado en C4SyncConfig)"
             checks.add(C4DiagnosisCheck("identity", "Identidad del usuario piloto", false, detail))
             return@withContext C4HaltedDiagnosisResult.Blocked(detail, checks)
         }

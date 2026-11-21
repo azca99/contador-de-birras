@@ -57,6 +57,14 @@ class BeerRepository(
         repoScope.launch {
             authRepository.currentUser.collect { user ->
                 if (user != null) {
+                    if (com.example.contadordebirras.sync.c4.C4SyncConfig.isUserAuthorizedForC4(user.uid)) {
+                        try {
+                            val activationMgr = com.example.contadordebirras.sync.c4.C4ControlledActivationManager(context)
+                            activationMgr.checkAndActivateIfAuthorized(user.uid)
+                        } catch (e: Exception) {
+                            android.util.Log.w("C4Activation", "Fallo al verificar activación C4 para ${user.uid}: ${e.message}")
+                        }
+                    }
                     syncScheduler.schedulePeriodicSync(user.uid)
                     syncScheduler.requestSync(user.uid)
                 }
@@ -130,6 +138,7 @@ class BeerRepository(
                         !context.packageName.isNullOrBlank()
                 val isOperational = if (isRealProductionApp) {
                     com.example.contadordebirras.sync.c4.C4SyncConfig.isProductionC4FeatureEnabled &&
+                            com.example.contadordebirras.sync.c4.C4SyncConfig.isUserAuthorizedForC4(ownerUid) &&
                             com.example.contadordebirras.sync.c4.C4SyncConfig.isC4Active()
                 } else {
                     com.example.contadordebirras.sync.c4.C4SyncConfig.isC4Active()

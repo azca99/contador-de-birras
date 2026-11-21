@@ -389,6 +389,7 @@ class C4ReleaseCandidateInstrumentedTest {
 
         // 7. Verificar que cuando C4 se activa explícitamente en modo C4_ACTIVE, permite registrar
         C4SyncConfig.isProductionC4FeatureEnabled = true
+        C4SyncConfig.authorizePilotUid(effectiveUid)
         C4SyncConfig.setUserEngineMode(prodContext, effectiveUid, SyncEngineMode.C4_ACTIVE)
         val createdBeerId = repo.addBeer(BeerType.CANA, System.currentTimeMillis())
         assertTrue("Debe registrar la cerveza con ID válido cuando C4 está autorizado y en modo C4_ACTIVE", createdBeerId > 0)

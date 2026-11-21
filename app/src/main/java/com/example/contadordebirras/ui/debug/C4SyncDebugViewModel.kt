@@ -50,6 +50,9 @@ class C4SyncDebugViewModel(application: Application) : AndroidViewModel(applicat
     val authEmail = mutableStateOf("c4_pilot_user@demo-contador-c44.test")
     val statusMessage = mutableStateOf("Motor C4 inactivo. Activa el toggle para conectar al entorno aislado.")
     val diagnosisResult = mutableStateOf<com.example.contadordebirras.sync.c4.C4HaltedDiagnosisResult?>(null)
+    val controlledActivationResult = mutableStateOf<com.example.contadordebirras.sync.c4.ActivationResult?>(null)
+    val controlledDiagnosisResult = mutableStateOf<com.example.contadordebirras.sync.c4.ActivationDiagnosisResult?>(null)
+    val isControlledActivating = mutableStateOf(false)
     val isDiagnosing = mutableStateOf(false)
     val isRecovering = mutableStateOf(false)
     val beersList = mutableStateListOf<BeerEntity>()
@@ -626,6 +629,53 @@ class C4SyncDebugViewModel(application: Application) : AndroidViewModel(applicat
                 beersList.addAll(beers)
                 mutationHistory.clear()
                 mutationHistory.addAll(mutations)
+            }
+        }
+    }
+
+    fun diagnoseControlledActivation() {
+        val uid = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid
+        if (uid.isNullOrBlank()) {
+            log("No hay usuario autenticado en FirebaseAuth para diagnóstico controlado")
+            return
+        }
+        viewModelScope.launch {
+            try {
+                log("Iniciando diagnóstico controlado para UID: $uid...")
+                val manager = com.example.contadordebirras.sync.c4.C4ControlledActivationManager(
+                    context = getApplication(),
+                    allowProduction = false
+                )
+                val diag = manager.diagnoseAccount(uid)
+                controlledDiagnosisResult.value = diag
+                log("Resultado diagnóstico controlado: $diag")
+            } catch (e: Exception) {
+                log("Error en diagnóstico controlado: ${e.message}")
+            }
+        }
+    }
+
+    fun executeControlledActivation() {
+        val uid = com.google.firebase.auth.FirebaseAuth.getInstance().currentUser?.uid
+        if (uid.isNullOrBlank()) {
+            log("No hay usuario autenticado en FirebaseAuth para activación controlada")
+            return
+        }
+        viewModelScope.launch {
+            isControlledActivating.value = true
+            try {
+                log("Iniciando activación controlada de C4 para UID: $uid...")
+                val manager = com.example.contadordebirras.sync.c4.C4ControlledActivationManager(
+                    context = getApplication(),
+                    allowProduction = false
+                )
+                val res = manager.activateAccount(uid)
+                controlledActivationResult.value = res
+                log("Resultado activación controlada: $res")
+            } catch (e: Exception) {
+                log("Error en activación controlada: ${e.message}")
+            } finally {
+                isControlledActivating.value = false
             }
         }
     }

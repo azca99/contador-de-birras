@@ -46,6 +46,44 @@ object C4SyncConfig {
     var isProductionC4FeatureEnabled: Boolean = false
 
     /**
+     * Conjunto de UIDs autorizados expresamente para la activación controlada de C4 en producción/release.
+     * Vacío por defecto. Ningún usuario no incluido en este conjunto puede activar C4.
+     */
+    @Volatile
+    var authorizedPilotUids: Set<String> = emptySet()
+
+    /**
+     * Verifica si un usuario está expresamente autorizado para operar con C4 en entornos normales/producción.
+     */
+    fun isUserAuthorizedForC4(ownerUid: String): Boolean {
+        if (ownerUid.isBlank() || ownerUid == "guest_local") return false
+        return isProductionC4FeatureEnabled && authorizedPilotUids.contains(ownerUid)
+    }
+
+    /**
+     * Autoriza un UID para la activación controlada de C4.
+     */
+    fun authorizePilotUid(ownerUid: String) {
+        if (ownerUid.isNotBlank() && ownerUid != "guest_local") {
+            authorizedPilotUids = authorizedPilotUids + ownerUid
+        }
+    }
+
+    /**
+     * Revoca la autorización de un UID para C4.
+     */
+    fun revokePilotUid(ownerUid: String) {
+        authorizedPilotUids = authorizedPilotUids - ownerUid
+    }
+
+    /**
+     * Limpia todos los UIDs autorizados.
+     */
+    fun clearAuthorizedPilotUids() {
+        authorizedPilotUids = emptySet()
+    }
+
+    /**
      * Modo de motor de sincronización. Por defecto LEGACY.
      */
     @Volatile
@@ -69,7 +107,8 @@ object C4SyncConfig {
         val persistedMode = C4SyncStateStore.getEngineMode(context, ownerUid)
         this.engineMode = persistedMode
         val isPilot = context.packageName?.endsWith(".c4pilot") == true
-        this.isEnabled = (persistedMode == SyncEngineMode.C4_ACTIVE) && (isPilot || isProductionC4FeatureEnabled)
+        val isAuthorized = isPilot || isUserAuthorizedForC4(ownerUid)
+        this.isEnabled = (persistedMode == SyncEngineMode.C4_ACTIVE) && isAuthorized
         return persistedMode
     }
 
@@ -80,7 +119,8 @@ object C4SyncConfig {
         C4SyncStateStore.setEngineMode(context, ownerUid, mode)
         this.engineMode = mode
         val isPilot = context.packageName?.endsWith(".c4pilot") == true
-        this.isEnabled = (mode == SyncEngineMode.C4_ACTIVE) && (isPilot || isProductionC4FeatureEnabled)
+        val isAuthorized = isPilot || isUserAuthorizedForC4(ownerUid)
+        this.isEnabled = (mode == SyncEngineMode.C4_ACTIVE) && isAuthorized
     }
 
     /**
@@ -89,6 +129,7 @@ object C4SyncConfig {
     fun reset() {
         isEnabled = false
         isProductionC4FeatureEnabled = false
+        authorizedPilotUids = emptySet()
         engineMode = SyncEngineMode.LEGACY
     }
 }

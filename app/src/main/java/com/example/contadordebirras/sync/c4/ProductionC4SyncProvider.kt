@@ -39,7 +39,14 @@ class ProductionC4SyncProvider(
             )
         }
 
-        // 2. Verificación de modo persistente del usuario: solo sincronizar si está en C4_ACTIVE
+        // 2. Verificación de autorización por UID para activación controlada
+        if (!C4SyncConfig.isUserAuthorizedForC4(ownerUid)) {
+            return C4ProviderSyncResult.InactiveOrBlocked(
+                "Usuario $ownerUid no autorizado para la activación controlada de C4."
+            )
+        }
+
+        // 3. Verificación de modo persistente del usuario: solo sincronizar si está en C4_ACTIVE
         val persistedMode = try {
             C4SyncStateStore.getEngineMode(context, ownerUid)
         } catch (e: Exception) {
@@ -53,7 +60,7 @@ class ProductionC4SyncProvider(
             )
         }
 
-        // 3. Verificación de identidad y sesión del usuario real
+        // 4. Verificación de identidad y sesión del usuario real
         val auth = try {
             authProvider()
         } catch (e: Exception) {

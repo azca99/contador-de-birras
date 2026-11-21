@@ -31,7 +31,20 @@ class BeerSyncWorker(
             return Result.success()
         }
 
-        // 1. Verificación persistente del estado del motor antes de cualquier sincronización
+        // 1. Verificación de activación controlada para UIDs autorizados
+        if (com.example.contadordebirras.sync.c4.C4SyncConfig.isUserAuthorizedForC4(expectedUid)) {
+            val currentMode = com.example.contadordebirras.sync.c4.C4SyncStateStore.getEngineMode(applicationContext, expectedUid)
+            if (currentMode == com.example.contadordebirras.sync.c4.SyncEngineMode.LEGACY) {
+                try {
+                    val activationMgr = com.example.contadordebirras.sync.c4.C4ControlledActivationManager(applicationContext)
+                    activationMgr.checkAndActivateIfAuthorized(expectedUid)
+                } catch (e: Exception) {
+                    android.util.Log.w("C4ActivationWorker", "Fallo al activar C4 para $expectedUid: ${e.message}")
+                }
+            }
+        }
+
+        // 2. Verificación persistente del estado del motor antes de cualquier sincronización
         val persistedMode = com.example.contadordebirras.sync.c4.C4SyncStateStore.getEngineMode(applicationContext, expectedUid)
 
         if (persistedMode == com.example.contadordebirras.sync.c4.SyncEngineMode.C4_ACTIVE) {

@@ -46,6 +46,9 @@ fun C4SyncDebugScreen(
     val diagnosisResult by viewModel.diagnosisResult
     val isDiagnosing by viewModel.isDiagnosing
     val isRecovering by viewModel.isRecovering
+    val controlledActivationResult by viewModel.controlledActivationResult
+    val controlledDiagnosisResult by viewModel.controlledDiagnosisResult
+    val isControlledActivating by viewModel.isControlledActivating
     val beers = viewModel.beersList
     val history = viewModel.mutationHistory
     val logs = viewModel.executionLogs
@@ -455,6 +458,81 @@ fun C4SyncDebugScreen(
                                 ) {
                                     Text("3. Revertir a Legacy (Rollback)", fontSize = 12.sp)
                                 }
+                            }
+                        }
+                    }
+                }
+
+                // 4B. Activación Controlada C4 para cuentas reales/piloto
+                item {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer)
+                    ) {
+                        Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Text(
+                                text = "🚀 Activación Controlada C4 (Cuentas Piloto)",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer
+                            )
+                            Text(
+                                text = "Permite diagnosticar y activar el Protocolo C4 sobre la cuenta autenticada y su base persistente real, bloqueando Legacy tras confirmar el bloqueo remoto.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSecondaryContainer
+                            )
+
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Button(
+                                    onClick = { viewModel.diagnoseControlledActivation() },
+                                    modifier = Modifier.weight(1f),
+                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
+                                ) {
+                                    Text("1. Diagnosticar Cuenta", fontSize = 12.sp)
+                                }
+
+                                Button(
+                                    onClick = { viewModel.executeControlledActivation() },
+                                    enabled = !isControlledActivating,
+                                    modifier = Modifier.weight(1f),
+                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                                ) {
+                                    if (isControlledActivating) {
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.size(14.dp),
+                                            strokeWidth = 2.dp,
+                                            color = MaterialTheme.colorScheme.onPrimary
+                                        )
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text("Activando...", fontSize = 12.sp)
+                                    } else {
+                                        Text("2. Activar C4", fontSize = 12.sp)
+                                    }
+                                }
+                            }
+
+                            controlledDiagnosisResult?.let { diag ->
+                                Text(
+                                    text = "Diagnóstico: $diag",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSecondaryContainer
+                                )
+                            }
+
+                            controlledActivationResult?.let { res ->
+                                Text(
+                                    text = "Resultado Activación: $res",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (res is com.example.contadordebirras.sync.c4.ActivationResult.Success) {
+                                        MaterialTheme.colorScheme.primary
+                                    } else {
+                                        MaterialTheme.colorScheme.error
+                                    }
+                                )
                             }
                         }
                     }
