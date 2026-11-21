@@ -68,6 +68,33 @@ sealed interface ActivationDiagnosisResult {
 }
 
 /**
+ * Resultado de la detección y aplicación multidispositivo del protocolo de la cuenta.
+ */
+sealed interface ProtocolResult {
+    data class C4Active(
+        val ownerUid: String,
+        val alreadyActive: Boolean = false,
+        val onboarded: Boolean = false,
+        val cached: Boolean = false
+    ) : ProtocolResult
+
+    data class Legacy(
+        val ownerUid: String,
+        val cached: Boolean = false
+    ) : ProtocolResult
+
+    data class Blocked(
+        val ownerUid: String,
+        val reason: String
+    ) : ProtocolResult
+
+    data class Unverified(
+        val ownerUid: String,
+        val reason: String
+    ) : ProtocolResult
+}
+
+/**
  * Gestor de Activación Controlada de C4 para cuentas reales/piloto (Fase C4 Controlled Activation).
  *
  * GARANTÍAS FORMALES DE SEGURIDAD:
@@ -91,6 +118,183 @@ class C4ControlledActivationManager(
     private val databaseProvider: (Context) -> BeerDatabase = { ctx -> BeerDatabase.getDatabase(ctx) },
     private val allowProduction: Boolean? = null
 ) {
+
+    /**
+     * Detección y aplicación multidispositivo del protocolo de la cuenta (Fase C4 Multidispositivo).
+     *
+     * 1. Al iniciar sesión, antes de permitir sincronización o escrituras Legacy, consulta el bloqueo remoto /users/{uid}.
+     * 2. Si la cuenta ya está migrada a C4 desde otro dispositivo, impide que este dispositivo ejecute Legacy.
+     *    Reconoce su estado C4 y utiliza el procedimiento seguro de incorporación (cutover/pull hacia Room)
+     *    o bloquea en HALTED hasta poder recuperarlo si el dispositivo no está autorizado.
+     * 3. Si no puede verificarse el estado remoto y tampoco existe un estado local fiable, NO asume que es Legacy.
+     * 4. Mantiene intactas las cuentas realmente Legacy y los datos locales.
+     * 5. Respeta el UID autenticado y los bloqueos HALTED.
+     */
+    suspend fun detectAndEnforceAccountProtocol(ownerUid: String): ProtocolResult = withContext(Dispatchers.IO) {
+        if (ownerUid.isBlank() || ownerUid == "guest_local" || ownerUid == "legacy_unassigned") {
+            return@withContext ProtocolResult.Legacy(ownerUid)
+        }
+
+        // 1. Respetar el UID autenticado
+        val auth = try {
+            authProvider()
+        } catch (e: Exception) {
+            return@withContext ProtocolResult.Blocked(ownerUid, "Error accediendo a FirebaseAuth: ${e.message}")
+        }
+        val currentUser = auth.currentUser
+        if (currentUser == null || currentUser.uid != ownerUid) {
+            return@withContext ProtocolResult.Blocked(
+                ownerUid,
+                "Discordancia de sesión: currentUser=${currentUser?.uid}, esperado=$ownerUid"
+            )
+        }
+
+        // 2. Respetar bloqueos HALTED locales preexistentes
+        val localMode = try {
+            C4SyncStateStore.getEngineMode(context, ownerUid)
+        } catch (_: Exception) {
+            SyncEngineMode.LEGACY
+        }
+
+        if (localMode == SyncEngineMode.HALTED) {
+            C4SyncConfig.setUserEngineMode(context, ownerUid, SyncEngineMode.HALTED)
+            return@withContext ProtocolResult.Blocked(
+                ownerUid,
+                "La cuenta está en estado HALTED localmente para proteger los datos C4."
+            )
+        }
+
+        // 3. Consultar el bloqueo remoto /users/{ownerUid} desde Firestore
+        val firestore = try {
+            firestoreProvider()
+        } catch (e: Exception) {
+            return@withContext handleRemoteCheckFailure(ownerUid, localMode, "Fallo al inicializar Firestore: ${e.message}")
+        }
+
+        val projectId = firestore.app.options.projectId.orEmpty()
+        val isRealApp = context.packageName?.endsWith(".c4pilot") == false && !context.packageName.isNullOrBlank()
+        val effectiveAllowProduction = allowProduction ?: (
+            isRealApp || (C4SyncConfig.isProductionC4FeatureEnabled && C4SyncConfig.isUserAuthorizedForC4(ownerUid))
+        )
+        val firestoreAdapter = try {
+            FirestoreC4SyncAdapter(
+                firestore = firestore,
+                expectedProjectId = projectId,
+                allowProduction = effectiveAllowProduction
+            )
+        } catch (e: Exception) {
+            return@withContext handleRemoteCheckFailure(ownerUid, localMode, "Fallo al inicializar FirestoreAdapter: ${e.message}")
+        }
+
+        val remoteLock = try {
+            firestoreAdapter.readAccountProtocolLock(ownerUid)
+        } catch (e: Exception) {
+            return@withContext handleRemoteCheckFailure(ownerUid, localMode, "Error consultando bloqueo remoto en /users/$ownerUid: ${e.message}")
+        }
+
+        // 4. Analizar respuesta remota:
+        // Caso A: La cuenta ya está migrada a C4 remotamente desde este u otro dispositivo
+        if (remoteLock != null && remoteLock.syncProtocolVersion == "C4") {
+            if (remoteLock.accountSyncState != "MIGRATED_TO_C4") {
+                C4SyncStateStore.recordMigrationCheckpoint(context, ownerUid, "HALTED_REMOTE_ANOMALOUS_STATE_${remoteLock.accountSyncState}")
+                C4SyncConfig.setUserEngineMode(context, ownerUid, SyncEngineMode.HALTED)
+                return@withContext ProtocolResult.Blocked(
+                    ownerUid,
+                    "Bloqueo remoto C4 anómalo detectado: state=${remoteLock.accountSyncState}. Cuenta detenida en HALTED por seguridad."
+                )
+            }
+
+            // IMPEDIR QUE ESTE DISPOSITIVO EJECUTE LEGACY
+            if (localMode == SyncEngineMode.C4_ACTIVE) {
+                C4SyncConfig.setUserEngineMode(context, ownerUid, SyncEngineMode.C4_ACTIVE)
+                C4SyncStateStore.setProtocolVerified(context, ownerUid, true)
+                return@withContext ProtocolResult.C4Active(ownerUid, alreadyActive = true)
+            }
+
+            // Procedimiento seguro de incorporación de nuevo dispositivo:
+            val isAuthorized = (context.packageName?.endsWith(".c4pilot") == true) ||
+                    (C4SyncConfig.isProductionC4FeatureEnabled && C4SyncConfig.isUserAuthorizedForC4(ownerUid))
+
+            if (!isAuthorized) {
+                // Bloquear hasta poder recuperarlo o habilitarlo. NUNCA ejecutar Legacy.
+                C4SyncStateStore.recordMigrationCheckpoint(context, ownerUid, "HALTED_C4_REMOTE_UNAUTHORIZED_DEVICE")
+                C4SyncConfig.setUserEngineMode(context, ownerUid, SyncEngineMode.HALTED)
+                return@withContext ProtocolResult.Blocked(
+                    ownerUid,
+                    "La cuenta está migrada a C4 en otro dispositivo, pero este dispositivo no está autorizado para C4. Se bloquean escrituras y sincronización Legacy para proteger los datos."
+                )
+            }
+
+            // Ejecutar incorporación segura mediante activateAccount (cutover idempotente con pull de colección remota)
+            return@withContext when (val activationResult = activateAccount(ownerUid)) {
+                is ActivationResult.Success -> {
+                    C4SyncStateStore.setProtocolVerified(context, ownerUid, true)
+                    ProtocolResult.C4Active(ownerUid, alreadyActive = false, onboarded = true)
+                }
+                is ActivationResult.AlreadyActive -> {
+                    C4SyncStateStore.setProtocolVerified(context, ownerUid, true)
+                    ProtocolResult.C4Active(ownerUid, alreadyActive = true)
+                }
+                is ActivationResult.Blocked -> {
+                    C4SyncStateStore.recordMigrationCheckpoint(context, ownerUid, "HALTED_C4_ONBOARDING_FAILED")
+                    C4SyncConfig.setUserEngineMode(context, ownerUid, SyncEngineMode.HALTED)
+                    ProtocolResult.Blocked(ownerUid, "Fallo durante la incorporación a C4: ${activationResult.reason}")
+                }
+                is ActivationResult.Failed -> {
+                    C4SyncStateStore.recordMigrationCheckpoint(context, ownerUid, "HALTED_C4_ONBOARDING_FAILED")
+                    C4SyncConfig.setUserEngineMode(context, ownerUid, SyncEngineMode.HALTED)
+                    ProtocolResult.Blocked(ownerUid, "Error durante la incorporación a C4: ${activationResult.reason}")
+                }
+                is ActivationResult.Unauthorized -> {
+                    C4SyncStateStore.recordMigrationCheckpoint(context, ownerUid, "HALTED_C4_ONBOARDING_UNAUTHORIZED")
+                    C4SyncConfig.setUserEngineMode(context, ownerUid, SyncEngineMode.HALTED)
+                    ProtocolResult.Blocked(ownerUid, "Incorporación a C4 no autorizada: ${activationResult.reason}")
+                }
+            }
+        }
+
+        // Caso B: Protocolo remoto desconocido incompatible
+        if (remoteLock != null && remoteLock.syncProtocolVersion.isNotBlank() && remoteLock.syncProtocolVersion != "LEGACY") {
+            C4SyncStateStore.recordMigrationCheckpoint(context, ownerUid, "HALTED_UNKNOWN_REMOTE_PROTOCOL_${remoteLock.syncProtocolVersion}")
+            C4SyncConfig.setUserEngineMode(context, ownerUid, SyncEngineMode.HALTED)
+            return@withContext ProtocolResult.Blocked(
+                ownerUid,
+                "Protocolo remoto incompatible o desconocido (${remoteLock.syncProtocolVersion}). Detenida en HALTED por seguridad."
+            )
+        }
+
+        // Caso C: Cuentas realmente Legacy (remoteLock es null o syncProtocolVersion == "LEGACY"):
+        // Mantener intactas las cuentas realmente Legacy y los datos locales.
+        C4SyncConfig.setUserEngineMode(context, ownerUid, SyncEngineMode.LEGACY)
+        C4SyncStateStore.setProtocolVerified(context, ownerUid, true)
+        ProtocolResult.Legacy(ownerUid)
+    }
+
+    private fun handleRemoteCheckFailure(
+        ownerUid: String,
+        localMode: SyncEngineMode,
+        reason: String
+    ): ProtocolResult {
+        // "Si no puede verificarse el estado remoto y tampoco existe un estado local fiable, no asumir que es Legacy."
+        if (localMode == SyncEngineMode.C4_ACTIVE) {
+            C4SyncConfig.setUserEngineMode(context, ownerUid, SyncEngineMode.C4_ACTIVE)
+            return ProtocolResult.C4Active(ownerUid, cached = true)
+        }
+        if (localMode == SyncEngineMode.HALTED) {
+            C4SyncConfig.setUserEngineMode(context, ownerUid, SyncEngineMode.HALTED)
+            return ProtocolResult.Blocked(ownerUid, "Cuenta detenida en HALTED localmente.")
+        }
+        if (C4SyncStateStore.isProtocolVerified(context, ownerUid) && localMode == SyncEngineMode.LEGACY) {
+            C4SyncConfig.setUserEngineMode(context, ownerUid, SyncEngineMode.LEGACY)
+            return ProtocolResult.Legacy(ownerUid, cached = true)
+        }
+
+        // NO asumir que es Legacy: estado unverified
+        return ProtocolResult.Unverified(
+            ownerUid,
+            "No se pudo verificar el protocolo remoto ($reason) y no existe un estado local fiable en este dispositivo."
+        )
+    }
 
     /**
      * Verifica si la cuenta está autorizada para C4 y, en caso afirmativo, ejecuta la transición si aún está en LEGACY.

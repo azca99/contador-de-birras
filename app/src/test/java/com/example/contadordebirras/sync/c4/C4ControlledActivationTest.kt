@@ -101,7 +101,9 @@ class C4ControlledActivationTest {
         assertEquals(SyncEngineMode.C4_ACTIVE, C4SyncConfig.engineMode)
         assertTrue(C4SyncConfig.isEnabled)
 
-        // 2. Cuenta B no autorizada y en LEGACY
+        // 2. Cuenta B no autorizada y en LEGACY confirmada
+        C4SyncStateStore.setEngineMode(context, userB, SyncEngineMode.LEGACY)
+        C4SyncStateStore.setProtocolVerified(context, userB, true)
         assertEquals(SyncEngineMode.LEGACY, C4SyncStateStore.getEngineMode(context, userB))
         assertFalse(C4SyncConfig.isUserAuthorizedForC4(userB))
         assertFalse(C4SyncConfig.isC4ActiveForUser(context, userB))
@@ -202,5 +204,170 @@ class C4ControlledActivationTest {
 
         val diagnosis = managerAuth.diagnoseAccount(userA)
         assertTrue("Diagnóstico para usuario autorizado debe completarse con éxito: $diagnosis", diagnosis is ActivationDiagnosisResult.ReadyForCutover)
+    }
+
+    @Test
+    fun testMultiDeviceProtocolDetection_remoteC4OnUnauthorizedDevice_blocksAndPreventsLegacy() = runBlocking {
+        // Simular que la cuenta ya está migrada a C4 en otro dispositivo (remoto /users/{userA} es C4)
+        val mockFirebaseApp = mockk<FirebaseApp>(relaxed = true) {
+            every { options.projectId } returns "contador-de-birras-prod"
+        }
+        val mockDocSnapshot = mockk<com.google.firebase.firestore.DocumentSnapshot>(relaxed = true) {
+            every { exists() } returns true
+            every { getString("syncProtocolVersion") } returns "C4"
+            every { getString("accountSyncState") } returns "MIGRATED_TO_C4"
+            every { getLong("minSupportedAppVersionCode") } returns 1L
+            every { getLong("c4MigratedAt") } returns 123456789L
+        }
+        val mockDocRef = mockk<com.google.firebase.firestore.DocumentReference>(relaxed = true) {
+            every { get(com.google.firebase.firestore.Source.SERVER) } returns com.google.android.gms.tasks.Tasks.forResult(mockDocSnapshot)
+        }
+        val mockCollection = mockk<com.google.firebase.firestore.CollectionReference>(relaxed = true) {
+            every { document(userA) } returns mockDocRef
+        }
+        val mockFirestore = mockk<FirebaseFirestore>(relaxed = true) {
+            every { app } returns mockFirebaseApp
+            every { collection("users") } returns mockCollection
+        }
+        val mockUserA = mockk<FirebaseUser>(relaxed = true) {
+            every { uid } returns userA
+        }
+        val mockAuthA = mockk<FirebaseAuth>(relaxed = true) {
+            every { currentUser } returns mockUserA
+        }
+
+        // En este dispositivo (Dispositivo 2), C4 no está autorizado
+        C4SyncConfig.isProductionC4FeatureEnabled = false
+        C4SyncConfig.clearAuthorizedPilotUids()
+        assertEquals(SyncEngineMode.LEGACY, C4SyncStateStore.getEngineMode(context, userA))
+
+        val manager = C4ControlledActivationManager(
+            context = context,
+            firestoreProvider = { mockFirestore },
+            storageProvider = { mockk(relaxed = true) },
+            authProvider = { mockAuthA },
+            databaseProvider = { testDatabase },
+            allowProduction = true
+        )
+
+        val result = manager.detectAndEnforceAccountProtocol(userA)
+
+        // Debe ser bloqueado en HALTED y jamás asumir Legacy
+        assertTrue("Dispositivo no autorizado para cuenta C4 debe ser bloqueado: $result", result is ProtocolResult.Blocked)
+        assertEquals("El modo persistente debe pasar a HALTED", SyncEngineMode.HALTED, C4SyncStateStore.getEngineMode(context, userA))
+        assertEquals(SyncEngineMode.HALTED, C4SyncConfig.engineMode)
+        assertTrue(C4SyncStateStore.isLegacyBlocked(context, userA))
+    }
+
+    @Test
+    fun testMultiDeviceProtocolDetection_genuineLegacy_confirmsLegacy() = runBlocking {
+        // Simular cuenta que sigue en Legacy en el servidor (remoto no existe o syncProtocolVersion != "C4")
+        val mockFirebaseApp = mockk<FirebaseApp>(relaxed = true) {
+            every { options.projectId } returns "contador-de-birras-prod"
+        }
+        val mockDocSnapshot = mockk<com.google.firebase.firestore.DocumentSnapshot>(relaxed = true) {
+            every { exists() } returns false
+        }
+        val mockDocRef = mockk<com.google.firebase.firestore.DocumentReference>(relaxed = true) {
+            every { get(com.google.firebase.firestore.Source.SERVER) } returns com.google.android.gms.tasks.Tasks.forResult(mockDocSnapshot)
+        }
+        val mockCollection = mockk<com.google.firebase.firestore.CollectionReference>(relaxed = true) {
+            every { document(userB) } returns mockDocRef
+        }
+        val mockFirestore = mockk<FirebaseFirestore>(relaxed = true) {
+            every { app } returns mockFirebaseApp
+            every { collection("users") } returns mockCollection
+        }
+        val mockUserB = mockk<FirebaseUser>(relaxed = true) {
+            every { uid } returns userB
+        }
+        val mockAuthB = mockk<FirebaseAuth>(relaxed = true) {
+            every { currentUser } returns mockUserB
+        }
+
+        val manager = C4ControlledActivationManager(
+            context = context,
+            firestoreProvider = { mockFirestore },
+            storageProvider = { mockk(relaxed = true) },
+            authProvider = { mockAuthB },
+            databaseProvider = { testDatabase },
+            allowProduction = true
+        )
+
+        val result = manager.detectAndEnforceAccountProtocol(userB)
+
+        assertTrue("Cuenta legacy real debe ser confirmada como Legacy: $result", result is ProtocolResult.Legacy)
+        assertEquals(SyncEngineMode.LEGACY, C4SyncStateStore.getEngineMode(context, userB))
+        assertTrue(C4SyncStateStore.isProtocolVerified(context, userB))
+        assertTrue(C4SyncStateStore.hasReliableLocalState(context, userB))
+    }
+
+    @Test
+    fun testMultiDeviceProtocolDetection_unreachableRemoteWithoutReliableLocalState_doesNotAssumeLegacy() = runBlocking {
+        // Simular fallo de red hacia Firestore
+        val mockFirebaseApp = mockk<FirebaseApp>(relaxed = true) {
+            every { options.projectId } returns "contador-de-birras-prod"
+        }
+        val mockDocRef = mockk<com.google.firebase.firestore.DocumentReference>(relaxed = true) {
+            every { get(com.google.firebase.firestore.Source.SERVER) } throws RuntimeException("Network timeout / offline")
+        }
+        val mockCollection = mockk<com.google.firebase.firestore.CollectionReference>(relaxed = true) {
+            every { document(userA) } returns mockDocRef
+        }
+        val mockFirestore = mockk<FirebaseFirestore>(relaxed = true) {
+            every { app } returns mockFirebaseApp
+            every { collection("users") } returns mockCollection
+        }
+        val mockUserA = mockk<FirebaseUser>(relaxed = true) {
+            every { uid } returns userA
+        }
+        val mockAuthA = mockk<FirebaseAuth>(relaxed = true) {
+            every { currentUser } returns mockUserA
+        }
+
+        // Sin estado local fiable para userA
+        C4SyncStateStore.clearForTesting(context, userA)
+        assertFalse(C4SyncStateStore.hasReliableLocalState(context, userA))
+
+        val manager = C4ControlledActivationManager(
+            context = context,
+            firestoreProvider = { mockFirestore },
+            storageProvider = { mockk(relaxed = true) },
+            authProvider = { mockAuthA },
+            databaseProvider = { testDatabase },
+            allowProduction = true
+        )
+
+        val result = manager.detectAndEnforceAccountProtocol(userA)
+
+        // NO asumir que es Legacy: debe retornar Unverified
+        assertTrue("No debe asumir Legacy ante fallo remoto sin estado local fiable: $result", result is ProtocolResult.Unverified)
+        assertFalse(C4SyncStateStore.isProtocolVerified(context, userA))
+
+        // Al intentar escribir mediante BeerRepository sin estado local fiable, debe bloquear con IllegalStateException
+        val prodContext = object : android.content.ContextWrapper(context) {
+            override fun getPackageName(): String = "com.daniel.contadordebirras"
+        }
+        val currentUserFlow = MutableStateFlow<FirebaseUser?>(mockUserA)
+        val mockAuthRepo = mockk<AuthRepository>(relaxed = true) {
+            every { currentUser } returns currentUserFlow
+        }
+        val repository = BeerRepository(
+            beerDao = testDatabase.beerDao(),
+            context = prodContext,
+            authRepository = mockAuthRepo,
+            syncScheduler = mockk(relaxed = true)
+        )
+
+        try {
+            repository.addBeer(BeerType.CANA, System.currentTimeMillis())
+            fail("Debe bloquear la escritura si el protocolo no es verificable y no existe estado local fiable")
+        } catch (e: IllegalStateException) {
+            assertTrue(
+                "Debe indicar bloqueo por protocolo no verificable",
+                e.message?.contains("No se puede verificar el protocolo de la cuenta") == true ||
+                e.message?.contains("No se pudo verificar el protocolo remoto") == true
+            )
+        }
     }
 }

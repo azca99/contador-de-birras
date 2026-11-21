@@ -20,6 +20,7 @@ object C4SyncStateStore {
     private const val KEY_PREFIX_MODE = "sync_mode_"
     private const val KEY_PREFIX_CHECKPOINT = "migration_checkpoint_"
     private const val KEY_PREFIX_CHECKPOINT_TS = "migration_checkpoint_ts_"
+    private const val KEY_PREFIX_PROTOCOL_VERIFIED = "c4_protocol_verified_"
     private const val KEY_PRODUCTION_FEATURE_ENABLED = "c4_production_feature_enabled"
     private const val KEY_AUTHORIZED_PILOT_UIDS = "c4_authorized_pilot_uids"
 
@@ -96,6 +97,40 @@ object C4SyncStateStore {
     }
 
     /**
+     * Consulta si el protocolo de la cuenta ha sido verificado con el servidor en este dispositivo.
+     */
+    fun isProtocolVerified(context: Context, ownerUid: String): Boolean {
+        if (ownerUid.isBlank() || ownerUid == "guest_local") return false
+        return getPrefs(context).getBoolean("$KEY_PREFIX_PROTOCOL_VERIFIED$ownerUid", false)
+    }
+
+    /**
+     * Marca o desmarca si el protocolo de la cuenta ha sido verificado con el servidor.
+     */
+    fun setProtocolVerified(context: Context, ownerUid: String, verified: Boolean, commitSync: Boolean = true) {
+        if (ownerUid.isBlank() || ownerUid == "guest_local") return
+        val editor = getPrefs(context).edit().putBoolean("$KEY_PREFIX_PROTOCOL_VERIFIED$ownerUid", verified)
+        if (commitSync) editor.commit() else editor.apply()
+    }
+
+    /**
+     * Determina si existe un estado local fiable para el usuario en este dispositivo.
+     * Es fiable si está en C4_ACTIVE, HALTED, CUTOVER_IN_PROGRESS, o si ya fue verificado como LEGACY.
+     * Si nunca ha sido verificado y no tiene modo explícito, no es fiable y no debe asumirse Legacy.
+     */
+    fun hasReliableLocalState(context: Context, ownerUid: String): Boolean {
+        if (ownerUid.isBlank() || ownerUid == "guest_local") return false
+        val modeStr = getPrefs(context).getString("$KEY_PREFIX_MODE$ownerUid", null)
+        if (modeStr == SyncEngineMode.C4_ACTIVE.name ||
+            modeStr == SyncEngineMode.HALTED.name ||
+            modeStr == SyncEngineMode.CUTOVER_IN_PROGRESS.name
+        ) {
+            return true
+        }
+        return isProtocolVerified(context, ownerUid)
+    }
+
+    /**
      * Consulta el estado del feature flag de producción persistido.
      * Desactivado (false) por defecto.
      */
@@ -156,6 +191,7 @@ object C4SyncStateStore {
             editor.remove("$KEY_PREFIX_MODE$ownerUid")
                 .remove("$KEY_PREFIX_CHECKPOINT$ownerUid")
                 .remove("$KEY_PREFIX_CHECKPOINT_TS$ownerUid")
+                .remove("$KEY_PREFIX_PROTOCOL_VERIFIED$ownerUid")
         } else {
             editor.clear()
         }

@@ -31,16 +31,24 @@ class BeerSyncWorker(
             return Result.success()
         }
 
-        // 1. Verificación de activación controlada para UIDs autorizados
-        if (com.example.contadordebirras.sync.c4.C4SyncConfig.isUserAuthorizedForC4(expectedUid)) {
-            val currentMode = com.example.contadordebirras.sync.c4.C4SyncStateStore.getEngineMode(applicationContext, expectedUid)
-            if (currentMode == com.example.contadordebirras.sync.c4.SyncEngineMode.LEGACY) {
-                try {
-                    val activationMgr = com.example.contadordebirras.sync.c4.C4ControlledActivationManager(applicationContext)
-                    activationMgr.checkAndActivateIfAuthorized(expectedUid)
-                } catch (e: Exception) {
-                    android.util.Log.w("C4ActivationWorker", "Fallo al activar C4 para $expectedUid: ${e.message}")
-                }
+        // 1. Detección y aplicación multidispositivo del protocolo de la cuenta
+        // Antes de permitir sincronización o escrituras Legacy, consultar el bloqueo remoto /users/{uid}
+        val activationMgr = com.example.contadordebirras.sync.c4.C4ControlledActivationManager(applicationContext)
+        val protocolResult = activationMgr.detectAndEnforceAccountProtocol(expectedUid)
+        when (protocolResult) {
+            is com.example.contadordebirras.sync.c4.ProtocolResult.Blocked -> {
+                // Cuenta en HALTED o bloqueada: NUNCA ejecutar Legacy
+                return Result.success()
+            }
+            is com.example.contadordebirras.sync.c4.ProtocolResult.Unverified -> {
+                // No puede verificarse el estado remoto y tampoco existe un estado local fiable: NO asumir Legacy
+                return Result.retry()
+            }
+            is com.example.contadordebirras.sync.c4.ProtocolResult.C4Active -> {
+                // Continúa a la sincronización C4
+            }
+            is com.example.contadordebirras.sync.c4.ProtocolResult.Legacy -> {
+                // Continúa a la sincronización Legacy
             }
         }
 

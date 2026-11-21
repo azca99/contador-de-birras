@@ -57,16 +57,21 @@ class BeerRepository(
         repoScope.launch {
             authRepository.currentUser.collect { user ->
                 if (user != null) {
-                    if (com.example.contadordebirras.sync.c4.C4SyncConfig.isUserAuthorizedForC4(user.uid)) {
-                        try {
-                            val activationMgr = com.example.contadordebirras.sync.c4.C4ControlledActivationManager(context)
-                            activationMgr.checkAndActivateIfAuthorized(user.uid)
-                        } catch (e: Exception) {
-                            android.util.Log.w("C4Activation", "Fallo al verificar activación C4 para ${user.uid}: ${e.message}")
+                    val activationMgr = com.example.contadordebirras.sync.c4.C4ControlledActivationManager(context)
+                    val protocolResult = activationMgr.detectAndEnforceAccountProtocol(user.uid)
+                    when (protocolResult) {
+                        is com.example.contadordebirras.sync.c4.ProtocolResult.C4Active,
+                        is com.example.contadordebirras.sync.c4.ProtocolResult.Legacy -> {
+                            syncScheduler.schedulePeriodicSync(user.uid)
+                            syncScheduler.requestSync(user.uid)
+                        }
+                        is com.example.contadordebirras.sync.c4.ProtocolResult.Blocked -> {
+                            android.util.Log.w("C4Protocol", "Sincronización bloqueada para ${user.uid}: ${protocolResult.reason}")
+                        }
+                        is com.example.contadordebirras.sync.c4.ProtocolResult.Unverified -> {
+                            android.util.Log.w("C4Protocol", "Sincronización retenida para ${user.uid}: protocolo remoto no verificado y sin estado local fiable.")
                         }
                     }
-                    syncScheduler.schedulePeriodicSync(user.uid)
-                    syncScheduler.requestSync(user.uid)
                 }
             }
         }
@@ -82,7 +87,7 @@ class BeerRepository(
         const val C4_PILOT_USER_EMAIL = "c4_pilot_user@demo-contador-c44.test"
     }
 
-    private fun ensureSafeExecutionMode(ownerUid: String): Boolean {
+    private suspend fun ensureSafeExecutionMode(ownerUid: String): Boolean {
         val isPilotPackage = context.packageName?.endsWith(".c4pilot") == true
         if (isPilotPackage) {
             val currentUser = authRepository.currentUser.value
@@ -153,6 +158,26 @@ class BeerRepository(
                     throw IllegalStateException("Operación bloqueada: el protocolo C4 requiere una sesión de usuario autenticada.")
                 }
                 return true
+            }
+
+            if (!isAccountC4 && ownerUid.isNotBlank() && ownerUid != "guest_local") {
+                val hasReliableLocalState = com.example.contadordebirras.sync.c4.C4SyncStateStore.hasReliableLocalState(context, ownerUid)
+                if (!hasReliableLocalState) {
+                    val activationMgr = com.example.contadordebirras.sync.c4.C4ControlledActivationManager(context)
+                    val protocolResult = activationMgr.detectAndEnforceAccountProtocol(ownerUid)
+                    when (protocolResult) {
+                        is com.example.contadordebirras.sync.c4.ProtocolResult.C4Active -> return true
+                        is com.example.contadordebirras.sync.c4.ProtocolResult.Legacy -> return false
+                        is com.example.contadordebirras.sync.c4.ProtocolResult.Blocked -> {
+                            throw IllegalStateException("Operación bloqueada: ${protocolResult.reason}")
+                        }
+                        is com.example.contadordebirras.sync.c4.ProtocolResult.Unverified -> {
+                            throw IllegalStateException(
+                                "Operación bloqueada: No se puede verificar el protocolo de la cuenta con el servidor y no existe un estado local fiable. Conéctate a la red para verificar el estado de la cuenta."
+                            )
+                        }
+                    }
+                }
             }
 
             return false
