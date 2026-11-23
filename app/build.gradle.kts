@@ -22,6 +22,26 @@ android {
         arg("room.schemaLocation", "$projectDir/schemas")
     }
 
+    signingConfigs {
+        create("release") {
+            val customKeystore = project.findProperty("RELEASE_STORE_FILE") as String?
+            if (customKeystore != null && file(customKeystore).exists()) {
+                storeFile = file(customKeystore)
+                storePassword = project.findProperty("RELEASE_STORE_PASSWORD") as String? ?: "android"
+                keyAlias = project.findProperty("RELEASE_KEY_ALIAS") as String? ?: "androiddebugkey"
+                keyPassword = project.findProperty("RELEASE_KEY_PASSWORD") as String? ?: "android"
+            } else {
+                val debugKeystore = file("${System.getProperty("user.home")}/.android/debug.keystore")
+                if (debugKeystore.exists()) {
+                    storeFile = debugKeystore
+                    storePassword = "android"
+                    keyAlias = "androiddebugkey"
+                    keyPassword = "android"
+                }
+            }
+        }
+    }
+
     buildTypes {
         debug {
             applicationIdSuffix = ".internal"
@@ -29,6 +49,7 @@ android {
         }
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("release")
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }
