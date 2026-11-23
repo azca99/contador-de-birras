@@ -9,6 +9,7 @@ import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.google.android.gms.auth.api.signin.GoogleSignIn
 import com.google.android.gms.auth.api.signin.GoogleSignInOptions
@@ -146,9 +147,31 @@ fun ProfileScreen(
 
         if (currentUser != null) {
             Text("Conectado como: ${currentUser?.email}")
+            Spacer(modifier = Modifier.height(4.dp))
+            val isC4Active = com.example.contadordebirras.sync.c4.C4SyncConfig.isC4Active()
+            Text(
+                text = "Motor: ${if (isC4Active) "C4_ACTIVE (Protegido)" else "LEGACY"}",
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = if (isC4Active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+            )
             Spacer(modifier = Modifier.height(8.dp))
-            Button(onClick = { viewModel.signOut() }) {
-                Text("Cerrar Sesión")
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = { viewModel.signOut() }) {
+                    Text("Cerrar Sesión")
+                }
+                if (com.example.contadordebirras.BuildConfig.DEBUG && currentUser?.email == "test_internal@demo-contador-c44.test" && !isC4Active) {
+                    Button(
+                        onClick = {
+                            viewModel.activateC4ForCurrentTestUser(context) { success, msg ->
+                                Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
+                            }
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.tertiary)
+                    ) {
+                        Text("⚡ Activar C4")
+                    }
+                }
             }
         } else {
             Text("Inicia sesión para sincronizar tus cervezas.")

@@ -80,4 +80,50 @@ class ProfileViewModel(
     fun updateCurrentUser() {
         authRepository.updateCurrentUser()
     }
+
+    fun activateC4ForCurrentTestUser(context: android.content.Context, onResult: (Boolean, String) -> Unit) {
+        val user = currentUser.value
+        if (user == null) {
+            onResult(false, "No hay usuario autenticado")
+            return
+        }
+        if (user.email != "test_internal@demo-contador-c44.test") {
+            onResult(false, "Solo se permite activar C4 para el usuario ficticio de prueba autorizado")
+            return
+        }
+        viewModelScope.launch {
+            try {
+                // 1. Autorizar únicamente el UID de la cuenta ficticia
+                com.example.contadordebirras.sync.c4.C4SyncConfig.configureControlledActivation(
+                    context = context.applicationContext,
+                    featureEnabled = true,
+                    authorizedUid = user.uid
+                )
+                // 2. Activar C4 mediante C4ControlledActivationManager
+                val activationManager = com.example.contadordebirras.sync.c4.C4ControlledActivationManager(
+                    context = context.applicationContext,
+                    allowProduction = false
+                )
+                when (val result = activationManager.activateAccount(user.uid)) {
+                    is com.example.contadordebirras.sync.c4.ActivationResult.Success -> {
+                        onResult(true, "C4 activado exitosamente")
+                    }
+                    is com.example.contadordebirras.sync.c4.ActivationResult.AlreadyActive -> {
+                        onResult(true, "C4 ya activo")
+                    }
+                    is com.example.contadordebirras.sync.c4.ActivationResult.Blocked -> {
+                        onResult(false, "Activación bloqueada: ${result.reason}")
+                    }
+                    is com.example.contadordebirras.sync.c4.ActivationResult.Unauthorized -> {
+                        onResult(false, "No autorizado: ${result.reason}")
+                    }
+                    is com.example.contadordebirras.sync.c4.ActivationResult.Failed -> {
+                        onResult(false, "Fallo: ${result.reason}")
+                    }
+                }
+            } catch (e: Exception) {
+                onResult(false, "Error: ${e.message}")
+            }
+        }
+    }
 }
