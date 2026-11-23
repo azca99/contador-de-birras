@@ -24,20 +24,24 @@ android {
 
     signingConfigs {
         create("release") {
-            val customKeystore = project.findProperty("RELEASE_STORE_FILE") as String?
-            if (customKeystore != null && file(customKeystore).exists()) {
-                storeFile = file(customKeystore)
-                storePassword = project.findProperty("RELEASE_STORE_PASSWORD") as String? ?: "android"
-                keyAlias = project.findProperty("RELEASE_KEY_ALIAS") as String? ?: "androiddebugkey"
-                keyPassword = project.findProperty("RELEASE_KEY_PASSWORD") as String? ?: "android"
-            } else {
-                val debugKeystore = file("${System.getProperty("user.home")}/.android/debug.keystore")
-                if (debugKeystore.exists()) {
-                    storeFile = debugKeystore
-                    storePassword = "android"
-                    keyAlias = "androiddebugkey"
-                    keyPassword = "android"
+            val storeFilePath = (project.findProperty("RELEASE_STORE_FILE") as String?)
+                ?: System.getenv("RELEASE_STORE_FILE")
+            val storePasswordProp = (project.findProperty("RELEASE_STORE_PASSWORD") as String?)
+                ?: System.getenv("RELEASE_STORE_PASSWORD")
+            val keyAliasProp = (project.findProperty("RELEASE_KEY_ALIAS") as String?)
+                ?: System.getenv("RELEASE_KEY_ALIAS")
+            val keyPasswordProp = (project.findProperty("RELEASE_KEY_PASSWORD") as String?)
+                ?: System.getenv("RELEASE_KEY_PASSWORD")
+
+            if (!storeFilePath.isNullOrBlank()) {
+                val storeF = file(storeFilePath)
+                if (!storeF.exists()) {
+                    throw GradleException("El archivo de almacén de claves especificado en RELEASE_STORE_FILE no existe: $storeFilePath")
                 }
+                storeFile = storeF
+                storePassword = storePasswordProp ?: throw GradleException("Falta configurar RELEASE_STORE_PASSWORD para la firma Release.")
+                keyAlias = keyAliasProp ?: throw GradleException("Falta configurar RELEASE_KEY_ALIAS para la firma Release.")
+                keyPassword = keyPasswordProp ?: throw GradleException("Falta configurar RELEASE_KEY_PASSWORD para la firma Release.")
             }
         }
     }
@@ -157,5 +161,6 @@ dependencies {
   implementation(libs.play.services.auth)
   implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.7.3")
 }
+
 
 

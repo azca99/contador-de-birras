@@ -26,7 +26,7 @@ El presente documento define el procedimiento técnico, organizativo y de contin
 
 Antes de autorizar cualquier migración en el entorno de producción, es requisito indispensable disponer de una copia de seguridad verificable e inmutable de las bases de datos y almacenes de archivos.
 
-### 2.1 Exportación de Cloud Firestore
+### 2.1 Exportación y Verificación de Integridad de Cloud Firestore
 
 Se ejecutará una exportación completa de la colección `beers` y la colección de metadatos `users` hacia un bucket de Cloud Storage dedicado con políticas de retención activadas (Object Lock / Bucket Lock):
 
@@ -36,22 +36,31 @@ EXPORT_TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 BACKUP_BUCKET="gs://contador-de-birras-backups/firestore-pre-c4-${EXPORT_TIMESTAMP}"
 
 # 2. Ejecutar exportación administrada de Firestore mediante gcloud
-gcloud firestore export ${BACKUP_BUCKET} \
+OPERATION_ID=$(gcloud firestore export ${BACKUP_BUCKET} \
     --project=contador-de-birras \
-    --collection-ids='beers','users'
+    --collection-ids='beers','users' \
+    --format="value(name)")
 
-# 3. Comprobar el estado y verificar el archivo de metadatos
-gcloud firestore operations list \
+# 3. Monitorizar hasta conclusión y verificar estado
+gcloud firestore operations describe ${OPERATION_ID} \
     --project=contador-de-birras \
-    --filter="metadata.type:EXPORT_DOCUMENTS" \
-    --limit=1
+    --format="yaml(done,error,metadata)"
 ```
 
-**Criterio de Aceptación:**
-- La operación debe reportar `done: true` y no registrar ningún error en `status`.
-- El bucket de destino debe contener los archivos `.overall_export_metadata` y los chunks de datos de Firestore.
+**Verificación de Integridad y Recuperabilidad:**
+- La operación debe reportar `done: true` y el campo `error` debe estar vacío/ausente.
+- Comprobar que en el bucket existen el archivo descriptor de exportación y los directorios de colecciones:
+  ```bash
+  gsutil ls -l "${BACKUP_BUCKET}/*.overall_export_metadata"
+  gsutil ls -l "${BACKUP_BUCKET}/all_namespaces/all_kinds/"
+  ```
+- Procedimiento de restauración verificado:
+  ```bash
+  # Restauración en caso de contingencia mayor (en base aislada o proyecto de recuperación):
+  gcloud firestore import ${BACKUP_BUCKET} --project=contador-de-birras
+  ```
 
-### 2.2 Snapshot de Firebase Storage
+### 2.2 Snapshot y Verificación de Firebase Storage
 
 Las fotografías existentes bajo la ruta legacy `users/{uid}/beers/{syncId}.jpg` deben ser respaldadas para evitar pérdida o sobrescritura accidental:
 
@@ -65,11 +74,26 @@ gsutil -m rsync -r \
 ```
 
 **Verificación de Integridad:**
-- Comparar el número total de objetos y el tamaño en bytes entre el origen y el destino:
+- Comparar tamaño total en bytes y número de objetos entre origen y destino:
   ```bash
   gsutil du -s gs://contador-de-birras.appspot.com/users
   gsutil du -s ${STORAGE_BACKUP}/users
   ```
+- Ejecutar un dry-run de comprobación de diferencias (debe reportar 0 discrepancias):
+  ```bash
+  gsutil -m rsync -r -n gs://contador-de-birras.appspot.com/users ${STORAGE_BACKUP}/users
+  ```
+
+### 2.3 Salvaguarda de Datos Locales no Sincronizados (Entornos Release)
+
+> [!WARNING]
+> **Limitación de Acceso en Compilaciones Release:**  
+> En aplicaciones compiladas en modo Release (`android:debuggable="false"`), comandos como `run-as` son denegados por el kernel de Android (`run-as: package not debuggable`). Asimismo, `adb backup` está deshabilitado por el sistema en versiones modernas de Android (Android 12+) para salvaguardar la privacidad del usuario. **No deben presentarse `run-as` ni `adb backup` como mecanismos viables de respaldo en producción.**
+
+**Alternativa Segura para Datos Locales antes de la Migración:**
+1. **Sincronización Legacy Previa Completa:** Antes de habilitar C4 para una cuenta, el usuario debe abrir su aplicación en modo Legacy con conectividad estable hasta que el indicador de sincronización confirme 0 cambios pendientes (`syncStatus == SYNCED` en todas las entidades). De esta manera, todos los datos locales quedan debidamente respaldados en Firestore antes de iniciar la migración.
+2. **Prevalidación Bloqueante en el Cliente:** `C4CutoverManager` implementa una verificación previa obligatoria: si en Room existen entidades locales no reflejadas en el servidor o mutaciones pendientes no conciliadas, el proceso de cutover se aborta de forma no destructiva con resultado `CutoverResult.Blocked`, impidiendo cualquier pérdida de datos o elevación de estado incompleta.
+3. **Auditoría Forense en Entornos de Diagnóstico:** Si excepcionalmente se requiere volcar la base Room de un dispositivo piloto para análisis técnico, debe realizarse utilizando una versión interna debug o una utilidad de exportación integrada en la aplicación hacia almacenamiento externo (SAF).
 
 ---
 
@@ -182,23 +206,25 @@ Se ordenará la suspensión inmediata del avance de cohortes si se cumple cualqu
 3. Tasa de errores en Firebase Storage $> 0.5\%$.
 4. Bloqueo masivo de WorkManager por inconsistencia de sesión.
 
-### 6.2 Prohibición de Rollback a Reglas Permisivas
+### 6.2 Prohibición de Rollback a Reglas Permisivas y Bloqueo Irreversible
 
 > [!CAUTION]
-> **REGLA DE ORO DE SEGURIDAD:**  
-> Bajo ninguna circunstancia se debe revertir `firestore.rules` a las reglas permisivas legacy de producción.  
-> Revertir a las reglas permisivas permitiría que clientes desactualizados o peticiones legacy sobreescriban documentos ya modernizados a revisión $\ge 1$, corrompiendo los vectores causales y destruyendo la trazabilidad de mutaciones.
+> **REGLAS DE ORO DE SEGURIDAD E INTEGRIDAD:**  
+> 1. **Prohibición de alterar o eliminar el bloqueo remoto:** Bajo ninguna circunstancia se debe eliminar o modificar el documento `/users/{uid}` (o su campo `syncProtocolVersion: 'C4'`) para intentar "revertir" una cuenta a Legacy. Las reglas perimetrales prohíben taxativamente dicha reversión y el borrado del documento de usuario migrado.
+> 2. **Conservación permanente de revisiones y tombstones:** Una cuenta que ha migrado a C4 almacena sus entidades con revisiones $\ge 1$ y tombstones lógicos (`isDeleted: true`). Cualquier intento de ejecutar un cliente Legacy sobre estos documentos provocaría rechazos por reglas de seguridad y desincronizaciones causales irreversibles.
+> 3. **Prohibición de debilitar reglas Firebase:** No se deben relajar ni debilitar las reglas perimetrales (`firestore.candidate.rules`) para admitir retrocesos.
+> 4. **Estrategia única ante incidentes:** La única vía de resolución admitida es la detención en estado seguro **HALTED**, diagnóstico de la causa raíz y corrección hacia adelante (**Fix-Forward**).
 
 ### 6.3 Procedimiento de Contingencia Fix-Forward
 
-Ante cualquier incidencia en una cuenta migrada o semi-migrada:
+Ante cualquier anomalía en una cuenta en proceso de migración o ya migrada:
 
-1. **Aislamiento en HALTED:** El cliente se detiene automáticamente en `HALTED` gracias a las salvaguardas de `C4StagingCutoverManager`.
+1. **Aislamiento Seguro en HALTED:** El motor local entra automáticamente en estado seguro `HALTED` ante discrepancias o bloqueos, manteniendo intactas todas las mutaciones locales en `local_mutation_history` y bloqueando escrituras remotas inconsistentes.
 2. **Diagnóstico Automatizado:** Ejecutar `C4HaltedRecoveryManager.diagnoseAccount(uid)` para identificar la causa:
-   - *Fallo de red durante PUSH:* Reintentar la sincronización tras recuperar conectividad; el sistema procesa las mutaciones pendientes de forma idempotente.
-   - *Fallo en escritura de bloqueo remoto (`HALTED_RECOVERABLE_LOCK_FAILED`):* Reintentar la llamada `writeAccountProtocolLock(uid)` directamente desde el gestor de recuperación.
-   - *Cervezas locales ausentes en Firestore:* Exportar la base Room del dispositivo a través del soporte técnico y ejecutar una reconciliación manual controlada antes de reactivar.
-3. **Reactivación Explícita:** Una vez resuelta la causa y verificado el diagnóstico en verde (`isRecoverable == true`), ejecutar `recoverHaltedAccountExplicitly(uid)`.
+   - *Fallo de red o desconexión durante PUSH:* Reintentar la sincronización cuando se restablezca la conectividad; las mutaciones C4 se reaplican de forma idempotente con protección CAS.
+   - *Fallo en escritura del Protocol Lock (`HALTED_RECOVERABLE_LOCK_FAILED`):* Reintentar la llamada atómica `writeAccountProtocolLock(uid)` directamente desde el gestor de recuperación.
+   - *Discrepancia en entidades:* Realizar diagnóstico mediante conciliación remota sin alterar el bloqueo de protocolo ni degradar los metadatos causales existentes.
+3. **Reactivación Explícita:** Una vez subsanada la causa raíz y con el diagnóstico en verde (`isRecoverable == true`), invocar `recoverHaltedAccountExplicitly(uid)`. En ningún caso se permite la degradación a Legacy.
 
 ---
 
@@ -217,6 +243,7 @@ Para compilar y distribuir la versión final de producción de la aplicación, e
 | **`applicationIdSuffix`** | `".c4pilot"` en `build.gradle.kts` | **Retirar:** Compilar bajo el `applicationId` oficial de la aplicación (`com.daniel.contadordebirras`). |
 | **`versionCode` / `minSupportedAppVersionCode`** | `versionCode = 2` actual en `app/build.gradle.kts` | **Incrementar `versionCode = 3`:** Para el lanzamiento de producción con C4, la versión de la app debe subir de 2 a 3 para cumplir el requisito de seguridad perimetral `minSupportedAppVersionCode >= 3`. |
 | **Panel de Depuración (`C4SyncDebugScreen`)** | Accesible desde la interfaz o menú de desarrollo | **Ocultar / Deshabilitar:** Excluir de los builds de tipo `release` mediante sourceSets o directivas `@VisibleForTesting`. |
+| **Firma Release y Keystore** | Clave debug local en emulador (`CN=Android Debug`) | **Exigencia Estricta de Keystore de Producción:** Configurar `RELEASE_STORE_FILE`, `RELEASE_STORE_PASSWORD`, `RELEASE_KEY_ALIAS` y `RELEASE_KEY_PASSWORD`. Sin fallback automático a debug. La firma de desarrollo observada en el emulador no es apta para distribución pública. |
 | **Trazas y Logs Verbosos** | `Log.d("C4Cutover", ...)` imprimiendo payloads y estados intermedios | Desactivar logs detallados en Release para prevenir fugas de información sensible en Logcat. |
 
 ---
