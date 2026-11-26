@@ -27,6 +27,21 @@ class ContadorDeBirrasApplication : Application() {
         // Restaurar configuración reproducible de activación controlada C4 (desactivado por defecto, lista vacía)
         com.example.contadordebirras.sync.c4.C4SyncConfig.restoreConfiguration(this)
 
+        // Incorporar UIDs autorizados expresamente en la compilación si están configurados
+        if (BuildConfig.AUTHORIZED_PILOT_UIDS.isNotBlank()) {
+            val buildUids = BuildConfig.AUTHORIZED_PILOT_UIDS
+                .split(",")
+                .map { it.trim() }
+                .filter { it.isNotBlank() && it != "guest_local" }
+            if (buildUids.isNotEmpty()) {
+                com.example.contadordebirras.sync.c4.C4SyncConfig.isProductionC4FeatureEnabled = true
+                com.example.contadordebirras.sync.c4.C4SyncStateStore.setProductionFeatureEnabled(this, true)
+                buildUids.forEach { uid ->
+                    com.example.contadordebirras.sync.c4.C4SyncConfig.authorizePilotUid(this, uid)
+                }
+            }
+        }
+
         val isPilot = packageName.endsWith(".c4pilot")
         val isInternal = packageName.endsWith(".internal")
         if (BuildConfig.DEBUG && (isPilot || isInternal)) {

@@ -81,30 +81,40 @@ class ProfileViewModel(
         authRepository.updateCurrentUser()
     }
 
-    fun activateC4ForCurrentTestUser(context: android.content.Context, onResult: (Boolean, String) -> Unit) {
+    fun activateC4ForAuthorizedUser(context: android.content.Context, onResult: (Boolean, String) -> Unit) {
         val user = currentUser.value
         if (user == null) {
             onResult(false, "No hay usuario autenticado")
             return
         }
-        if (user.email != "test_internal@demo-contador-c44.test") {
-            onResult(false, "Solo se permite activar C4 para el usuario ficticio de prueba autorizado")
+        val uid = user.uid
+        if (uid.isBlank() || uid == "guest_local") {
+            onResult(false, "Sesión no válida")
             return
         }
+
+        // Si es usuario de prueba en DEBUG, autorizar bajo demanda
+        if (com.example.contadordebirras.BuildConfig.DEBUG && user.email == "test_internal@demo-contador-c44.test") {
+            com.example.contadordebirras.sync.c4.C4SyncConfig.configureControlledActivation(
+                context = context.applicationContext,
+                featureEnabled = true,
+                authorizedUid = uid
+            )
+        }
+
+        if (!com.example.contadordebirras.sync.c4.C4SyncConfig.isProductionC4FeatureEnabled ||
+            !com.example.contadordebirras.sync.c4.C4SyncConfig.isUserAuthorizedForC4(uid)
+        ) {
+            onResult(false, "Usuario no autorizado para la activación del piloto C4")
+            return
+        }
+
         viewModelScope.launch {
             try {
-                // 1. Autorizar únicamente el UID de la cuenta ficticia
-                com.example.contadordebirras.sync.c4.C4SyncConfig.configureControlledActivation(
-                    context = context.applicationContext,
-                    featureEnabled = true,
-                    authorizedUid = user.uid
-                )
-                // 2. Activar C4 mediante C4ControlledActivationManager
                 val activationManager = com.example.contadordebirras.sync.c4.C4ControlledActivationManager(
-                    context = context.applicationContext,
-                    allowProduction = false
+                    context = context.applicationContext
                 )
-                when (val result = activationManager.activateAccount(user.uid)) {
+                when (val result = activationManager.activateAccount(uid)) {
                     is com.example.contadordebirras.sync.c4.ActivationResult.Success -> {
                         onResult(true, "C4 activado exitosamente")
                     }
@@ -125,5 +135,9 @@ class ProfileViewModel(
                 onResult(false, "Error: ${e.message}")
             }
         }
+    }
+
+    fun activateC4ForCurrentTestUser(context: android.content.Context, onResult: (Boolean, String) -> Unit) {
+        activateC4ForAuthorizedUser(context, onResult)
     }
 }

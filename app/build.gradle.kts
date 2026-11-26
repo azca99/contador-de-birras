@@ -13,9 +13,14 @@ android {
         applicationId = "com.daniel.contadordebirras"
         minSdk = 24
         targetSdk = 36
-        versionCode = 3
-        versionName = "1.1.0"
+        versionCode = 4
+        versionName = "1.1.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        val authorizedPilotUidsProp = (project.findProperty("AUTHORIZED_C4_PILOT_UIDS") as String?)
+            ?: System.getenv("AUTHORIZED_C4_PILOT_UIDS")
+            ?: ""
+        buildConfigField("String", "AUTHORIZED_PILOT_UIDS", "\"$authorizedPilotUidsProp\"")
     }
 
     ksp {

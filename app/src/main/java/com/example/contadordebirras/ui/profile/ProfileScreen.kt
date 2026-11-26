@@ -145,8 +145,9 @@ fun ProfileScreen(
         Text("Sincronización en la Nube", style = MaterialTheme.typography.titleMedium)
         Spacer(modifier = Modifier.height(8.dp))
 
-        if (currentUser != null) {
-            Text("Conectado como: ${currentUser?.email}")
+        val user = currentUser
+        if (user != null) {
+            Text("Conectado como: ${user.email}")
             Spacer(modifier = Modifier.height(4.dp))
             val isC4Active = com.example.contadordebirras.sync.c4.C4SyncConfig.isC4Active()
             Text(
@@ -155,21 +156,30 @@ fun ProfileScreen(
                 fontWeight = FontWeight.SemiBold,
                 color = if (isC4Active) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
             )
+            val isPilotAuthorized = com.example.contadordebirras.sync.c4.C4SyncConfig.isUserAuthorizedForC4(user.uid)
+            if (isPilotAuthorized && !isC4Active) {
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "Cuenta autorizada para piloto C4",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.tertiary
+                )
+            }
             Spacer(modifier = Modifier.height(8.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(onClick = { viewModel.signOut() }) {
                     Text("Cerrar Sesión")
                 }
-                if (com.example.contadordebirras.BuildConfig.DEBUG && currentUser?.email == "test_internal@demo-contador-c44.test" && !isC4Active) {
+                if (isPilotAuthorized && !isC4Active) {
                     Button(
                         onClick = {
-                            viewModel.activateC4ForCurrentTestUser(context) { success, msg ->
+                            viewModel.activateC4ForAuthorizedUser(context) { success, msg ->
                                 Toast.makeText(context, msg, Toast.LENGTH_LONG).show()
                             }
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.tertiary)
                     ) {
-                        Text("⚡ Activar C4")
+                        Text("⚡ Activar C4 (Piloto Controlado)")
                     }
                 }
             }
