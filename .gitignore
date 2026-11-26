@@ -24,3 +24,8 @@ scripts/serviceAccountKey.json
 **/serviceAccountKey*.json
 
 .kotlin/
+*.apk
+*.aab
+*.keystore
+*.jks
+
